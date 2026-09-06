@@ -4,6 +4,193 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Fase 2, pieza 1: el script de subida
+
+`herramientas/subir.py` completo: convierte un archivo de video a HLS, lo sube
+a R2 y le avisa al servidor. Es la única parte del proyecto en Python y corre
+en la PC del dueño, no en Railway. 57 pruebas en verde y 21 de 21 mutaciones
+cazadas. **No se pudo probar contra R2 de verdad**: el bucket todavía no
+existe (tareas 9 y 10 de `TAREAS-DUENO.md`).
+
+Trabajo hecho en paralelo con el arreglo de la Fase 1, tocando sólo
+`herramientas/`.
+
+### Lo que quedó funcionando
+
+- `herramientas/subir.py`:
+  - `python herramientas/subir.py "S01E03.mkv"` hace los cinco pasos:
+    revisa el archivo con ffprobe, convierte con un solo ffmpeg a 720p
+    (2500k) y 1080p (5000k) con segmentos de 6 s y playlist maestra, saca los
+    subtítulos de texto a WebVTT, sube todo a `istincho/<id>/` y hace
+    `POST /api/videos`.
+  - `--listar` agrupa lo que hay en R2 por id y dice cuánto queda de los
+    10 GB. `--borrar <id>` borra de R2 y del servidor, pidiendo confirmación.
+  - `--avisar <id> --duracion <s>` reintenta sólo el paso 5, para cuando la
+    subida salió bien y el servidor estaba caído.
+  - `--solo-preparar` convierte sin subir y sin necesitar credenciales.
+  - Progreso: una barra por fase con porcentaje y tiempo restante. La de
+    ffmpeg sale de `-progress pipe:1`; la de la subida, del `Callback` de
+    `upload_file`.
+  - Si falta ffmpeg, ffprobe o boto3, o falta una variable, sale con una
+    línea que dice qué instalar o qué completar. Nunca un stack trace, nunca
+    un valor del `.env` impreso.
+- `herramientas/requirements.txt`: `boto3>=1.36,<2`, y nada más. El repo de
+  Node sigue con `mongodb` como única dependencia.
+- `herramientas/.env.ejemplo`: los nombres exactos de las ocho variables
+  (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`,
+  `R2_URL_PUBLICA`, `URL_SERVIDOR`, `CLAVE_SUBIDA`, `SALA_SLUG`), que era lo
+  que la tarea 10 dejaba pendiente. Reescrito por shell: la regla
+  `Read(./**/.env.*)` del `settings.json` tapa también los `.env.ejemplo`.
+- `herramientas/LEEME.md`: cómo preparar la PC y los tres comandos de la
+  noche.
+- `herramientas/pruebas_subir.py`: 57 pruebas con `unittest` de la biblioteca
+  estándar. No hizo falta pytest.
+
+### Decisiones y por qué
+
+**1. Nunca agrandar.** Si el archivo es 720p, no se genera el 1080p: sería un
+upscale que ocupa el doble en un bucket de 10 GB y no se ve mejor. Si el
+archivo es más chico que 720p, sale una sola calidad a la altura de la fuente
+(redondeada a par, que es lo que acepta libx264 con yuv420p). Se aparta de la
+letra del prompt ("dos calidades"), que asume material de 1080p.
+
+**2. Los subtítulos no pasan por el HLS de ffmpeg.** Meter los subtítulos en
+el `var_stream_map` es frágil. En su lugar, cada pista de texto sale como un
+WebVTT entero, con una playlist de un solo segmento, y la maestra se reescribe
+agregando los `#EXT-X-MEDIA` y un `SUBTITLES="subs"` en cada calidad. Es el
+patrón que entiende hls.js. Las pistas de imagen (PGS de Blu-ray, VobSub de
+DVD) se saltean con aviso: pasarlas a texto necesita OCR.
+
+**3. `-force_key_frames expr:gte(t,n_forced*6)`.** Sin un keyframe justo en
+cada corte, ffmpeg estira los segmentos más allá de 6 s y el reloj de la sala
+pierde precisión para saltar a un segundo exacto.
+
+**4. La maestra se sube última, y sola.** Todo lo demás va en paralelo (6
+hilos). Mientras la maestra no exista, nadie puede empezar a mirar un video a
+medio subir aunque adivine la URL.
+
+**5. `Cache-Control: public, max-age=31536000, immutable` en todo.** Cada
+video vive bajo un id nuevo, así que ningún objeto cambia jamás de contenido.
+Menos lecturas repetidas de R2 es menos consumo de las 10 millones gratis.
+
+**6. Cada archivo con su `Content-Type`.** `.m3u8` como
+`application/vnd.apple.mpegurl`, `.ts` como `video/mp2t`, `.vtt` como
+`text/vtt`. Si van como `application/octet-stream`, hls.js no reproduce.
+
+### Tres cosas de R2 que costaron y quedan anotadas
+
+**A. boto3 >= 1.36 rompe las subidas a R2 si no se lo apaga.** Desde esa
+versión, boto3 calcula y manda un checksum CRC32 en cada `PutObject` y
+`UploadPart`. R2 **no implementa** esos encabezados
+(`x-amz-sdk-checksum-algorithm`, `x-amz-checksum-*`): sólo soporta CRC-64/NVME
+de objeto completo. `crear_cliente` arma el `botocore.config.Config` con
+`request_checksum_calculation="when_required"` y
+`response_checksum_validation="when_required"`. Hay una prueba que mira los
+encabezados que salen por el cable y falla si alguien saca ese Config.
+Fuentes: [boto3#4392](https://github.com/boto/boto3/issues/4392),
+[developers.cloudflare.com/r2/api/s3/api](https://developers.cloudflare.com/r2/api/s3/api/).
+
+**B. Endpoint por cuenta, región `auto`.** `https://<account
+id>.r2.cloudflarestorage.com`, no por bucket, y `region_name="auto"` siempre.
+
+**C. Nada de ACL ni `ChecksumAlgorithm`.** R2 no los implementa; el bucket se
+hace público desde el panel (tarea 9), no por objeto.
+
+### Un bug de Windows que sólo aparece corriendo el script
+
+**ffmpeg en Windows escribe `720p\lista.m3u8` en la playlist maestra**, con
+barra invertida. En una URL la barra invertida no separa carpetas: el
+navegador pediría `720p%5Clista.m3u8` y R2 contestaría 404. El video no
+arrancaría y el error no diría por qué. `normalizar_uris()` pasa todas las
+playlists a barras normales antes de subir. No lo encontró ningún test: salió
+de correr ffmpeg de verdad y mirar el archivo. La prueba se escribió después.
+Lo mismo con las claves de R2: `clave_r2()` nunca usa `os.path.join`.
+
+Y un error del propio ffmpeg: `var_stream_map` quiere `name:720p`, con dos
+puntos. Con `name=720p` contesta `Invalid keyval` y no escribe nada.
+
+### Cómo verlo funcionando
+
+```bash
+python herramientas/pruebas_subir.py     # 57 pruebas
+```
+
+Sin credenciales de ningún tipo, con un archivo de video cualquiera:
+
+```bash
+python herramientas/subir.py "algo.mkv" --solo-preparar
+```
+
+Deja `hls-<id>/` con la maestra, `720p/`, `1080p/` y `subtitulos/`. Se puede
+mirar con VLC abriendo `maestra.m3u8`.
+
+Lo que se probó de la subida en sí (`pruebas_subir.py`, clase
+`PruebaContraDobleS3`): un cliente **boto3 de verdad** contra un doble local
+del API S3 levantado con `http.server`, que habla PUT, GET, `list-type=2` y
+`DeleteObjects`. Eso ejercita la firma SigV4 y los encabezados que salen por
+el cable. Además se corrió el circuito entero —video real, ffmpeg, subida,
+`POST /api/videos`, `--listar`, `--borrar`— contra ese doble más un servidor
+HTTP de mentira, y salió bien de punta a punta.
+
+### Qué queda sin verificar
+
+- **Nada se probó contra R2 de verdad.** No existe el bucket. Lo que puede
+  fallar y el doble local no ve: que R2 acepte exactamente estos encabezados,
+  el CORS del bucket (tarea 9; sin él hls.js no carga nada), y que la URL
+  `r2.dev` sirva los `.ts` con el `Content-Type` que guardamos.
+- **Subidas multiparte.** `upload_file` parte solo los archivos de más de
+  8 MB. Los segmentos de 6 s pesan bastante menos, así que en la práctica no
+  se usa, pero tampoco está probado: los archivos del doble local son chicos.
+- **Un archivo de 2 GB de verdad.** El tiempo de ffmpeg, la memoria y el
+  comportamiento de la barra con miles de archivos están probados con clips
+  de 14 segundos.
+- **Que ffmpeg encuentre los subtítulos en un .mkv real de una serie.** Se
+  probó con un mkv armado a mano con una pista SRT.
+
+### Lo que necesita el agente que cierre la Fase 2
+
+El script ya llama a estas dos rutas; hay que escribirlas en `servidor/`. No
+las escribí yo para no pisar el trabajo de la Fase 1.
+
+1. **`POST /api/videos`**, autenticada con la cabecera **`X-Clave-Subida`**
+   (no cookie: el script corre en una terminal). Cuerpo JSON:
+
+   ```json
+   {
+     "id": "s01e03",
+     "slug": "istincho",
+     "titulo": "S01E03",
+     "duracion": 2712.048,
+     "url": "https://pub-….r2.dev/istincho/s01e03/maestra.m3u8",
+     "calidades": [720, 1080],
+     "subtitulos": [{"idioma": "spa", "nombre": "Espanol"}],
+     "bytes": 1633665787
+   }
+   ```
+
+   Guarda en la colección `videos`. Repetir el mismo `id` tiene que pisar la
+   entrada, no duplicarla: el script se puede correr dos veces. Cualquier
+   respuesta >= 400 hace que el script diga cómo reintentar con `--avisar`.
+
+2. **`DELETE /api/videos/:id`**, misma cabecera. Un **404** no es error para
+   el script: significa "el servidor no lo tenía" y sigue.
+
+3. **La clave de subida se genera y se revoca en `/panel`** (entregable 4 de
+   la Fase 2). Guardarla **hasheada**, como las sesiones. El dueño la copia
+   una vez a `herramientas/.env` como `CLAVE_SUBIDA`.
+
+4. Si el reloj de sala está reproduciendo un video y llega el `DELETE` de ese
+   mismo id, hay que detener el reloj: si no, la sala queda pidiendo segmentos
+   que ya no existen.
+
+### Archivos tocados
+
+Nuevos: `herramientas/{subir.py,pruebas_subir.py,requirements.txt,LEEME.md}`.
+Editados: `herramientas/.env.ejemplo` (reescrito con los nombres definitivos),
+`BITACORA.md`. Nada de `servidor/`, `paginas/` ni `pruebas/`.
+
+---
+
 ## 2026-09-06 — Verificación de la Fase 1: NO PASA
 
 Escrito por el director, no por un agente de fase. La Fase 1 está construida y

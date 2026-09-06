@@ -1,0 +1,13 @@
+# Dependencias de Python de herramientas/. Sólo las usa la PC del dueño:
+# el servidor de Railway no ve esta carpeta (.railwayignore la excluye) y el
+# repo de Node sigue con `mongodb` como única dependencia.
+#
+#   python -m pip install -r herramientas/requirements.txt
+#
+# Las pruebas (herramientas/pruebas_subir.py) corren con unittest de la
+# biblioteca estándar: no hace falta pytest.
+#
+# boto3 1.36 fue el que empezó a mandar checksums CRC32 en cada PutObject, que
+# R2 no implementa; subir.py los apaga con request_checksum_calculation, y esa
+# opción no existe antes de 1.36. Por eso el piso.
+boto3>=1.36,<2

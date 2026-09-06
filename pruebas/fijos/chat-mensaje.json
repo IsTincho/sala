@@ -1,5 +1,5 @@
 {
-  "_comentario": "Payload real de chat.message.sent version 1 de Kick, con los nombres de campo tal cual los documenta https://docs.kick.com/events/event-types. Los ids y nombres son inventados; la FORMA no. Lo que mas se olvida y por eso esta aca: los badges y el color cuelgan de sender.identity (no hay array de badges arriba de todo), identity puede venir null, el color se llama username_color, y los emotes aparecen dos veces: incrustados en content como [emote:id:nombre] y aparte en el array emotes con posiciones s/e.",
+  "_comentario": "Payload real de chat.message.sent version 1 de Kick, con los nombres de campo tal cual los documenta https://docs.kick.com/events/event-types. Los ids y nombres son inventados; la FORMA no. Lo que mas se olvida y por eso esta aca: los badges y el color cuelgan de sender.identity (no hay array de badges arriba de todo), identity puede venir null, el color se llama username_color, y los emotes aparecen dos veces: incrustados en content como [emote:id:nombre] y aparte en el array emotes con posiciones s/e. Las posiciones s/e son indices sobre content (el texto CON el markup adentro), base 0 e inclusivos, y cubren el markup entero: aca [emote:4148074:HYPERCLAP] arranca en 19 y termina en 43, o sea 25 caracteres. Sala no las usa: parsea el markup, que es la fuente de verdad de donde esta cada emote en el texto que se ve.",
   "message_id": "01JGXYZ4K8QW3RSTVN6MPB7CDE",
   "replies_to": null,
   "broadcaster": {
@@ -28,7 +28,7 @@
   },
   "content": "que peli mas larga [emote:4148074:HYPERCLAP]",
   "emotes": [
-    { "emote_id": "4148074", "positions": [{ "s": 20, "e": 44 }] }
+    { "emote_id": "4148074", "positions": [{ "s": 19, "e": 43 }] }
   ],
   "created_at": "2026-01-14T16:08:06Z"
 }

@@ -1,0 +1,15 @@
+node_modules/
+*.log
+
+# secretos: cualquier .env, se llame como se llame
+*.env
+!*.env.ejemplo
+
+# datos de runtime del servidor en local, no codigo
+servidor/datos/
+
+# config local de herramientas
+.claude/settings.local.json
+
+# bytecode de python
+__pycache__/

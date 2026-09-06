@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./servidor/.env)",
+      "Read(./herramientas/.env)",
+      "Read(./.env)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Bash(printenv *)",
+      "Bash(env *)",
+      "Bash(set *)",
+      "Bash(railway variables *)",
+      "Bash(railway run *)",
+      "Bash(gh auth token *)"
+    ],
+    "allow": [
+      "WebSearch",
+      "WebFetch"
+    ]
+  }
+}

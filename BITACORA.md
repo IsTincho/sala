@@ -4,6 +4,109 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Verificación de la Fase 1: NO PASA
+
+Escrito por el director, no por un agente de fase. La Fase 1 está construida y
+commiteada, pero **no cerrada**: un verificador adversarial la revisó con
+mutación sobre HEAD (18 mutaciones) y encontró un bug real y cinco agujeros de
+cobertura. No se pushea nada de la Fase 1 hasta arreglar esto.
+
+Los 175 tests están en verde y no son flakey (5 corridas). El problema no es lo
+que prueban, es lo que no.
+
+### Falla real (un bug, no una omisión)
+
+**F1. Carrera en `prenderPlanB` (`servidor/chat.js:298-315`): quedan dos
+conexiones IRC vivas y una es imposible de cerrar.** Es un check-then-act
+partido por un `await`: se chequea `if (conexionIrc) return` en la línea 299 y
+recién se reserva el lugar en la 310, con un `await vinculos.leer('twitch')` en
+el medio. `revisarPlanB()` se llama desde cada `alEstado`, así que dos cambios
+de estado seguidos mientras el `findOne` está en vuelo pasan los dos la guarda.
+`conexionIrc` apunta a la segunda y la primera queda conectada a
+`irc.chat.twitch.tv:6697` para siempre: ni `apagarPlanB()` ni `parar()` la
+alcanzan, y reconecta sola con su propio backoff. Reproducido con dobles de
+`irc.js`, `twitch.js` y `vinculos.js`.
+
+### Agujeros de cobertura (mutaciones que ningún test caza)
+
+- **F2. El plan B no tiene ni un test de orquestación.** `irc.test.js` prueba la
+  clase sola; el entregable 6 es la orquestación en `chat.js`, y ahí no hay
+  nada. Sobreviven tres mutaciones: prender el plan B sin umbral, no apagarlo
+  nunca cuando EventSub vuelve, y que `parar()` no cierre el IRC. Además
+  `chat.js` no tiene costura para testearlo: construye `ConexionIrc` y
+  `ConexionEventSub` sin pasarles `abrirSocket` / `url`, que es justo lo que los
+  tests de esos módulos usan para no salir a internet.
+- **F3. El entregable 2 (suscripciones y verificación cada 5 min) no tiene
+  ningún test.** Cero apariciones de `verificarKick`, `conectarTwitch`,
+  `chat.arrancar`, `suscribirEventos` en `pruebas/`. Sobreviven: que
+  `verificarKick` nunca resuscriba y diga siempre "activa", y que
+  `suscribirEventos` no cree ninguna suscripción.
+- **F4. El camino 429 no tiene test**, y el prompt lo pide en letra.
+- **F5. La página entera (691 renglones) tiene cobertura cero.** Ningún archivo
+  de `pruebas/` menciona `paginas/chat/chat.js` ni `demo.js`. El bug de la lista
+  vacía al cambiar de vista —que el agente encontró mirando la pantalla, no con
+  los tests— está arreglado, pero sin red que lo sostenga.
+- **F6. `chat.kickSospechoso()` es código muerto y contradice a la página.**
+  Está exportado y probado, pero ninguna ruta lo llama y `salud()` no lo
+  incluye. La regla real vive en `paginas/chat/chat.js:427` y **no coincide**:
+  el servidor considera sospechoso "en vivo y nunca llegó un mensaje", la página
+  exige que haya llegado al menos uno. Los tests afirman un comportamiento que
+  en pantalla no existe.
+- **F7. La decisión de sacar la salud del bus SSE no tiene test que la
+  proteja.** Volver a difundirla por el bus público no rompe nada.
+
+### Dos problemas de diseño del aviso de los 5 minutos
+
+**D1. Falso positivo de madrugada.** Canal en vivo y nadie hablando: a los 5
+minutos aparece la banda roja de "resuscribir" y se queda toda la noche. No
+tiene botón de cerrar, a diferencia del aviso de envío.
+
+**D2. Falso negativo total, que es peor.** `estado.kick.vivo` sale sólo del
+webhook `livestream.status.updated`, que Kick emite **en las transiciones**. Dos
+consecuencias: un redeploy en medio del stream (o sea, la forma normal de
+trabajar acá: push a main = deploy) deja `vivo` en `false` el resto de la noche;
+y en el caso que motiva el aviso —la URL del webhook sin cargar a mano, tarea
+4 bis— no llega ningún webhook, así que `vivo` nunca es `true` y **el aviso no
+puede aparecer nunca**. El dato existe y ya está a mano: `GET /public/v1/channels`
+devuelve `stream.is_live` y `servidor/kick.js:277` lo lee en `canalPorSlug()`,
+pero nadie llama a esa función. El chequeo debería cruzarse con la API, no con
+el webhook.
+
+### Lo que el verificador sí confirmó
+
+- El **formato único** es idéntico en los tres traductores, mismas claves y
+  mismo orden, y los índices de emote son puntos de código con fin exclusivo
+  (probado con acentos y con un emoji fuera del plano básico).
+- **No se reintrodujo `event: <tipo>`** en el cable SSE.
+- `/eventos/:slug` **valida el slug** (era una nota pendiente de la Fase 0).
+- `/chat?demo=1` se ve completa de verdad, con el XSS quedando como texto
+  literal.
+- La decisión de **sacar la salud del bus** se sostiene: `/api/chat/salud` da
+  401 sin cookie, con cookie de espectador y con firma adulterada, y la misma
+  información no se filtra por otro lado.
+- Que **la API de Kick no expone el estado de una suscripción** es cierto: la
+  respuesta de `GET /public/v1/events/subscriptions` no tiene ningún campo de
+  estado. La premisa del agente era correcta; lo que falla es el cruce (D1, D2).
+- El plan B, salvo la carrera: umbral correcto (con 3 no prende, con 4 sí),
+  EventSub sigue reintentando por debajo, sólo lectura confirmado (no hay un
+  solo `PRIVMSG` de salida), puerto y TLS correctos.
+- Sin dependencias nuevas (`git diff` de `package.json` vacío), sin secretos en
+  el árbol, cookies correctas, tokens cifrados, el servidor no sirve video.
+- **La preocupación de la bitácora sobre el scope de Twitch es infundada:** la
+  documentación de *Send Chat Message* pide `user:write:chat`, que ya está en
+  `SCOPES_DEFECTO`. No hace falta `chat:edit`.
+
+### Para la próxima sesión
+
+Arreglar F1 y cubrir F2 a F7, decidir D1 y D2, y recién ahí cerrar la fase y
+pushear. Quedan además anotadas para más adelante: el bus público lleva el chat
+de Twitch del dueño (a revisar en la Fase 2, cuando la audiencia de la peli lo
+escuche), `/api/estado` sigue público, el tope de Twitch no se aplica cuando el
+destino es "ambos", y el ejemplo de SSE del README quedó viejo (menciona un tipo
+`kick` que ya no emite nadie).
+
+---
+
 ## 2026-09-06 — Fase 1: Chat Global
 
 La página `/chat` muestra el chat de Kick y el de Twitch juntos, en vivo, y permite escribir a los dos con la cuenta del dueño. Se instala como app. `/panel` sirve para entrar con Kick y vincular Twitch. 175 tests en verde (eran 103).

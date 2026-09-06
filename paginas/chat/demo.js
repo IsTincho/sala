@@ -161,6 +161,10 @@
         ultima: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
         suscripcion: 'activa',
         vivo: true,
+        // el veredicto lo da el servidor y la pagina lo muestra tal
+        // cual, asi que la demo tiene que traerlo o la banda de aviso
+        // no se puede ver nunca en ?demo=1.
+        sospechoso: true,
       },
       twitch: {
         vinculado: true,

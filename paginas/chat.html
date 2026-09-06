@@ -13,11 +13,15 @@
 <body>
 <div class="chat-app">
 
-  <!-- banda de aviso especial: kick vivo pero sin mensajes hace rato -->
+  <!-- banda de aviso especial: kick vivo pero sin mensajes hace rato.
+       El veredicto lo da el servidor (salud.kick.sospechoso), la página
+       no lo recalcula. Se puede cerrar: un canal en vivo de madrugada
+       sin nadie hablando cumple la condición toda la noche. -->
   <div id="banda-resuscribir" class="banda-aviso banda-aviso-mal" hidden>
     <span>hace más de 5 minutos que no llega nada de Kick y el canal está en vivo</span>
     <button type="button" id="boton-resuscribir">Resuscribir</button>
     <span id="texto-resuscribir" class="texto-tenue"></span>
+    <button type="button" id="boton-cerrar-resuscribir" aria-label="Cerrar aviso">×</button>
   </div>
 
   <!-- aviso de sesion (401 en /api/chat/salud) -->

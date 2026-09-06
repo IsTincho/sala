@@ -43,7 +43,7 @@ import { ConexionIrc } from './irc.js';
    Cinco minutos es lo que pide el plan: seguido como para que un
    corte no se coma media transmision, espaciado como para no gastar
    la cuota de la API en algo que casi nunca cambia. */
-const CADA_VERIFICACION = 5 * 60 * 1000;
+export const CADA_VERIFICACION = 5 * 60 * 1000;
 
 /* Cuanto silencio de una red se considera sospechoso. Solo se avisa
    fuerte si ADEMAS el canal esta en vivo: con el canal apagado, cero
@@ -71,9 +71,38 @@ const vistosTwitch = new Set();
 
 let timerVerificacion = null;
 
+/* ------------------------------------------------------- costuras
+
+   Las dos conexiones de Twitch se crean a traves de estas fabricas y
+   no con un `new` suelto.
+
+   No es ceremonia: CUANDO se prende el plan B, cuando se apaga y que
+   pasa si el estado cambia dos veces seguidas es logica de este
+   modulo, no de las clases, y sin costura la unica forma de probarla
+   seria abrir un socket contra irc.chat.twitch.tv y esperar los
+   backoff de verdad (mas de quince segundos para llegar al cuarto
+   fallo). `ConexionEventSub` acepta `url` y `ConexionIrc` acepta
+   `abrirSocket` justamente para no salir a internet; la fabrica es lo
+   que deja que un test se los pase sin que chat.js sepa que existe un
+   test. */
+const CONEXIONES_REALES = {
+  eventSub: opciones => new twitch.ConexionEventSub(opciones),
+  irc: opciones => new ConexionIrc(opciones),
+};
+let crearConexion = { ...CONEXIONES_REALES };
+
+/** Solo para los tests: con que se abren las conexiones de Twitch. */
+export function fijarConexiones({ eventSub, irc } = {}) {
+  crearConexion = {
+    eventSub: eventSub ?? CONEXIONES_REALES.eventSub,
+    irc: irc ?? CONEXIONES_REALES.irc,
+  };
+}
+
 /** Solo para los tests: deja el modulo como recien cargado. */
 export function reiniciar() {
   parar();
+  fijarConexiones();
   slugDueno = '';
   urlBase = '';
   estado.kick = { ultima: null, suscripcion: 'desconocida', vivo: false, broadcasterId: '', vinculado: false };
@@ -98,6 +127,13 @@ export async function arrancar({ slug, base } = {}) {
     return;
   }
 
+  /* Idempotente a proposito. Hoy lo llama solo index.arrancar(), pero
+     un segundo llamado pisaba `timerVerificacion` y dejaba el
+     setInterval viejo corriendo: dos verificaciones cada cinco
+     minutos, para siempre, sin forma de apagar la primera. */
+  clearInterval(timerVerificacion);
+  timerVerificacion = null;
+
   try { await verificarKick(); }
   catch (e) { console.warn('[chat] no se pudo verificar la suscripcion de Kick:', e.message); }
 
@@ -114,6 +150,10 @@ export async function arrancar({ slug, base } = {}) {
 export function parar() {
   clearInterval(timerVerificacion);
   timerVerificacion = null;
+  /* Antes de cerrar: si hay un prendido de plan B a medio camino,
+     esto es lo que evita que termine abriendo un IRC despues de que
+     todo se apago. */
+  planBPedido = false;
   if (conexionTwitch) { conexionTwitch.cerrar(); conexionTwitch = null; }
   if (conexionIrc) { conexionIrc.cerrar(); conexionIrc = null; }
   estado.twitch.modo = 'ninguno';
@@ -129,8 +169,10 @@ export function parar() {
  * OJO: la API de Kick NO devuelve un estado por suscripcion. Lo unico
  * que se puede comprobar es que la suscripcion EXISTA; que Kick le
  * este entregando algo a nuestro webhook no se puede saber por aca.
- * Por eso esta verificacion es la mitad de la historia y la otra
- * mitad es `ultima` (cuando llego el ultimo mensaje de verdad).
+ * Por eso esta verificacion es la mitad de la historia, y la otra
+ * mitad son los dos datos que si sirven, que se juntan en el mismo
+ * ciclo: cuando llego el ultimo mensaje de verdad (`ultima`) y si el
+ * canal esta transmitiendo segun la API (`vivo`).
  */
 export async function verificarKick() {
   const v = await vinculos.acceso('kick').catch(e => {
@@ -148,6 +190,8 @@ export async function verificarKick() {
      dueño: el mismo numero que devuelve /users para el token. */
   estado.kick.broadcasterId = v.usuarioId;
 
+  await revisarSiEstaEnVivo(v.accessToken);
+
   const actuales = await kick.listarSuscripciones(v.accessToken, v.usuarioId);
   const falta = kick.EVENTOS.filter(
     e => !actuales.some(s => s.event === e.name && Number(s.version) === e.version),
@@ -162,6 +206,37 @@ export async function verificarKick() {
   await kick.suscribirEventos(v.accessToken, v.usuarioId, urlBase ? `${urlBase}/kick/webhook` : '');
   estado.kick.suscripcion = 'activa';
   return { vinculado: true, resuscrito: true };
+}
+
+/**
+ * Cruza el "esta en vivo" con la API de Kick, que es la que manda.
+ *
+ * El webhook `livestream.status.updated` avisa en las TRANSICIONES.
+ * Sirve como via rapida y no sirve como fuente, por dos motivos que
+ * pasan los dos:
+ *
+ *   - Un deploy en medio del stream deja `vivo` en false el resto de
+ *     la noche. Y aca deployar en medio del stream es la forma normal
+ *     de trabajar: push a main es deploy.
+ *   - En el caso que MOTIVA todo este aviso —la URL del webhook sin
+ *     cargar a mano en el portal de Kick— no llega ningun webhook,
+ *     asi que `vivo` nunca seria true y el aviso que existe para
+ *     detectar "no llegan webhooks" no podria aparecer nunca.
+ *
+ * Se consulta en el ciclo de los cinco minutos, no en cada request:
+ * es un dato que cambia dos veces por noche. Lo que queda guardado en
+ * `estado.kick.vivo` es la cache hasta la vuelta siguiente.
+ */
+async function revisarSiEstaEnVivo(accessToken) {
+  if (!slugDueno) return;
+  try {
+    const c = await kick.canalPorSlug(slugDueno, accessToken);
+    estado.kick.vivo = c.vivo;
+  } catch (e) {
+    /* No se pisa lo que dijo el webhook: que la API no conteste no es
+       "se apago el stream". */
+    console.warn('[chat] no se pudo consultar si el canal esta en vivo:', e.message);
+  }
 }
 
 /** Fuerza la resuscripcion, aunque parezca que esta todo bien. */
@@ -222,7 +297,7 @@ export async function conectarTwitch() {
 
   if (conexionTwitch) conexionTwitch.cerrar();
 
-  conexionTwitch = new twitch.ConexionEventSub({
+  conexionTwitch = crearConexion.eventSub({
     /* El token se pide DE NUEVO en cada suscripcion, no se captura el
        de ahora: entre una reconexion y la siguiente pueden pasar
        horas y el access token dura una. */
@@ -290,14 +365,50 @@ export function recibirDeTwitch(mensaje) {
    dos conexiones abiertas todo el tiempo. */
 export const FALLOS_PARA_PLAN_B = 3;
 
+/* Prender el plan B tiene que pedir el vinculo, o sea que CEDE EL
+   CONTROL en medio de la operacion. Estas dos variables son la
+   reserva del lugar: sin ellas, entre el `if (conexionIrc)` y la
+   asignacion entraba otra llamada y se abrian dos conexiones IRC.
+
+   No era un caso raro: `revisarPlanB` sale de cada cambio de estado
+   de EventSub, y los estados vienen de a pares sin ceder el control
+   (un `cortado` y el `conectando` del reintento). La segunda ganaba
+   la variable y la primera quedaba conectada a irc.chat.twitch.tv
+   para siempre, con su propio backoff: ni apagarPlanB ni parar
+   llegaban a ella, porque las dos cierran `conexionIrc` y esa ya era
+   la otra. */
+let prendiendoPlanB = null;   // promesa del prendido en curso, o null
+let planBPedido = false;      // se pidio y todavia no se apago
+
 function revisarPlanB() {
   if (!conexionTwitch) return;
+  /* Con EventSub conectado no hay nada que suplir, por mas fallos que
+     haya acumulado antes. La clase pone el contador en cero al recibir
+     el welcome, pero depender de eso significa que el dia que cambie,
+     el plan B se prende justo despues de apagarse. */
+  if (conexionTwitch.estado === 'conectado') return;
   if (conexionTwitch.intentosFallidosSeguidos > FALLOS_PARA_PLAN_B) prenderPlanB();
 }
 
-async function prenderPlanB() {
-  if (conexionIrc) return;
-  const v = await vinculos.leer('twitch');
+function prenderPlanB() {
+  if (conexionIrc) return Promise.resolve();
+  if (prendiendoPlanB) return prendiendoPlanB;      // ya hay uno en camino
+  planBPedido = true;
+  prendiendoPlanB = abrirPlanB().finally(() => { prendiendoPlanB = null; });
+  return prendiendoPlanB;
+}
+
+async function abrirPlanB() {
+  const v = await vinculos.leer('twitch').catch(e => {
+    console.warn('[chat] no se pudo leer el vinculo de Twitch para el plan B:', e.message);
+    return null;
+  });
+
+  /* Mientras se leia el vinculo, EventSub pudo volver (apagarPlanB) o
+     el modulo pudo pararse. Abrir ahora dejaria prendido un IRC que
+     ya nadie quiere y que nadie va a cerrar. */
+  if (!planBPedido || conexionIrc) return;
+
   const canalTwitch = v?.login ?? '';
   if (!canalTwitch) {
     console.warn('[chat] no se puede prender el plan B: no se sabe el canal de Twitch');
@@ -307,7 +418,7 @@ async function prenderPlanB() {
   console.warn(`[chat] EventSub fallo ${FALLOS_PARA_PLAN_B}+ veces seguidas: ` +
                `se prende el IRC anonimo mientras se sigue reintentando`);
   estado.twitch.modo = 'irc';
-  conexionIrc = new ConexionIrc({
+  conexionIrc = crearConexion.irc({
     canal: canalTwitch,
     alMensaje: mensaje => recibirDeTwitch(mensaje),
   });
@@ -315,6 +426,9 @@ async function prenderPlanB() {
 }
 
 function apagarPlanB() {
+  /* Primero se cancela el pedido, aunque todavia no haya conexion:
+     puede haber un prendido en vuelo esperando el vinculo. */
+  planBPedido = false;
   if (!conexionIrc) return;
   console.log('[chat] EventSub volvio: se apaga el IRC anonimo');
   conexionIrc.cerrar();
@@ -336,13 +450,26 @@ export async function enviar({ texto, destino = 'kick', respondeA } = {}) {
   const cuerpo = String(texto ?? '').trim();
   if (!cuerpo) return { error: 'el mensaje esta vacio' };
 
-  const problema = kick.porQueNoSePuedeMandar(cuerpo);
-  /* El tope de Kick (500 caracteres y 2048 bytes) es mas estricto que
-     el de Twitch (500 caracteres), asi que se valida con el de Kick
-     cuando el mensaje va a Kick. */
-  if (problema && destino !== 'twitch') return { error: problema };
-  if (destino === 'twitch' && [...cuerpo].length > 500) {
-    return { error: `el mensaje tiene ${[...cuerpo].length} caracteres y el tope de Twitch es 500` };
+  /* Se valida el tope de CADA red a la que va el mensaje, antes de
+     mandarle nada a ninguna.
+
+     Los dos topes dicen "500" y no son el mismo numero: Kick cuenta
+     grapheme clusters (una familia de emojis es un caracter) y Twitch
+     cuenta puntos de codigo (esa misma familia son cinco). O sea que
+     hay mensajes que Kick acepta y Twitch rechaza.
+
+     Antes el tope de Twitch se miraba solo con destino "twitch", asi
+     que con "ambos" el mensaje salia en Kick y Twitch lo rechazaba
+     con un 400: el error llegaba tarde y ya no se podia deshacer. */
+  if (destino === 'kick' || destino === 'ambos') {
+    const problema = kick.porQueNoSePuedeMandar(cuerpo);
+    if (problema) return { error: problema };
+  }
+  if (destino === 'twitch' || destino === 'ambos') {
+    const puntos = [...cuerpo].length;
+    if (puntos > 500) {
+      return { error: `el mensaje tiene ${puntos} caracteres y el tope de Twitch es 500` };
+    }
   }
 
   const salida = {};
@@ -424,6 +551,14 @@ export function salud() {
       ultima: estado.kick.ultima ? estado.kick.ultima.toISOString() : null,
       suscripcion: estado.kick.suscripcion,
       vivo: estado.kick.vivo,
+      /* El veredicto viaja hecho, no los ingredientes. La pagina lo
+         calculaba por su cuenta y con OTRA regla (pedia que hubiera
+         llegado al menos un mensaje), asi que el caso que motiva todo
+         el aviso —canal en vivo y ni un webhook en la vida— no
+         prendia la banda en pantalla aunque el servidor lo
+         considerara sospechoso. Una sola fuente de verdad, y es
+         esta. */
+      sospechoso: kickSospechoso(),
     },
     twitch: {
       vinculado: estado.twitch.vinculado,
@@ -441,7 +576,16 @@ const ultimaDe = (a, b) => {
   return a > b ? a : b;
 };
 
-/** Si hace demasiado que Kick no dice nada con el canal en vivo. */
+/**
+ * Si hace demasiado que Kick no dice nada con el canal en vivo.
+ *
+ * Es la regla del aviso grande de /chat, y vive aca y en ningun otro
+ * lado: sale por `salud()` y la pagina la muestra, no la recalcula.
+ *
+ * "Nunca llego un mensaje" cuenta como silencio, no como excusa: el
+ * caso tipico de esto es la URL del webhook sin cargar en el portal
+ * de Kick, donde no llega ni el primero.
+ */
 export function kickSospechoso(ahora = Date.now()) {
   if (!estado.kick.vivo) return false;
   const t = estado.kick.ultima?.getTime() ?? 0;

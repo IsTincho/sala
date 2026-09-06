@@ -134,7 +134,8 @@ html, body{
   padding: 0.2rem 0.6rem;
 }
 
-#boton-cerrar-aviso{
+#boton-cerrar-aviso,
+#boton-cerrar-resuscribir{
   margin-left: auto;
   background: transparent;
   border: none;

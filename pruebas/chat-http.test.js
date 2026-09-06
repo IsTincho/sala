@@ -36,6 +36,7 @@ const { crearServidor } = await import('../servidor/index.js');
 const almacen = await import('../servidor/almacen.js');
 const canales = await import('../servidor/canales.js');
 const sesion = await import('../servidor/sesion.js');
+const vinculos = await import('../servidor/vinculos.js');
 const webhook = await import('../servidor/webhook.js');
 
 /* Par RSA propio para firmar el fixture, igual que en webhook.test.js:
@@ -85,13 +86,29 @@ test.after(async () => {
   await fsp.rm(DATOS, { recursive: true, force: true });
 });
 
+/* Tope de tiempo para cualquier pedido de este archivo.
+
+   Sin esto, un test que falla contra una ruta SSE no falla: se cuelga.
+   El cuerpo de un `text/event-stream` no termina nunca, asi que
+   `await r.text()` de una respuesta que deberia haber sido 404 y
+   resulto 200 espera hasta que Node se aburra (cinco minutos largos).
+   Un test que tarda cinco minutos en decir que algo se rompio es un
+   test que nadie corre. Misma fragilidad que marco la Fase 0 con el
+   HEAD /eventos/:slug. */
+const TOPE_PEDIDO = 5000;
+const pedir = (ruta, opciones = {}) =>
+  fetch(`${raiz}${ruta}`, { signal: AbortSignal.timeout(TOPE_PEDIDO), ...opciones });
+
 /** Abre un SSE, lee el primer bloque y corta. Devuelve status y cuerpo. */
 async function abrirSse(ruta) {
   const corte = new AbortController();
+  const tope = setTimeout(() => corte.abort(), TOPE_PEDIDO);
+  tope.unref?.();
   const r = await fetch(`${raiz}${ruta}`, { signal: corte.signal });
-  if (!r.ok) { await r.text(); return { status: r.status, primero: '' }; }
+  if (!r.ok) { await r.text(); clearTimeout(tope); return { status: r.status, primero: '' }; }
   const lector = r.body.getReader();
   const { value } = await lector.read();
+  clearTimeout(tope);
   corte.abort();
   await lector.cancel().catch(() => {});
   return { status: r.status, primero: new TextDecoder().decode(value) };
@@ -104,9 +121,12 @@ test('un slug inventado ya no abre un canal', async () => {
      200 y creaba el canal en memoria. Miles de pedidos con slugs al
      azar hacian crecer el Map sin techo, y /api/estado devolvia esa
      lista de basura a cualquiera. */
-  const r = await fetch(`${raiz}/eventos/canal-que-nadie-dio-de-alta`);
-  await r.text();
+  const r = await pedir('/eventos/canal-que-nadie-dio-de-alta');
+  /* El status se mira ANTES de leer el cuerpo: si esta regla se rompe,
+     la respuesta es un SSE que no termina nunca y leerlo colgaria el
+     test en vez de hacerlo fallar. */
   assert.equal(r.status, 404);
+  await r.text().catch(() => {});
   assert.equal(canales.hayCanal('canal-que-nadie-dio-de-alta'), false,
     'y sobre todo: no quedo ningun canal creado');
 });
@@ -251,6 +271,81 @@ test('sin vinculos, mandar da 502 y dice por que, red por red', async () => {
   assert.equal(cuerpo.kick.ok, false);
   assert.equal(cuerpo.twitch.ok, false);
   assert.match(cuerpo.error, /vinculo/);
+});
+
+test('cuando la plataforma frena, la respuesta es 429 con Retry-After y no un 502', async () => {
+  /* El unico caso en el que la pagina NO tiene que reintentar sola: si
+     Kick esta frenando los envios, un 502 la haria mandar de nuevo en
+     el acto y empeorar el rate limit. El 429 con `esperar` es lo que
+     arranca la cuenta regresiva y deshabilita el boton.
+
+     El vinculo se guarda de verdad y lo que se falsea es la API de
+     Kick, no chat.js: asi el camino que se prueba es el mismo que
+     corre en produccion (vinculo -> token -> POST /chat -> error con
+     status). Los pedidos que no van a Kick pasan derecho, porque el
+     cliente de este test tambien usa fetch. */
+  const fetchDeVerdad = globalThis.fetch;
+  await vinculos.guardar('kick', {
+    usuarioId: '4242',
+    nombre: 'IsTincho',
+    slug: 'istincho',
+    accessToken: 'token-de-prueba',
+    refreshToken: 'refresco-de-prueba',
+    venceEn: Date.now() + 3600_000,
+    scopes: 'user:read chat:write',
+  });
+  globalThis.fetch = async (recurso, opciones) => {
+    if (!String(recurso).includes('api.kick.com')) return fetchDeVerdad(recurso, opciones);
+    return new Response(JSON.stringify({ message: 'Too Many Requests' }), { status: 429 });
+  };
+
+  try {
+    const r = await comoDueno('/api/chat/enviar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto: 'hola', destino: 'kick' }),
+    });
+    const cuerpo = await r.json();
+
+    assert.equal(r.status, 429);
+    assert.equal(r.headers.get('retry-after'), '5', 'el cliente HTTP tiene que poder esperar sin leer el cuerpo');
+    assert.equal(cuerpo.esperar, 5, 'y la pagina tambien, para su cuenta regresiva');
+    assert.equal(cuerpo.kick.ok, false);
+    assert.equal(cuerpo.kick.estado, 429, 'el status de la plataforma llega hasta arriba');
+  } finally {
+    globalThis.fetch = fetchDeVerdad;
+    await vinculos.olvidar('kick');
+  }
+});
+
+test('un error que no es 429 sigue siendo 502', async () => {
+  /* La otra mitad: si todo error de envio contestara 429, la pagina
+     se pondria a esperar cinco segundos por cosas que no se arreglan
+     esperando. */
+  const fetchDeVerdad = globalThis.fetch;
+  await vinculos.guardar('kick', {
+    usuarioId: '4242', nombre: 'IsTincho', slug: 'istincho',
+    accessToken: 'token-de-prueba', refreshToken: 'refresco-de-prueba',
+    venceEn: Date.now() + 3600_000, scopes: 'user:read chat:write',
+  });
+  globalThis.fetch = async (recurso, opciones) => {
+    if (!String(recurso).includes('api.kick.com')) return fetchDeVerdad(recurso, opciones);
+    return new Response(JSON.stringify({ message: 'nope' }), { status: 403 });
+  };
+
+  try {
+    const r = await comoDueno('/api/chat/enviar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ texto: 'hola', destino: 'kick' }),
+    });
+    await r.text();
+    assert.equal(r.status, 502);
+    assert.equal(r.headers.get('retry-after'), null);
+  } finally {
+    globalThis.fetch = fetchDeVerdad;
+    await vinculos.olvidar('kick');
+  }
 });
 
 test('resuscribir sin vinculo con Kick contesta 502 y no rompe', async () => {

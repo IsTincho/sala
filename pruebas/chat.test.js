@@ -22,6 +22,7 @@ process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 
 const chat = await import('../servidor/chat.js');
 const canales = await import('../servidor/canales.js');
+const kick = await import('../servidor/kick.js');
 const mensajes = await import('../servidor/mensajes.js');
 
 const FIXTURE = JSON.parse(
@@ -90,6 +91,23 @@ test('el aviso de silencio solo se prende si el canal esta en vivo', () => {
   assert.equal(chat.kickSospechoso(dentroDeUnRato), true, 'pero si pasan los 5 minutos, si');
 });
 
+test('el veredicto sale por la salud, que es lo unico que mira la pagina', () => {
+  /* La regla vive en el servidor y en ningun otro lado. Si `salud()`
+     no la lleva, la pagina no tiene con que prender la banda: no le
+     queda mas que recalcularla con una regla propia, que es
+     exactamente lo que hacia y lo que no coincidia. */
+  assert.equal(chat.salud().kick.sospechoso, false, 'canal apagado: nada que avisar');
+
+  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
+  assert.equal(chat.salud().kick.sospechoso, true,
+    'en vivo y sin un solo mensaje: eso es justo lo que hay que decir');
+  assert.equal(chat.salud().kick.sospechoso, chat.kickSospechoso(),
+    'la salud dice lo mismo que la regla, no una version parecida');
+
+  chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
+  assert.equal(chat.salud().kick.sospechoso, false, 'llego uno: se apaga');
+});
+
 test('un evento de Kick que no conocemos no rompe ni ensucia el bus', () => {
   const r = chat.recibirDeKick(eventoKick('channel.followed'), { broadcaster: { channel_slug: CANAL } });
   assert.equal(r.hecho, 'ignorado');
@@ -127,7 +145,7 @@ test('la ultima llegada de Twitch se anota', () => {
 test('la salud tiene la forma que espera la pagina', () => {
   const s = chat.salud();
   assert.deepEqual(Object.keys(s).sort(), ['ahora', 'kick', 'twitch']);
-  assert.deepEqual(Object.keys(s.kick).sort(), ['suscripcion', 'ultima', 'vinculado', 'vivo']);
+  assert.deepEqual(Object.keys(s.kick).sort(), ['sospechoso', 'suscripcion', 'ultima', 'vinculado', 'vivo']);
   assert.deepEqual(Object.keys(s.twitch).sort(), ['estado', 'modo', 'ultima', 'vinculado']);
   assert.equal(s.kick.suscripcion, 'desconocida');
   assert.equal(s.twitch.modo, 'ninguno');
@@ -142,6 +160,27 @@ test('no se manda un mensaje vacio ni uno que la plataforma va a rechazar', asyn
   const largo = 'a'.repeat(501);
   assert.match((await chat.enviar({ texto: largo, destino: 'kick' })).error, /500/);
   assert.match((await chat.enviar({ texto: largo, destino: 'twitch' })).error, /Twitch/);
+});
+
+test('con destino "ambos" el tope de Twitch se mira ANTES de mandar, no despues', async () => {
+  /* Los dos topes dicen 500 y no son el mismo numero: Kick cuenta
+     grapheme clusters y Twitch cuenta puntos de codigo. Una familia de
+     emojis es UN caracter para Kick y CINCO para Twitch.
+
+     113 familias entran comodas en Kick (113 caracteres y 2034 bytes,
+     abajo de sus dos topes) y son 565 puntos de codigo para Twitch,
+     que no entran. Con la validacion mirando el tope de Twitch solo
+     cuando el destino era "twitch", este mensaje salia en Kick y
+     recien ahi Twitch lo rechazaba con un 400: el error llegaba tarde
+     y en kick.com el mensaje ya estaba. */
+  const familia = '👨‍👩‍👦';
+  const texto = familia.repeat(113);
+  assert.equal([...texto].length, 565, 'para Twitch son 565 puntos de codigo');
+  assert.equal(kick.porQueNoSePuedeMandar(texto), '', 'para Kick el mensaje es perfectamente valido');
+
+  const r = await chat.enviar({ texto, destino: 'ambos' });
+  assert.match(r.error ?? '', /Twitch/, 'se rechaza entero antes de tocar ninguna API');
+  assert.equal(r.kick, undefined, 'y sobre todo: a Kick no se le mando nada');
 });
 
 test('sin vinculo, cada red dice que no pudo y no se pierde el resultado de la otra', async () => {

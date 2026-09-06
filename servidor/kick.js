@@ -264,9 +264,19 @@ export async function usuarioActual(token) {
   };
 }
 
-/** Datos publicos de un canal por slug. */
-export async function canalPorSlug(slug = SLUG) {
-  const d = await pedir(`/channels?slug=${encodeURIComponent(slug)}`);
+/**
+ * Datos publicos de un canal por slug.
+ *
+ * `token` es opcional: sin el se usa el token de app. Se lo pasa el
+ * chequeo de los cinco minutos, que ya tiene en la mano el del dueño
+ * y asi no depende de que esten cargadas las credenciales de app.
+ *
+ * De aca sale `vivo`, que es el unico dato confiable de si el canal
+ * esta transmitiendo: el webhook de estado solo avisa las
+ * transiciones y se pierde en cada deploy.
+ */
+export async function canalPorSlug(slug = SLUG, token) {
+  const d = await pedir(`/channels?slug=${encodeURIComponent(slug)}`, { token });
   const c = d?.data?.[0];
   if (!c) throw new Error(`canal no encontrado: ${slug}`);
   return {

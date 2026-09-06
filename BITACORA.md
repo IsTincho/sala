@@ -4,6 +4,223 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Fase 1: los arreglos de la verificación
+
+La carrera está arreglada, los seis agujeros de cobertura cerrados y las dos
+decisiones del aviso tomadas. **224 pruebas en verde** (eran 175), corridas
+cuatro veces. Y lo que importa más que el número: **21 mutaciones aplicadas a
+mano sobre una copia del árbol, 21 cazadas**. Un test que pasa contra el
+código roto no es una red de seguridad, así que cada arreglo se escribió con
+su mutación al lado.
+
+Trabajo hecho en paralelo con el script de subida (la entrada de abajo),
+tocando sólo `servidor/`, `paginas/` y `pruebas/`.
+
+### F1 — la carrera del plan B (el único bug de verdad)
+
+`prenderPlanB` era un check-then-act partido por un `await`: chequeaba
+`if (conexionIrc) return`, pedía el vínculo de Twitch, y recién después
+reservaba el lugar. `revisarPlanB()` sale de **cada** cambio de estado de
+EventSub, y los estados vienen de a pares sin ceder el control (el corte y el
+`conectando` del reintento): los dos pasaban la guarda, se creaban dos
+`ConexionIrc`, y la primera quedaba conectada a `irc.chat.twitch.tv:6697`
+**para siempre**, con su propio backoff. Ni `apagarPlanB()` ni `parar()` la
+alcanzaban: las dos cierran `conexionIrc`, que ya era la segunda.
+
+Ahora el lugar se reserva **antes** de ceder el control, con dos variables:
+`prendiendoPlanB` (la promesa del prendido en curso, para que el segundo
+llamado se cuelgue del primero en vez de arrancar otro) y `planBPedido` (para
+que un prendido a medio camino no abra nada si EventSub volvió mientras se
+leía el vínculo). `parar()` y `apagarPlanB()` bajan la bandera.
+
+De paso, `revisarPlanB` no prende el plan B si EventSub dice `conectado`. La
+clase pone el contador de fallos en cero al recibir el welcome, pero depender
+de eso significa que el día que cambie, el plan B se prende justo después de
+apagarse.
+
+### F2 — el plan B, orquestado (`pruebas/chat-planb.test.js`)
+
+`irc.test.js` probaba la clase; el entregable 6 es la decisión de `chat.js`, y
+eso no tenía nada. Ocho pruebas nuevas: el umbral (con 3 no prende, con 4 sí),
+el apagado cuando EventSub vuelve, que `parar()` cierre el IRC, que los
+mensajes del plan B entren por el mismo camino con el mismo dedupe, y las dos
+mitades de la carrera.
+
+**La costura que faltaba:** `chat.fijarConexiones({ eventSub, irc })` cambia
+con qué se abren las dos conexiones de Twitch. No es ceremonia: llegar al
+cuarto fallo de EventSub de verdad son más de quince segundos de backoff, y
+sin costura la única forma de probar el plan B sería abrir un socket contra
+Twitch. En los tests, EventSub va por un doble (hay que provocar estados con N
+fallos acumulados) y el **IRC va por la clase de verdad** con un `abrirSocket`
+de mentira, que es la costura que la clase ya tenía: así lo que se cuenta son
+conexiones reales abiertas y cerradas, no llamadas a un método de un doble.
+
+### F3 — suscripciones y verificación (`pruebas/chat-suscripciones.test.js`)
+
+Trece pruebas donde había cero. Se reemplaza `fetch` por un router chico que
+contesta como Kick y anota qué se le pidió. Cubre: que `suscribirEventos` cree
+sólo lo que falta, que `verificarKick` resuscriba cuando falta una y **no**
+mienta diciendo "activa" sin haber mirado, que al arrancar con token de Twitch
+guardado se reconecte solo, y que la verificación se repita cada cinco minutos
+(con timers de mentira, sin esperar).
+
+### F4 — el camino 429
+
+Dos pruebas HTTP nuevas con el vínculo guardado de verdad y la API de Kick
+falseada: un 429 de la plataforma sale como 429 con `Retry-After: 5` y
+`esperar: 5`, y un 403 sigue saliendo como 502. Del lado de la página, otra
+prueba comprueba que el 429 arranca la cuenta regresiva y que insistir mientras
+tanto no manda nada. Si la página reintentara sola, empeoraría el rate limit
+que la plataforma acaba de avisar.
+
+### F5 — la página, probada de verdad (`pruebas/pagina-chat.test.js`)
+
+691 renglones que deciden todo lo que se ve y no tenían un solo test: el bug de
+la lista que quedaba vacía al cambiar de vista lo encontró una persona mirando
+la pantalla. Veinticuatro pruebas nuevas sobre `pruebas/fijos/dom-falso.js`, un
+DOM chico con tres decisiones que son las que hacen que el test no mienta:
+
+1. **El árbol sale de `paginas/chat.html` de verdad**, parseado, no de una
+   maqueta escrita en el test. Si alguien saca un id, los tests se caen.
+2. **`innerHTML` no existe y tira.** El texto de un mensaje lo escribe gente
+   desconocida y la página lo pone con `textContent` a propósito; si alguien
+   vuelve a `innerHTML`, el test explota en vez de pasar. (Comprobado: esa
+   mutación tira nueve pruebas.)
+3. **Se corre el archivo real con `node:vm`**, y los scripts que la página
+   carga sola (`chat/demo.js` para `?demo=1`) se cargan de verdad.
+
+Cubre las tres listas, el filtro, la pausa del scroll con su contador, los
+emotes con un emoji adelante, la salud, la caja de envío, el 429 y `?demo=1`
+(que no toca la red: es para diseñar sin backend).
+
+### F6 — una sola fuente de verdad para el aviso
+
+`chat.kickSospechoso()` era código muerto: estaba probado y no lo llamaba
+nadie. Y la página tenía **otra regla** para lo mismo: el servidor considera
+sospechoso "en vivo y nunca llegó un mensaje", la página exigía que hubiera
+llegado al menos uno. O sea que en el único caso para el que el aviso existe
+—la URL del webhook sin cargar, donde no llega ni el primero— la banda no
+aparecía nunca.
+
+Ahora el veredicto viaja hecho: `salud().kick.sospechoso`. La página lo
+muestra y la regla duplicada se borró. Es un campo nuevo del contrato de
+`/api/chat/salud`, documentado en el README.
+
+### F7 — la salud no vuelve al bus
+
+Dos pruebas enganchan un cliente SSE de verdad al canal
+(`pruebas/fijos/bus-falso.js`) y recorren todo lo que cambia la salud —
+arranque, prendido y apagado del plan B, mensajes de las dos redes, el canal
+en vivo — para después mirar qué salió por el cable: sólo `estado` y `chat`.
+Reintroducir `canales.difundir(slug, {tipo:'salud'})` ahora rompe un test.
+
+### D2 — el "está en vivo" sale de la API, no del webhook
+
+Era lo más importante de la tanda y es un cambio de diseño, no un test.
+`livestream.status.updated` avisa en las **transiciones**: un deploy en medio
+del stream —o sea, la forma normal de trabajar acá: push a main es deploy—
+dejaba `vivo` en `false` el resto de la noche, y en el caso que motiva el aviso
+no llega ningún webhook, así que `vivo` nunca podía ser `true`. El aviso que
+existe para detectar "no llegan webhooks" dependía de que llegaran webhooks.
+
+Ahora el ciclo de cinco minutos consulta `GET /public/v1/channels` (que ya se
+leía en `canalPorSlug()`, pero no la llamaba nadie) y cachea el resultado. El
+webhook sigue siendo la vía rápida; la que manda es la API. Si la API no
+contesta no se pisa lo que se sabía: que Kick tenga un mal minuto no es "se
+apagó el stream". `canalPorSlug` ahora acepta un token opcional y el chequeo le
+pasa el del dueño, que ya tiene en la mano: así no depende de que estén
+cargadas las credenciales de app.
+
+### D1 — el aviso se puede cerrar
+
+Canal en vivo de madrugada y nadie hablando: la condición se cumple toda la
+noche y la banda roja no se podía sacar. Ahora tiene su `×`, como el aviso de
+envío. Cerrado se queda cerrado **mientras la condición siga igual**; si se
+resuelve y vuelve a aparecer, el aviso vuelve. Tocar "Resuscribir" también lo
+rearma. No se esconde para siempre: hay una prueba que lo exige.
+
+### Lo chico que entró de paso
+
+- **D7.** El tope de Twitch se validaba sólo con destino `twitch`. Los dos
+  topes dicen 500 y no son el mismo número: Kick cuenta grapheme clusters y
+  Twitch cuenta puntos de código, así que una familia de emojis es un carácter
+  para uno y cinco para el otro. Con destino "ambos" el mensaje salía en Kick y
+  Twitch lo rechazaba con un 400: el error llegaba tarde y en kick.com ya
+  estaba. Ahora se valida el tope de cada red **antes** de mandarle nada a
+  ninguna.
+- **D8.** `chat-http.test.js` tardaba **308 segundos** en fallar cuando fallaba:
+  `await r.text()` contra un SSE que no termina nunca. Ahora todos los pedidos
+  del archivo llevan tope de 5 s y el status se mira antes de leer el cuerpo.
+  Con la validación de slug rota, el test falla en 50 ms.
+- **D9.** El ejemplo de SSE del README mostraba un `{"tipo":"kick",…}` que ya
+  no emite nadie.
+- **D12.** `chat.arrancar()` es idempotente: un segundo llamado pisaba
+  `timerVerificacion` y dejaba el `setInterval` viejo corriendo para siempre,
+  sin nadie que pudiera apagarlo.
+
+### Las 21 mutaciones, y qué las caza
+
+Cada una se aplicó sobre una copia limpia del árbol y se corrió la suite encima.
+
+| Mutación | La caza |
+|---|---|
+| `prenderPlanB` sin reservar el lugar (el bug original) | 2 pruebas de `chat-planb` |
+| plan B sin umbral (`prenderPlanB()` incondicional) | 2 |
+| `apagarPlanB()` con `return` inmediato | 2 |
+| `parar()` no cierra el IRC | 2 |
+| difundir la salud por el bus | 1 |
+| `verificarKick`: `if (!falta.length)` → `if (true)` | 1 |
+| `suscribirEventos`: `if (faltan.length)` → `if (false)` | 2 |
+| sacar el cruce con la API de Kick (el "en vivo") | 2 |
+| `arrancar` sin `clearInterval` | 1 |
+| `arrancar` sin `conectarTwitch` | 1 |
+| el 429 del servidor → `if (false)` | 1 |
+| sacar la validación de slug de `/eventos/:slug` | 1, **en 50 ms** |
+| `salud()` sin `sospechoso` | 2 |
+| el tope de Twitch sólo con destino `twitch` | 1 |
+| el mensaje a una sola lista según la vista | 2 |
+| la página recalcula el aviso con su regla vieja | 3 |
+| cerrar el aviso lo esconde para siempre | 1 |
+| el 429 de la página sin cuenta regresiva | 1 |
+| el texto del mensaje con `innerHTML` | 9 |
+| subir el scroll ya no pausa | 1 |
+| el filtro de la vista mezclada no hace nada | 1 |
+
+### Cómo verlo funcionando
+
+```bash
+npm test                                  # 224 pruebas
+npm run local                             # y abrir /chat?demo=1
+```
+
+Se miró además en el navegador (`/chat?demo=1`): la banda roja aparece con su
+`×`, cerrarla la cierra y no vuelve sola, y al pasar a columnas el historial
+está en las dos.
+
+### Pendiente, sin cambios
+
+- **Nada de esto tocó una API real.** Sigue valiendo entera la lista de "lo que
+  hay que verificar cuando estén las credenciales" de la entrada de la Fase 1.
+- El bus público lleva el chat de Twitch del dueño (`chat.js` hace `recordar`
+  también para Twitch y `/eventos/istincho` no pide sesión). Se decide en la
+  Fase 2, cuando la audiencia de la peli escuche ese bus.
+- `/api/estado` sigue público.
+- El plan B no se probó contra el IRC real de Twitch: los tests usan un socket
+  de mentira, así que el TLS y el handshake real siguen sin cubrir.
+- `pruebas/fijos/chat-mensaje.json` cambió `{s:20,e:44}` por `{s:19,e:43}` en la
+  Fase 1. La corrección es correcta (verificada contra el ejemplo oficial de
+  Kick) y queda anotada acá por la regla de traspaso entre fases.
+
+### Archivos tocados
+
+Nuevos: `pruebas/{chat-planb,chat-suscripciones,pagina-chat}.test.js`,
+`pruebas/fijos/{bus-falso,dom-falso}.js`.
+Editados: `servidor/{chat,kick}.js`, `paginas/chat.html`,
+`paginas/chat/{chat.js,chat.css,demo.js}`,
+`pruebas/{chat,chat-http}.test.js`, `README.md`, `BITACORA.md`.
+
+---
+
 ## 2026-09-06 — Fase 2, pieza 1: el script de subida
 
 `herramientas/subir.py` completo: convierte un archivo de video a HLS, lo sube

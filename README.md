@@ -131,7 +131,7 @@ Todo evento va como el `message` por defecto, con el tipo **adentro del `data`**
 
 ```
 id: 7
-data: {"tipo":"kick","evento":"chat.message.sent","cuando":"2026-09-06T19:31:00.477Z"}
+data: {"tipo":"chat","red":"kick","id":"01JG…","usuario":"unaespectadora","texto":"hola","hora":"2026-09-06T19:31:00.477Z"}
 ```
 
 No como `event: <tipo>`. Por la especificación de SSE, un evento con nombre sólo llega al listener de ese nombre y nunca dispara `message`: el cliente no puede suscribirse a un tipo que todavía no existe. Con el tipo adentro del `data`, `window.Sala.conectar(slug, (tipo, datos) => …)` recibe cualquier cosa que difunda el servidor, incluidos los tipos que agreguen las fases siguientes.
@@ -154,3 +154,29 @@ Los tipos que existen hoy: `estado` (al conectarse), `chat` (un mensaje, en el f
 ```
 
 `inicio` y `fin` cuentan **puntos de código Unicode** sobre `texto`, y el emote ocupa `[inicio, fin)`. Se corta con `[...texto]`, nunca con `texto.slice`: un índice de string cuenta unidades UTF-16, y un solo emoji antes de un emote corre de lugar todos los que vengan después.
+
+### El indicador de salud
+
+`GET /api/chat/salud` (cookie de dueño) contesta:
+
+```json
+{
+  "kick":   { "vinculado": true, "ultima": "2026-01-14T16:08:06.000Z",
+              "suscripcion": "activa", "vivo": true, "sospechoso": false },
+  "twitch": { "vinculado": true, "ultima": "…", "estado": "conectado", "modo": "eventsub" },
+  "ahora":  "2026-01-14T16:09:00.000Z"
+}
+```
+
+Dos cosas para no romper:
+
+- **`sospechoso` es un veredicto, no un dato.** Vale `true` cuando el canal está en vivo y hace más de cinco minutos que no llega un mensaje de Kick (nunca haber recibido ninguno cuenta como silencio: es justo el caso de la URL del webhook sin cargar). La regla vive en `chat.kickSospechoso()` y en ningún otro lado; la página muestra el veredicto y no lo recalcula. Antes lo calculaba por su cuenta con una regla distinta y el aviso no aparecía nunca en el único caso para el que existe.
+- **`vivo` sale de la API de Kick** (`GET /public/v1/channels`), consultado en el mismo ciclo de cinco minutos que las suscripciones y cacheado hasta la vuelta siguiente. El webhook `livestream.status.updated` sigue siendo la vía rápida, pero no puede ser la fuente: avisa sólo las transiciones, así que un deploy en medio del stream —o sea, la forma normal de trabajar acá— dejaría `vivo` en `false` el resto de la noche.
+
+El aviso grande de `/chat` se puede cerrar. Cerrado se queda cerrado mientras la condición siga igual; si se resuelve y vuelve a aparecer, el aviso vuelve.
+
+### El plan B de Twitch
+
+Después de más de tres fallos seguidos de EventSub se abre el IRC anónimo (`justinfan`, sólo lectura) y se apaga en cuanto EventSub vuelve. Mientras los dos están prendidos llegan mensajes repetidos: el dedupe es por id, que es el mismo por las dos vías. El modo aparece en la salud (`modo: "irc"`), así que se ve en pantalla.
+
+Las dos conexiones de Twitch se crean a través de `chat.fijarConexiones()`, que existe para los tests: `ConexionEventSub` acepta `url` y `ConexionIrc` acepta `abrirSocket`, y así la orquestación (cuándo se prende, cuándo se apaga) se prueba sin salir a internet ni esperar los backoff de verdad.

@@ -62,6 +62,7 @@
   const bandaResuscribir = document.getElementById('banda-resuscribir');
   const botonResuscribir = document.getElementById('boton-resuscribir');
   const textoResuscribir = document.getElementById('texto-resuscribir');
+  const botonCerrarResuscribir = document.getElementById('boton-cerrar-resuscribir');
 
   const bandaSesion = document.getElementById('banda-sesion');
 
@@ -377,6 +378,11 @@
 
   let ultimaSalud = null;
 
+  // Un canal en vivo de madrugada sin nadie hablando cumple la
+  // condicion toda la noche: la banda roja se quedaba puesta hasta que
+  // amaneciera y no habia forma de sacarla.
+  let avisoResuscribirCerrado = false;
+
   function textoDeAntiguedad(segundos, singularCorto) {
     if (segundos < 60) return singularCorto ? `hace ${segundos} s` : `hace ${segundos} s`;
     if (segundos < 3600) return `hace ${Math.floor(segundos / 60)} min`;
@@ -422,10 +428,26 @@
     puntitoTwitch.className = 'puntito ' + colorTwitch;
     textoTwitch.textContent = mensajeTwitch;
 
-    // aviso especial: el canal esta en vivo segun Kick pero hace mas de
-    // 5 minutos que no llega nada, algo se corto en algun lado
-    bandaResuscribir.hidden = !(kick.vivo && segundosKick !== null && segundosKick > 5 * 60);
+    // aviso especial: el canal esta en vivo segun la API de Kick pero
+    // hace mas de 5 minutos que no llega nada, algo se corto en algun
+    // lado.
+    //
+    // El veredicto lo da el SERVIDOR (salud.kick.sospechoso) y la
+    // pagina no lo recalcula. Antes lo calculaba aca con otra regla:
+    // exigia que hubiera llegado al menos un mensaje, asi que el caso
+    // que motiva el aviso —la URL del webhook sin cargar, donde no
+    // llega ni el primero— no lo prendia nunca.
+    const sospechoso = Boolean(kick.sospechoso);
+    // si la condicion se resolvio, el aviso vuelve a estar disponible:
+    // cerrarlo silencia ESTE episodio, no todos los que vengan.
+    if (!sospechoso) avisoResuscribirCerrado = false;
+    bandaResuscribir.hidden = !sospechoso || avisoResuscribirCerrado;
   }
+
+  botonCerrarResuscribir.addEventListener('click', () => {
+    avisoResuscribirCerrado = true;
+    bandaResuscribir.hidden = true;
+  });
 
   function aplicarSalud(salud) {
     ultimaSalud = salud;
@@ -438,6 +460,9 @@
   setInterval(actualizarTextosSalud, 1000);
 
   botonResuscribir.addEventListener('click', () => {
+    // tocar "Resuscribir" vuelve a armar el aviso: si el problema sigue
+    // despues de esto, hay que volver a verlo.
+    avisoResuscribirCerrado = false;
     if (modoDemo) {
       textoResuscribir.textContent = 'modo demo: no se envía nada';
       return;

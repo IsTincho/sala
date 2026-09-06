@@ -117,13 +117,31 @@ const escapar = s => String(s)
  * El tope tambien cuenta bytes y no unidades UTF-16, que es lo que de
  * verdad ocupa el pedido.
  */
+class CuerpoDemasiadoGrande extends Error {
+  constructor(tope) {
+    super(`el cuerpo pasa los ${tope} bytes`);
+    this.name = 'CuerpoDemasiadoGrande';
+  }
+}
+
 function leerCuerpo(req, tope = 1_000_000) {
   return new Promise((ok, mal) => {
     const partes = [];
     let total = 0;
     req.on('data', c => {
       total += c.length;
-      if (total > tope) { mal(new Error('cuerpo demasiado grande')); req.destroy(); return; }
+      if (total > tope) {
+        /* ACA NO SE DESTRUYE EL SOCKET. Destruirlo antes de contestar
+           dejaba el 500 escribiendose sobre un socket muerto: un stack
+           trace por pedido en los logs y un ECONNRESET del lado del
+           cliente. Y /kick/webhook no pide autenticacion, asi que
+           cualquiera podia ensuciar los logs de Railway a voluntad.
+           Se deja de acumular, se corta la lectura, y quien atiende el
+           error contesta 413 y recien despues cierra. */
+        req.pause();
+        mal(new CuerpoDemasiadoGrande(tope));
+        return;
+      }
       partes.push(c);
     });
     req.on('end', () => ok(Buffer.concat(partes)));
@@ -510,7 +528,17 @@ const RUTAS = [
 ].map(([metodo, patron, manejador]) => ({ metodo, patron, manejador, ...compilar(patron) }));
 
 export async function manejar(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+  /* Parsear la URL puede tirar, y tira con cosas que llegan solas:
+     `new URL('//', 'http://sala')` es una referencia scheme-relative
+     con host vacio y da ERR_INVALID_URL. Sin este try eso salia como
+     500 con stack trace, y `//` es de lo primero que prueba cualquier
+     bot. Lo honesto es 404, igual que con un %ZZ mas abajo. */
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+  } catch {
+    return texto(res, 404, 'no existe');
+  }
   const ruta = url.pathname;
 
   for (const r of RUTAS) {
@@ -543,6 +571,27 @@ export function crearServidor() {
     try {
       await manejar(req, res);
     } catch (e) {
+      /* Un cuerpo que se pasa del tope no es un error del servidor: es
+         un pedido mal hecho, y contestarlo con 413 cuesta una linea de
+         log de nada. Nada de stack: es la unica forma de que un
+         endpoint sin autenticar no sea un grifo de basura en los logs.
+         Se cierra la conexion despues de escribir la respuesta, no
+         antes: el cliente tiene que llegar a leer el 413. */
+      if (e instanceof CuerpoDemasiadoGrande) {
+        console.warn('[http] cuerpo demasiado grande en', soloRuta(req.url));
+        if (!res.headersSent) texto(res, 413, 'cuerpo demasiado grande', { Connection: 'close' });
+        else res.end();
+        /* Se tira el resto del cuerpo sin acumularlo. Cerrar el socket
+           con bytes sin leer manda un RST y el cliente ve ECONNRESET
+           en vez del 413, que es justo lo que se venia a arreglar. Si
+           el que manda no termina nunca, el timer corta. */
+        req.resume();
+        const corte = setTimeout(() => req.destroy(), 5_000);
+        corte.unref();
+        req.on('end', () => clearTimeout(corte));
+        req.on('close', () => clearTimeout(corte));
+        return;
+      }
       /* Solo el pathname, nunca la URL entera: /oauth/kick/volver lleva
          el `code` de OAuth en la query, es de un solo uso, y los logs
          de Railway no se borran. Lo mismo cualquier token que algun dia

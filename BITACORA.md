@@ -6,7 +6,7 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ## 2026-09-06 — Fase 0: arreglos de la verificación
 
-Dos verificadores independientes revisaron la Fase 0 y encontraron cinco fallas reales más trece cosas menores. Están todas arregladas. 99 tests en verde (eran 52); cada falla tiene un test que **falla con el código anterior**, verificado extrayendo el commit `afb4461` a una carpeta aparte y corriéndole encima las pruebas nuevas.
+Dos verificadores independientes revisaron la Fase 0 y encontraron cinco fallas reales más trece cosas menores. Están todas arregladas, y una segunda pasada del verificador encontró cuatro cosas más que también entraron (abajo). 103 tests en verde (eran 52); cada falla tiene un test que **falla con el código anterior**, verificado extrayendo el commit viejo a una carpeta aparte y corriéndole encima las pruebas nuevas (`afb4461` para la primera tanda, `23f6d9c` para la segunda).
 
 ### Las cinco fallas
 
@@ -56,11 +56,37 @@ Editados: `servidor/{index,canales,almacen,cifrado,kick,twitch,webhook}.js`, `pa
 ### Cómo verlo funcionando
 
 ```bash
-npm test                                  # 99 tests
+npm test                                  # 103 tests
 npm run local
 curl -s -o /dev/null -w '%{http_code}\n' -I localhost:8778/eventos/istincho   # 200, no se cuelga
 curl -s -o /dev/null -w '%{http_code}\n' 'localhost:8778/eventos/%ZZ'         # 404, no 500
 curl -sN localhost:8778/eventos/istincho | head -4                            # data: {...,"tipo":"estado"}
+```
+
+### Segunda pasada de la verificación
+
+Un verificador adversarial revisó los arreglos de arriba, confirmó que las cuatro fallas grandes están arregladas de verdad y encontró cuatro cosas más. Entraron todas.
+
+1. **`GET //` daba 500 con stack trace en vez de 404.** `new URL('//', 'http://sala')` es una referencia scheme-relative con el host vacío y tira `ERR_INVALID_URL`. Ese parseo está una línea antes del `decodeURIComponent` que ya se había atajado, así que quedó afuera: el error salía del manejador y el catch general contestaba 500 y dejaba un stack en los logs. `//` es de lo primero que prueba cualquier bot, o sea que era un stack por bot en Railway. Ahora el parseo va en un `try` y una URL que no parsea da 404, igual que el `%ZZ`. Test: `//` por socket crudo tiene que dar 404.
+
+2. **El test de `HEAD /eventos/:slug` no protegía su arreglo.** Usaba `fetch(..., {method:'HEAD'})`, y undici da la respuesta por terminada al recibir las cabeceras y cierra el socket; ese cierre disparaba el `close` que limpia al cliente del canal antes del assert. Resultado: el test pasaba **también con el código roto** (comprobado copiando las pruebas nuevas sobre `afb4461`). El arreglo del código era real, pero no había red de seguridad: sacar las ocho líneas de `eventos()` dejaba la suite en verde igual. Ahora el pedido va por socket crudo y **no cierra**, con un tope de 3 s: contra el código sin la guarda el test falla por lo que falla de verdad —"HEAD /eventos/canal-head no contestó en 3000 ms", que es exactamente lo que le pasaba a `curl -I`—, y si contestara, el cliente fantasma quedaría contando y el assert lo vería.
+
+3. **Carrera en `ConexionEventSub`: un socket promovido podía quedar huérfano.** Si el socket activo se caía *mientras* el entrante de un `session_reconnect` todavía no había mandado su welcome, `#alCerrarSocket` programaba un reintento; después llegaba el welcome, el entrante se promovía a `#socket` y nadie cancelaba ese reintento. Al disparar, `#abrir()` pisaba `this.#socket` sin cerrar el anterior: quedaba una conexión viva a Twitch que ni `cerrar()` alcanzaba. No es regresión (el código viejo hacía lo mismo) y no afectaba a la Fase 0 porque Twitch todavía no se conecta; se cierra ahora para que la Fase 1 no se monte encima. Arreglo: `clearTimeout(this.#timerReintento)` en el camino de promoción de `#alWelcome`. Test con servidor WS falso: se corta el activo con el entrante sin welcome, se promueve, y después de esperar la ventana del backoff no puede haber una segunda conexión al servidor viejo ni sockets vivos tras `cerrar()`.
+
+4. **Un cuerpo de más de 1 MB en `/kick/webhook` dejaba un stack trace por pedido y el cliente veía ECONNRESET.** `leerCuerpo` rechazaba y hacía `req.destroy()` ahí mismo, así que el 500 se escribía sobre un socket ya muerto. El proceso no se caía, pero es un endpoint **sin autenticar**: cualquiera podía llenar los logs de Railway a voluntad. Ahora se corta la lectura sin destruir, se contesta **413** con una línea de aviso y sin stack, se tira el resto del cuerpo (cerrar con bytes sin leer manda un RST y el cliente vería ECONNRESET en vez del 413) y hay un timer de 5 s por si el que manda no termina nunca. Test: 1,2 MB por socket crudo tiene que dar 413 y no llamar a `console.error` ni una vez.
+
+También se tocó **`AGENTES.md`**, que no había cambiado con el resto. El cambio de contrato del cable SSE (F4: el tipo adentro del `data`, eventos sin nombre) estaba documentado en README.md y acá, pero `AGENTES.md` es donde vive el contrato del agente de la Fase 1 y su prompt dice "Formato único de mensaje que sale por SSE **en el canal `chat`**", que se puede leer como nombre de evento SSE. No había contradicción real —el formato que pide ya es compatible— pero se agregó una línea al prompt de la Fase 1 aclarando que "canal" es el slug del bus, que todo sale como `message` con el tipo adentro del `data`, y que no se vuelva a usar `event: <tipo>`.
+
+Archivos tocados en esta pasada: `servidor/index.js`, `servidor/twitch.js`, `pruebas/servidor.test.js`, `pruebas/twitch.test.js`, `AGENTES.md`, `BITACORA.md`.
+
+```bash
+npm test                                                                      # 103 tests
+curl -s -o /dev/null -w '%{http_code}
+' 'localhost:8778//'                    # 404, no 500
+curl -s -o /dev/null -w '%{http_code}
+' -I --max-time 3 localhost:8778/eventos/istincho   # 200 en 2 ms
+head -c 1200000 /dev/zero | curl -s -o /dev/null -w '%{http_code}
+' -X POST --data-binary @- localhost:8778/kick/webhook   # 413
 ```
 
 ---

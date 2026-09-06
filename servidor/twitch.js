@@ -346,6 +346,13 @@ export class ConexionEventSub {
       const viejo = this.#socket;
       this.#socket = ws;
       this.#entrante = null;
+      /* Si el socket activo se cayo MIENTRAS este entrante todavia no
+         mandaba su welcome, #alCerrarSocket dejo un reintento
+         programado. Ahora ya hay conexion: si ese timer sigue vivo,
+         al disparar #abrir pisa this.#socket sin cerrar el de aca y
+         queda una conexion a Twitch que ni cerrar() alcanza. */
+      clearTimeout(this.#timerReintento);
+      this.#timerReintento = null;
       this.#sessionId = sessionId;
       this.#intentos = 0;
       this.intentosFallidosSeguidos = 0;

@@ -265,6 +265,71 @@ test('reconnect: si se cae el socket ya promovido, se detecta y se reintenta', a
   assert.notEqual(cx.estado, 'conectado', 'y el estado no puede seguir mintiendo');
 });
 
+test('reconnect: si el activo se cae antes del welcome del entrante, el promovido no queda huerfano', async (t) => {
+  /* LA CARRERA: el socket activo se cae MIENTRAS el entrante de un
+     session_reconnect todavia no mando su welcome. #alCerrarSocket
+     programa un reintento; despues llega el welcome y el entrante se
+     promueve a socket activo, pero nadie cancela ese reintento. Al
+     disparar, #abrir pisa #socket sin cerrar el anterior: queda una
+     conexion viva a Twitch que ni cerrar() alcanza. */
+  const servidorViejo = new ServidorWsFalso();
+  const urlViejo = await servidorViejo.escuchar();
+  t.after(() => servidorViejo.cerrar());
+
+  const servidorNuevo = new ServidorWsFalso();
+  const urlNuevo = await servidorNuevo.escuchar();
+  t.after(() => servidorNuevo.cerrar());
+
+  const cx = new ConexionEventSub({ url: urlViejo, suscribir: async () => {} });
+  t.after(() => cx.cerrar());
+
+  let conexionesAlViejo = 0;
+  let conexionVieja;
+  servidorViejo.alConectar = (conexion) => {
+    conexionesAlViejo++;
+    conexionVieja = conexion;
+    conexion.enviarJson({
+      metadata: metadata('session_welcome', `wv${conexionesAlViejo}`),
+      payload: { session: { id: `sesion-vieja-${conexionesAlViejo}`, keepalive_timeout_seconds: 30, status: 'connected' } },
+    });
+  };
+
+  /* El welcome del entrante lo manda el test a mano, para poder meter
+     la caida del activo justo en el medio. */
+  let conexionNueva;
+  servidorNuevo.alConectar = (conexion) => { conexionNueva = conexion; };
+
+  cx.conectar();
+  await esperarHasta(() => cx.estado === 'conectado');
+
+  conexionVieja.enviarJson({
+    metadata: metadata('session_reconnect', 'r1'),
+    payload: { session: { id: 'sesion-vieja', reconnect_url: urlNuevo, status: 'reconnecting' } },
+  });
+  await esperarHasta(() => Boolean(conexionNueva));
+
+  // se cae el activo con el entrante todavia sin welcome: se programa reintento
+  conexionVieja.destruir();
+  await esperarHasta(() => cx.intentosFallidosSeguidos >= 1);
+
+  // recien ahora el entrante manda su welcome y se promueve
+  conexionNueva.enviarJson({
+    metadata: metadata('session_welcome', 'w2'),
+    payload: { session: { id: 'sesion-nueva', keepalive_timeout_seconds: 30, status: 'connected' } },
+  });
+  await esperarHasta(() => cx.estado === 'conectado');
+
+  /* El reintento tenia entre 500 ms y 1 s de espera; se le da de sobra
+     para que dispare si nadie lo cancelo. */
+  await esperar(1500);
+  assert.equal(conexionesAlViejo, 1,
+    'el reintento quedo pendiente y abrio una conexion de mas contra Twitch');
+
+  cx.cerrar();
+  await esperarHasta(() => servidorViejo.conexiones.size + servidorNuevo.conexiones.size === 0,
+    { tope: 3000 });
+});
+
 test('vencimiento de keepalive: reconecta de cero y vuelve a suscribirse', async (t) => {
   const servidor = new ServidorWsFalso();
   const url = await servidor.escuchar();

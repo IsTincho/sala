@@ -126,6 +126,19 @@ test('una ruta de API que no existe tambien da 404', async () => {
   assert.equal(r.status, 404);
 });
 
+test('// da 404 y no 500', async () => {
+  /* `new URL('//', 'http://sala')` es una referencia scheme-relative
+     con host vacio: tira ERR_INVALID_URL. Sin atajarlo, el parseo de
+     la URL salia del manejador como 500 con stack trace, y `//` es de
+     lo primero que prueba cualquier bot. */
+  const codigo = await new Promise((ok, mal) => {
+    const req = http.get({ host: '127.0.0.1', port: servidor.address().port, path: '//' },
+      res => { res.resume(); ok(res.statusCode); });
+    req.on('error', mal);
+  });
+  assert.equal(codigo, 404);
+});
+
 test('una ruta conocida con el metodo equivocado da 405 y dice cual acepta', async () => {
   const r = await fetch(`${raiz}/kick/webhook`);   // es POST
   assert.equal(r.status, 405);
@@ -393,6 +406,62 @@ test('un cuerpo firmado con emoji vale igual aunque el emoji llegue partido en d
   }
 });
 
+/** Un POST con el cuerpo entero, que resuelve apenas ve la linea de estado. */
+function postGrande(ruta, cuerpo) {
+  return new Promise((ok, mal) => {
+    let listo = false;
+    const terminar = fn => (...args) => { if (!listo) { listo = true; fn(...args); } };
+    const salioBien = terminar(ok);
+    const salioMal = terminar(mal);
+
+    const socket = net.connect(servidor.address().port, '127.0.0.1', () => {
+      socket.write([
+        `POST ${ruta} HTTP/1.1`,
+        'Host: 127.0.0.1',
+        'Content-Type: application/json',
+        `Content-Length: ${cuerpo.length}`,
+        'Connection: close',
+        '', '',
+      ].join('\r\n'));
+      /* El callback traga el error de escritura: si el servidor
+         contesta y cierra mientras todavia estamos subiendo, eso es
+         correcto y no es lo que se esta midiendo. */
+      socket.write(cuerpo, () => {});
+    });
+
+    let respuesta = '';
+    socket.setEncoding('utf8');
+    socket.on('data', d => {
+      respuesta += d;
+      if (respuesta.includes('\r\n')) { salioBien(Number(respuesta.split(' ')[1])); socket.destroy(); }
+    });
+    socket.on('error', salioMal);
+    socket.on('close', () => salioMal(new Error('el servidor corto sin contestar')));
+  });
+}
+
+test('/kick/webhook da 413 a un cuerpo enorme, sin stack trace y sin cortar de prepo', async () => {
+  /* EL BUG: leerCuerpo rechazaba y hacia req.destroy() ahi mismo, asi
+     que el 500 se escribia sobre un socket ya muerto: el cliente veia
+     ECONNRESET y quedaba un stack trace por pedido en los logs.
+     /kick/webhook no pide autenticacion, o sea que cualquiera podia
+     llenar los logs de Railway a voluntad. */
+  const grande = Buffer.alloc(1_200_000, 0x61);   // el tope es 1 MB
+
+  const errores = [];
+  const errorOriginal = console.error;
+  console.error = (...args) => errores.push(args);
+  let codigo;
+  try {
+    codigo = await postGrande('/kick/webhook', grande);
+  } finally {
+    console.error = errorOriginal;
+  }
+
+  assert.equal(codigo, 413, 'un cuerpo demasiado grande se contesta, no se corta');
+  assert.deepEqual(errores, [], 'y no deja un stack trace en los logs');
+});
+
 test('/kick/webhook descarta un evento viejo aunque este bien firmado', async () => {
   /* Una firma RSA no vence: quien capture un webhook valido lo puede
      reenviar cuando quiera y va a verificar igual. Lo unico que lo
@@ -509,18 +578,78 @@ test('el cliente del bus recibe cualquier tipo, no solo los que ya conocia', asy
   }
 });
 
+/**
+ * Un pedido crudo por socket que NO cierra: se queda escuchando y
+ * resuelve en cuanto llegan las cabeceras.
+ *
+ * Con `fetch(..., {method:'HEAD'})` esto no se puede probar: undici da
+ * la respuesta por terminada al recibir las cabeceras y cierra el
+ * socket, y ese cierre dispara el `close` que limpia al cliente del
+ * canal antes de que el assert lo mire. O sea que el test pasaba
+ * tambien con el codigo roto. Con el socket abierto, el cliente
+ * fantasma se queda contando y el assert lo ve.
+ */
+function pedidoQueNoCierra(metodo, ruta, { tope = 3000 } = {}) {
+  return new Promise((ok, mal) => {
+    let listo = false;
+    /* Sin este tope el test no falla: se cuelga. Un HEAD contra el
+       handler de SSE ni siquiera llega a mandar las cabeceras, porque
+       Node no las descarga hasta el primer write con cuerpo y en un
+       HEAD no hay cuerpo. Eso es exactamente lo que le pasaba a
+       `curl -I`. */
+    let socket;
+    const reloj = setTimeout(() => {
+      socket?.destroy();
+      salioMal(new Error(`${metodo} ${ruta} no contesto en ${tope} ms`));
+    }, tope);
+    reloj.unref();
+
+    const terminar = fn => (...args) => { if (!listo) { listo = true; clearTimeout(reloj); fn(...args); } };
+    const salioBien = terminar(ok);
+    const salioMal = terminar(mal);
+
+    socket = net.connect(servidor.address().port, '127.0.0.1', () => {
+      socket.write([
+        `${metodo} ${ruta} HTTP/1.1`,
+        'Host: 127.0.0.1',
+        'Accept: text/event-stream',
+        '', '',
+      ].join('\r\n'));
+    });
+    let respuesta = '';
+    socket.setEncoding('utf8');
+    socket.on('data', d => {
+      respuesta += d;
+      if (respuesta.includes('\r\n\r\n')) {
+        const cabeceras = respuesta.split('\r\n\r\n')[0];
+        salioBien({
+          codigo: Number(cabeceras.split(' ')[1]),
+          cabeceras: cabeceras.toLowerCase(),
+          cerrar: () => socket.destroy(),
+        });
+      }
+    });
+    socket.on('error', salioMal);
+    socket.on('close', () => salioMal(new Error('cerro sin contestar')));
+  });
+}
+
 test('HEAD /eventos/:slug contesta y no deja un cliente fantasma', async () => {
   /* El enrutador deja pasar HEAD como GET, asi que el handler de SSE
      escribia eventos en una respuesta sin cuerpo: `curl -I` se colgaba
      hasta el timeout y el canal quedaba con un cliente que nadie mira.
      Cualquier monitor de uptime hace exactamente eso. */
-  const r = await fetch(`${raiz}/eventos/canal-head`, { method: 'HEAD' });
-  assert.equal(r.status, 200);
-  assert.match(r.headers.get('content-type'), /text\/event-stream/);
+  const r = await pedidoQueNoCierra('HEAD', '/eventos/canal-head');
+  try {
+    assert.equal(r.codigo, 200);
+    assert.match(r.cabeceras, /content-type: text\/event-stream/);
 
-  await esperar(100);
-  assert.equal(canales.conectados('canal-head'), 0, 'un HEAD no abre stream');
-  assert.equal(canales.hayCanal('canal-head'), false, 'ni siquiera crea el canal');
+    await esperar(200);
+    assert.equal(canales.conectados('canal-head'), 0, 'un HEAD no abre stream');
+    assert.equal(canales.hayCanal('canal-head'), false, 'ni siquiera crea el canal');
+  } finally {
+    r.cerrar();
+  }
 });
 
 test('un slug con un escape roto da 404 y no 500', async () => {

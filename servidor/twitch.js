@@ -263,19 +263,38 @@ export class ConexionEventSub {
       return;
     }
 
-    const esDeReconexion = esperaWelcomeDeReconexion;
-    if (esDeReconexion) {
+    if (esperaWelcomeDeReconexion) {
       this.#entrante = ws;
     } else {
       this.#socket = ws;
     }
 
-    ws.addEventListener('message', (ev) => this.#alRecibir(ws, ev, esDeReconexion));
-    ws.addEventListener('close', () => this.#alCerrarSocket(ws, esDeReconexion));
+    /* Los listeners NO capturan `esperaWelcomeDeReconexion`: preguntan
+       cada vez contra `this.#socket` / `this.#entrante`.
+
+       Con la bandera capturada, un socket que entraba por un
+       session_reconnect quedaba marcado "de reconexion" PARA SIEMPRE,
+       incluso despues de que #alWelcome lo promoviera a socket activo.
+       Cuando ese socket ya promovido se caia, su listener de close
+       entraba por la rama del entrante y hacia return: el socket
+       quedaba muerto, `estado` seguia diciendo "conectado" y no se
+       programaba ningun reintento. Lo unico que lo rescataba era el
+       timer de keepalive, o sea ~15 segundos de chat mudo mintiendo
+       que estaba conectado. Y Twitch manda session_reconnect de rutina
+       en cada deploy suyo, asi que toda conexion larga pasa por ahi. */
+    ws.addEventListener('message', (ev) => this.#alRecibir(ws, ev));
+    ws.addEventListener('close', () => this.#alCerrarSocket(ws));
     ws.addEventListener('error', () => { /* el close que sigue hace todo el trabajo */ });
   }
 
-  #alRecibir(ws, ev, esDeReconexion) {
+  #alRecibir(ws, ev) {
+    /* Quien es este socket se resuelve ahora, no cuando se abrio. */
+    const esEntrante = ws === this.#entrante;
+    /* Un socket que ya no es ninguno de los dos es el viejo de un
+       reconnect que todavia no termino de cerrarse: lo que mande ya no
+       cuenta. */
+    if (!esEntrante && ws !== this.#socket) return;
+
     this.ultimaLlegada = new Date();
 
     let mensaje;
@@ -294,7 +313,7 @@ export class ConexionEventSub {
 
     switch (tipo) {
       case 'session_welcome':
-        this.#alWelcome(ws, payload, esDeReconexion);
+        this.#alWelcome(ws, payload, esEntrante);
         break;
       case 'session_keepalive':
         // nada mas que hacer: ya se reinicio el timer arriba
@@ -406,10 +425,13 @@ export class ConexionEventSub {
     this.#programarReintento();
   }
 
-  #alCerrarSocket(ws, esDeReconexion) {
-    if (esDeReconexion) {
-      if (this.#entrante === ws) this.#entrante = null;
-      return; // el socket entrante se cerro solo antes de tiempo; no es el activo
+  #alCerrarSocket(ws) {
+    /* Sigue siendo el entrante de un reconnect: se cerro antes de
+       mandar su welcome. El activo no se toco, no hay nada que
+       reconectar. */
+    if (this.#entrante === ws) {
+      this.#entrante = null;
+      return;
     }
     if (this.#socket !== ws) return; // ya fue reemplazado (p.ej. por un reconnect exitoso)
     this.#socket = null;

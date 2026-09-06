@@ -41,6 +41,7 @@ Se cargan **desde el dashboard de Railway**, nunca desde la terminal ni desde un
 | `KICK_CLIENT_ID` / `KICK_CLIENT_SECRET` | Login y chat de Kick | El login de Kick avisa y no arranca |
 | `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` | Login y chat de Twitch | Ídem |
 | `MONGODB_URI` | Guardar de verdad | Guarda en archivos, que en Railway se borran en cada deploy |
+| `SALA_DATOS` | Sólo local: dónde deja los archivos JSON cuando no hay Mongo | `servidor/datos/` |
 
 ### Generar `CLAVE_CIFRADO`
 
@@ -104,9 +105,20 @@ Reglas que no se negocian:
 | Ruta | Qué es |
 |---|---|
 | `/` | Página de estado: si el servidor está vivo y conectado al bus |
-| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s |
+| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream |
 | `/api/estado` | JSON con modo, almacén, canales y qué variables faltan |
 | `/oauth/kick/entrar` · `/oauth/kick/volver` | Login con Kick (OAuth 2.1 + PKCE) |
 | `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch |
 | `/kick/webhook` | Eventos de Kick. 401 si la firma no da |
 | `/api/prueba/webhook` | **Sólo con `MODO=local`.** Inyecta un evento sin firma, para desarrollar sin webhooks reales |
+
+### Cómo sale un evento por SSE
+
+Todo evento va como el `message` por defecto, con el tipo **adentro del `data`**:
+
+```
+id: 7
+data: {"tipo":"kick","evento":"chat.message.sent","cuando":"2026-09-06T19:31:00.477Z"}
+```
+
+No como `event: <tipo>`. Por la especificación de SSE, un evento con nombre sólo llega al listener de ese nombre y nunca dispara `message`: el cliente no puede suscribirse a un tipo que todavía no existe. Con el tipo adentro del `data`, `window.Sala.conectar(slug, (tipo, datos) => …)` recibe cualquier cosa que difunda el servidor, incluidos los tipos que agreguen las fases siguientes.

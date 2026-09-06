@@ -151,24 +151,29 @@ test('reconnect: pasa al servidor nuevo sin volver a suscribir, y cierra el viej
   });
   t.after(() => cx.cerrar());
 
+  /* El ORDEN es lo que hay que probar, no que las dos cosas pasen:
+     cerrar el socket viejo antes de tener el welcome del nuevo deja una
+     ventana sin conexion en la que Twitch puede mandar un mensaje y
+     perderse. Con dos banderas sueltas, un codigo que cerrara el viejo
+     en #alReconnect pasaria el test igual. */
+  const orden = [];
+
   let conexionVieja;
-  let vieroCerroLaVieja = false;
   servidorViejo.alConectar = (conexion) => {
     conexionVieja = conexion;
-    conexion.socket.on('close', () => { vieroCerroLaVieja = true; });
+    conexion.socket.on('close', () => orden.push('cerro-la-vieja'));
     conexion.enviarJson({
       metadata: metadata('session_welcome', 'w1'),
       payload: { session: { id: 'sesion-vieja', keepalive_timeout_seconds: 30, status: 'connected' } },
     });
   };
 
-  let welcomeNuevoLlego = false;
   servidorNuevo.alConectar = (conexion) => {
     conexion.enviarJson({
       metadata: metadata('session_welcome', 'w2'),
       payload: { session: { id: 'sesion-nueva', keepalive_timeout_seconds: 30, status: 'connected' } },
     });
-    welcomeNuevoLlego = true;
+    orden.push('welcome-nuevo');
   };
 
   cx.conectar();
@@ -180,11 +185,84 @@ test('reconnect: pasa al servidor nuevo sin volver a suscribir, y cierra el viej
     payload: { session: { id: 'sesion-vieja', reconnect_url: urlNuevo, status: 'reconnecting' } },
   });
 
-  await esperarHasta(() => welcomeNuevoLlego);
-  await esperarHasta(() => vieroCerroLaVieja);
+  await esperarHasta(() => orden.includes('welcome-nuevo'));
+  await esperarHasta(() => orden.includes('cerro-la-vieja'));
 
+  assert.deepEqual(orden, ['welcome-nuevo', 'cerro-la-vieja'],
+    'la vieja se cierra DESPUES del welcome de la nueva, nunca antes');
   assert.equal(vecesSuscrito, 1, 'no hay que volver a suscribirse en un reconnect avisado');
   assert.equal(cx.estado, 'conectado');
+});
+
+test('reconnect: si se cae el socket ya promovido, se detecta y se reintenta', async (t) => {
+  /* EL BUG: los listeners capturaban al abrirse una bandera que decia
+     "soy de reconexion". Cuando #alWelcome promovia ese socket a socket
+     activo, la bandera seguia diciendo lo mismo, asi que su listener de
+     close entraba por la rama del entrante y hacia return: el socket
+     quedaba muerto, `estado` seguia diciendo "conectado" y no se
+     programaba ningun reintento. Lo unico que lo rescataba era el timer
+     de keepalive (timeout * 1.5): con el default de 10s de Twitch son
+     15 segundos de chat mudo diciendo que todo bien, y en este test,
+     que pide 30s, serian 45. Y Twitch manda session_reconnect de
+     rutina en cada deploy suyo. */
+  const servidorViejo = new ServidorWsFalso();
+  const urlViejo = await servidorViejo.escuchar();
+
+  const servidorNuevo = new ServidorWsFalso();
+  const urlNuevo = await servidorNuevo.escuchar();
+  t.after(() => servidorNuevo.cerrar());
+
+  const estados = [];
+  const cx = new ConexionEventSub({
+    url: urlViejo,
+    suscribir: async () => {},
+    alEstado: (e) => estados.push(e),
+  });
+  t.after(() => cx.cerrar());
+
+  let conexionVieja;
+  let conexionNueva;
+  servidorViejo.alConectar = (conexion) => {
+    conexionVieja = conexion;
+    conexion.enviarJson({
+      metadata: metadata('session_welcome', 'w1'),
+      payload: { session: { id: 'sesion-vieja', keepalive_timeout_seconds: 30, status: 'connected' } },
+    });
+  };
+  servidorNuevo.alConectar = (conexion) => {
+    conexionNueva = conexion;
+    conexion.enviarJson({
+      metadata: metadata('session_welcome', 'w2'),
+      payload: { session: { id: 'sesion-nueva', keepalive_timeout_seconds: 30, status: 'connected' } },
+    });
+  };
+
+  cx.conectar();
+  await esperarHasta(() => cx.estado === 'conectado');
+
+  conexionVieja.enviarJson({
+    metadata: metadata('session_reconnect', 'r1'),
+    payload: { session: { id: 'sesion-vieja', reconnect_url: urlNuevo, status: 'reconnecting' } },
+  });
+
+  // el socket nuevo ya es el activo: dos veces 'conectado' en el historial
+  await esperarHasta(() => estados.filter((e) => e === 'conectado').length === 2);
+
+  /* Se baja el servidor viejo para que el reintento no pueda volver a
+     conectar: asi el contador de fallos no se reinicia solo y el test
+     no depende de quien gana una carrera. */
+  await servidorViejo.cerrar();
+
+  const desde = estados.length;
+  conexionNueva.destruir();       // se corta el socket activo, sin aviso
+
+  /* El keepalive tardaria 45s (30 * 1.5) en darse cuenta. Tres segundos
+     alcanzan de sobra si la caida se detecta cuando pasa. */
+  await esperarHasta(() => cx.intentosFallidosSeguidos >= 1, { tope: 3000 });
+
+  assert.ok(estados.slice(desde).includes('reconectando'),
+    'la caida del socket activo tiene que avisar, no quedar diciendo "conectado"');
+  assert.notEqual(cx.estado, 'conectado', 'y el estado no puede seguir mintiendo');
 });
 
 test('vencimiento de keepalive: reconecta de cero y vuelve a suscribirse', async (t) => {

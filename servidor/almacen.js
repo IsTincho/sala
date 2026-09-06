@@ -39,8 +39,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const AQUI    = path.dirname(fileURLToPath(import.meta.url));
-const CARPETA = path.join(AQUI, 'datos');
+const AQUI = path.dirname(fileURLToPath(import.meta.url));
+
+/* SALA_DATOS existe para que un test pueda trabajar en su propia
+   carpeta: `node --test` corre cada archivo de pruebas en un proceso
+   aparte pero en el mismo disco, y dos suites limpiando servidor/datos
+   a la vez se pisan. En Railway no se carga: ahi manda Mongo y este
+   disco es efimero igual. */
+const CARPETA = process.env.SALA_DATOS
+  ? path.resolve(process.env.SALA_DATOS)
+  : path.join(AQUI, 'datos');
 
 /* Se aceptan los dos nombres. MONGODB_URI es el que copias del panel
    de Atlas y el que termina pegado en Railway; MONGO_URI queda por si
@@ -173,15 +181,26 @@ const conviene = () => Boolean(URI) && (modo === 'mongo' || Date.now() >= reinte
 const enMemoria = new Map();      // coleccion -> objeto id -> doc
 const cargando  = new Map();      // coleccion -> promesa de la carga inicial
 
+/* Object.create(null) y no {}. Los ids de documento vienen de afuera:
+   hoy son sesiones que generamos nosotros, en la Fase 3 son ids de
+   creadores y de videos que manda gente. Sobre un objeto normal,
+   `datos['__proto__'] = doc` no crea ninguna propiedad: activa el
+   setter heredado. O sea que poner(coleccion, '__proto__', algo)
+   devolvia true sin guardar nada, y quitar() decia que habia borrado
+   algo que jamas existio (porque '__proto__' in {} es true). Sin
+   prototipo, '__proto__' es una clave como cualquier otra. */
+const objetoDeDatos = desde => Object.assign(Object.create(null), desde ?? {});
+
 async function cargarArchivo(coleccion) {
   if (enMemoria.has(coleccion)) return enMemoria.get(coleccion);
   if (!cargando.has(coleccion)) {
     cargando.set(coleccion, (async () => {
-      let datos = {};
+      let leido = null;
       try {
-        datos = JSON.parse(await fs.readFile(path.join(CARPETA, `${coleccion}.json`), 'utf8'));
+        leido = JSON.parse(await fs.readFile(path.join(CARPETA, `${coleccion}.json`), 'utf8'));
       } catch { /* no existe todavia: arranca vacia */ }
-      if (!datos || typeof datos !== 'object') datos = {};
+      if (!leido || typeof leido !== 'object') leido = {};
+      const datos = objetoDeDatos(leido);
       enMemoria.set(coleccion, datos);
       cargando.delete(coleccion);
       return datos;

@@ -13,9 +13,10 @@ herramientas/
 node_modules/
 *.log
 
-# secretos: cualquier .env, se llame como se llame (igual que .gitignore)
+# Secretos: los mismos dos patrones que .gitignore. `*.env` solo no
+# alcanza: no matchea .env.local ni .env.produccion.
 *.env
-!*.env.ejemplo
+*.env.*
 
 # datos de runtime en local; en Railway manda Mongo
 servidor/datos/

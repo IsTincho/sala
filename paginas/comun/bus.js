@@ -10,14 +10,21 @@
    falta un reintento propio por arriba con espera creciente (tope
    30s) para no quedar mirando una conexion muerta.
 
-   Los tipos de evento con nombre que el servidor manda (ademas del
-   'message' por defecto) crecen por fase: 'estado' en Fase 0,
-   despues 'chat' y 'reloj'. Para que sumar uno nuevo sea trivial se
-   listan una sola vez aca abajo, en TIPOS_CONOCIDOS.
+   NO HAY LISTA DE TIPOS. El servidor manda todo como el evento
+   'message' por defecto, con el tipo adentro del data, y aca se
+   reparte por ese campo.
+
+   Antes habia una lista fija ('estado', 'chat', 'reloj') y el
+   servidor mandaba cada evento con `event: <tipo>`. Por la
+   especificacion de SSE, un evento con nombre solo llega al listener
+   de ESE nombre y nunca dispara 'message': todo lo que el servidor
+   difundia con un tipo que no estuviera en la lista —'kick', o sea
+   el chat de verdad— llegaba al navegador y se perdia en silencio.
+   Una lista fija del lado del cliente no puede conocer los tipos que
+   agrega una fase posterior, asi que no puede ser lo que decide si un
+   evento llega.
    ============================================================ */
 (() => {
-  const TIPOS_CONOCIDOS = ['estado', 'chat', 'reloj'];
-
   const ESPERA_INICIAL = 1000;   // ms antes del primer reintento
   const ESPERA_TOPE    = 30000;  // ms, tope del backoff
 
@@ -33,10 +40,11 @@
 
     // Llama al handler del usuario protegido: que un handler explote
     // no debe tumbar la conexion ni afectar a los demas eventos.
-    const notificar = (tipo, crudo) => {
+    const notificar = (crudo) => {
       let datos;
       try { datos = JSON.parse(crudo); }
       catch { return; } // JSON invalido: se ignora ese mensaje, nomas
+      const tipo = typeof datos?.tipo === 'string' ? datos.tipo : 'mensaje';
       try { alRecibir(tipo, datos); }
       catch (e) { console.error('[Sala.bus]', tipo, e); }
     };
@@ -96,10 +104,9 @@
         }
       });
 
-      for (const tipo of TIPOS_CONOCIDOS) {
-        fuente.addEventListener(tipo, ev => notificar(tipo, ev.data));
-      }
-      fuente.addEventListener('message', ev => notificar('message', ev.data));
+      // Un solo listener: llega todo lo que el servidor difunda, sea
+      // del tipo que sea, incluidos los que se agreguen mas adelante.
+      fuente.addEventListener('message', ev => notificar(ev.data));
     }
 
     abrir();

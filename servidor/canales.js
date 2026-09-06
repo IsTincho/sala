@@ -70,8 +70,35 @@ export const resumen = () =>
 
 /* --------------------------------------------------------------- sse */
 
+/* Como sale un evento, y por que asi.
+
+   Todo evento va como el `message` por defecto de SSE, con el tipo
+   ADENTRO del data. No como `event: <tipo>`, que es como estaba.
+
+   Por la especificacion de SSE, un mensaje con `event: kick` se
+   entrega unicamente a addEventListener('kick', ...) y no dispara
+   onmessage nunca. El servidor difundia 'kick' (el webhook real) y
+   'prueba' (el endpoint local) y la pagina escuchaba tres nombres
+   fijos: esos eventos llegaban al navegador y se perdian ahi, sin un
+   solo error. Un cliente no puede suscribirse a un nombre que todavia
+   no existe, asi que el nombre no puede ser lo que decide si el evento
+   llega. Con el tipo adentro del data, el cliente recibe todo y
+   reparte el mismo.
+
+   De paso cierra una inyeccion: el tipo ya no se interpola en el
+   armado de la trama, y adentro del JSON un \n queda escapado y no
+   puede abrir un campo SSE nuevo. Igual se valida, porque en la Fase 1
+   el tipo va a salir de payloads de webhook y ademas de no romper la
+   trama tiene que servirle al cliente para repartir. */
+
+const TIPO_VALIDO = /^[a-z][a-z0-9_.:-]{0,39}$/i;
+
+/** El tipo si es usable; si no, uno generico. Nunca rompe la trama. */
+export const tipoSeguro = t => (typeof t === 'string' && TIPO_VALIDO.test(t) ? t : 'mensaje');
+
 function escribir(res, id, tipo, datos) {
-  res.write(`id: ${id}\nevent: ${tipo}\ndata: ${JSON.stringify(datos)}\n\n`);
+  const t = tipoSeguro(tipo);
+  res.write(`id: ${id}\ndata: ${JSON.stringify({ ...datos, tipo: t })}\n\n`);
 }
 
 /** El estado que recibe alguien apenas se conecta. */
@@ -117,12 +144,28 @@ export function suscribir(slug, req, res) {
      aca y partirlo en dos lugares seria peor. */
   for (const m of c.mensajes) escribir(res, ++seq, m.tipo ?? 'chat', m);
 
+  /* `soltar` se engancha a dos eventos que pueden llegar los dos, y
+     tarde: primero el close y despues un error, o al reves. Sin la
+     bandera, la segunda pasada volvia a evaluar la condicion de borrado
+     con el canal ya cambiado. */
+  let soltado = false;
   const soltar = () => {
+    if (soltado) return;
+    soltado = true;
     c.clientes.delete(res);
+
     /* Un canal sin nadie mirando y sin nada que recordar no tiene por
        que seguir ocupando lugar: con miles de creadores en la Fase 3
        esto es la diferencia entre un Map que crece para siempre y uno
-       que respira. El que tiene reloj puesto se queda: es estado real. */
+       que respira. El que tiene reloj puesto se queda: es estado real.
+
+       El `canales.get(c.slug) === c` no es paranoia: `c` es el canal
+       que existia cuando ESTA conexion se abrio. Si el ultimo se fue,
+       el canal se borro, y despues entro otro con el mismo slug, el
+       Map ya apunta a un canal NUEVO. Borrar por slug ahi dejaba al
+       recien llegado con su EventSource abierto y sin canal detras: sin
+       eventos, sin pings, sin error, para siempre. */
+    if (canales.get(c.slug) !== c) return;
     if (!c.clientes.size && !c.mensajes.length && !c.reloj) canales.delete(c.slug);
   };
   req.on('close', soltar);
@@ -134,7 +177,7 @@ export function suscribir(slug, req, res) {
 /**
  * Manda un evento a todos los conectados de un canal.
  * @param {string} slug
- * @param {{tipo:string}} evento  el `tipo` es el nombre del evento SSE
+ * @param {{tipo:string}} evento  el `tipo` viaja adentro del data (ver `escribir`)
  */
 export function difundir(slug, evento) {
   const c = canales.get(String(slug).toLowerCase());

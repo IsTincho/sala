@@ -31,15 +31,24 @@ let motivoSinClave = 'CLAVE_CIFRADO no esta cargada';
 function cargarClave() {
   if (clave) return clave;
 
-  const crudo = process.env.CLAVE_CIFRADO ?? '';
+  /* El trim es para el copiar y pegar: un salto de linea al final
+     cambia los bytes de la clave y el error resultante no se parece en
+     nada a su causa. */
+  const crudo = (process.env.CLAVE_CIFRADO ?? '').trim();
   if (!crudo) throw new Error(motivoSinClave);
 
-  let bytes;
-  try {
-    bytes = Buffer.from(crudo, 'base64');
-  } catch {
+  /* Buffer.from(x, 'base64') NO tira nunca: lo que no entiende lo
+     ignora en silencio. Antes esto estaba en un try/catch, o sea que
+     la rama del error era codigo muerto y una clave pegada por la
+     mitad se convertia en bytes distintos sin decir nada. Se valida
+     con una expresion regular, que es lo unico que de verdad avisa.
+     Se acepta base64 y base64url: el generador del README da base64,
+     pero base64url es lo que sale de muchos comandos y funciona
+     igual. */
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(crudo)) {
     throw new Error('CLAVE_CIFRADO no es base64 valido');
   }
+  const bytes = Buffer.from(crudo, 'base64');
   if (bytes.length !== 32) {
     /* Se dice cuantos bytes tiene, no cuales: el largo ayuda a
        arreglarlo y no revela nada del contenido. */

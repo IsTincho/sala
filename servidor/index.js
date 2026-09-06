@@ -102,17 +102,39 @@ const escapar = s => String(s)
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 
-/** El cuerpo crudo de un pedido. Crudo importa: el webhook lo firma. */
+/**
+ * El cuerpo crudo de un pedido, EN BYTES. Crudo importa: el webhook lo
+ * firma.
+ *
+ * Se acumulan Buffers y se concatenan al final. Ir sumando `d += c`
+ * decodifica cada trozo por separado, y el corte entre dos paquetes
+ * TCP cae donde quiere: si parte un caracter UTF-8 al medio (cualquier
+ * emoji o acento), los bytes partidos se convierten en U+FFFD y el
+ * cuerpo reconstruido deja de ser el que Kick firmo. La verificacion
+ * da 401, Kick reintenta, y el mensaje llega tarde o no llega. Pasaba
+ * solo con mensajes con emoji y solo a veces: el peor tipo de bug.
+ *
+ * El tope tambien cuenta bytes y no unidades UTF-16, que es lo que de
+ * verdad ocupa el pedido.
+ */
 function leerCuerpo(req, tope = 1_000_000) {
   return new Promise((ok, mal) => {
-    let d = '';
+    const partes = [];
+    let total = 0;
     req.on('data', c => {
-      d += c;
-      if (d.length > tope) { mal(new Error('cuerpo demasiado grande')); req.destroy(); }
+      total += c.length;
+      if (total > tope) { mal(new Error('cuerpo demasiado grande')); req.destroy(); return; }
+      partes.push(c);
     });
-    req.on('end', () => ok(d));
+    req.on('end', () => ok(Buffer.concat(partes)));
     req.on('error', mal);
   });
+}
+
+/** El pathname de una URL, sin query. Para loguear sin filtrar nada. */
+function soloRuta(u) {
+  try { return new URL(u ?? '', 'http://sala.local').pathname; }
+  catch { return '(ruta invalida)'; }
 }
 
 /**
@@ -208,11 +230,23 @@ async function estatico(url, req, res) {
    unico que ata el callback con quien lo empezo. Vive en memoria y se
    vence solo, igual que el de Kick. */
 const VENTANA_LOGIN = 10 * 60 * 1000;
+
+/* Tope duro del Map. La purga por vencimiento sola no alcanza: como
+   corre recien cuando alguien empieza otro login, pegarle mil veces a
+   /oauth/twitch/entrar hace crecer el Map sin que nada lo limpie. Mil
+   logins a medio empezar es mas de lo que este servicio va a ver
+   nunca; pasado eso se sueltan los mas viejos (Map conserva el orden
+   de insercion). */
+const TOPE_PENDIENTES = 1000;
+
 const pendientesTwitch = new Map();
 
 function nuevoEstadoTwitch(destino = '') {
   const ahora = Date.now();
   for (const [k, v] of pendientesTwitch) if (v.vence < ahora) pendientesTwitch.delete(k);
+  while (pendientesTwitch.size >= TOPE_PENDIENTES) {
+    pendientesTwitch.delete(pendientesTwitch.keys().next().value);
+  }
   const estado = nodeCrypto.randomBytes(16).toString('base64url');
   pendientesTwitch.set(estado, { destino, vence: ahora + VENTANA_LOGIN });
   return estado;
@@ -282,10 +316,16 @@ async function twitchVolver(url, req, res) {
 
   const code = url.searchParams.get('code') ?? '';
   const estado = url.searchParams.get('state') ?? '';
-  if (!pendientesTwitch.has(estado)) {
+  /* Se consume primero y se juzga despues: un state vale una sola vez,
+     valga o no. Y el vencimiento se comprueba aca, porque la purga del
+     Map corre recien cuando alguien empieza OTRO login: sin este
+     chequeo, un state sin nadie atras se queda vivo indefinidamente y
+     la ventana de 10 minutos no existe. */
+  const pendiente = pendientesTwitch.get(estado);
+  pendientesTwitch.delete(estado);
+  if (!pendiente || pendiente.vence < Date.now()) {
     return pagina(res, 'Ese login ya no vale', 'El state no coincide o se vencio. Proba de nuevo.');
   }
-  pendientesTwitch.delete(estado);
 
   try {
     const t = await twitch.canjearCodigo({ code, redirect: `${baseDe(req)}/oauth/twitch/volver` });
@@ -301,10 +341,11 @@ async function twitchVolver(url, req, res) {
 /* --------------------------------------------------------- webhook */
 
 /**
- * Un evento de Kick. Tres puertas antes de creerle:
+ * Un evento de Kick. Cuatro puertas antes de creerle:
  *   1. que la firma RSA de el
- *   2. que no lo hayamos procesado ya (Kick reintenta)
- *   3. que el JSON parsee
+ *   2. que sea reciente (una firma valida vale para siempre)
+ *   3. que no lo hayamos procesado ya (Kick reintenta)
+ *   4. que el JSON parsee
  *
  * El 401 de la primera no da detalles a proposito: quien esta
  * probando firmas no tiene por que enterarse de cual fallo.
@@ -318,15 +359,37 @@ async function kickWebhook(url, req, res) {
 
   const evento = webhook.datosDelEvento(req.headers);
 
+  /* La firma sola no alcanza: un webhook capturado y bien firmado se
+     puede reenviar cuando quiera, y el anillo de 500 ids solo lo ataja
+     hasta que pasen 500 mensajes. La ventana de antiguedad lo cierra.
+     Se contesta 200 y no 401 para que Kick deje de reintentarlo: un
+     evento viejo no mejora por reintentarse. */
+  if (!webhook.esReciente(evento.cuando)) {
+    console.warn(`[webhook] ${evento.tipo} descartado por viejo (${evento.cuando})`);
+    return texto(res, 200, 'vencido');
+  }
+
   /* Ya visto: se contesta 200 igual. Un 4xx haria que Kick lo siga
      reintentando para siempre, y el problema no es de Kick. */
   if (webhook.yaVisto(evento.id)) return texto(res, 200, 'repetido');
 
+  /* De aca en adelante, TODO camino que no termine procesando el
+     evento tiene que desmarcarlo. Si queda marcado sin haberse
+     procesado, el reintento de Kick se contesta "repetido" y el
+     mensaje se pierde para siempre. */
   let cuerpo;
   try { cuerpo = JSON.parse(crudo); }
-  catch { return texto(res, 400, 'json invalido'); }
+  catch {
+    webhook.olvidar(evento.id);
+    return texto(res, 400, 'json invalido');
+  }
 
-  await procesarEvento(evento, cuerpo);
+  try {
+    await procesarEvento(evento, cuerpo);
+  } catch (e) {
+    webhook.olvidar(evento.id);
+    throw e;                       // el 500 lo arma crearServidor
+  }
   return texto(res, 200, 'ok');
 }
 
@@ -339,6 +402,13 @@ async function kickWebhook(url, req, res) {
  * provisorio que se filtra al cliente es despues imposible de cambiar.
  */
 async function procesarEvento(evento, cuerpo) {
+  /* OJO EN LA FASE 3: este `??` esta bien mientras haya un solo canal,
+     pero el dia que haya varios creadores un evento sin
+     broadcaster.channel_slug se difundiria en el canal del DUEÑO, o
+     sea el chat de un creador cayendo en la sala de otro. Cuando entre
+     el segundo creador hay que resolver el slug contra la suscripcion
+     (Kick-Event-Subscription-Id) y descartar lo que no se pueda
+     atribuir, en vez de adivinar. */
   const slug = cuerpo?.broadcaster?.channel_slug ?? SLUG_DUENO;
   if (!slug) return;
   canales.difundir(slug, { tipo: 'kick', evento: evento.tipo, cuando: evento.cuando });
@@ -356,7 +426,8 @@ async function procesarEvento(evento, cuerpo) {
 async function pruebaWebhook(url, req, res) {
   const crudo = await leerCuerpo(req);
   let cuerpo;
-  try { cuerpo = crudo ? JSON.parse(crudo) : {}; }
+  /* `crudo.length` y no `crudo`: un Buffer vacio es truthy. */
+  try { cuerpo = crudo.length ? JSON.parse(crudo) : {}; }
   catch { return json(res, 400, { error: 'json invalido' }); }
 
   const slug = url.searchParams.get('canal') ?? cuerpo?.broadcaster?.channel_slug ?? SLUG_DUENO;
@@ -408,9 +479,27 @@ function compilar(patron) {
   return { regex: new RegExp(`^${regex}$`), nombres };
 }
 
+/**
+ * SSE. Un HEAD no abre stream: la respuesta no lleva cuerpo, asi que
+ * el handler escribiria eventos en el vacio y el pedido no terminaria
+ * nunca. Un monitor de uptime que use HEAD (curl -I es lo primero que
+ * prueba cualquiera) dejaria un socket colgado y un cliente fantasma
+ * contando en el canal. Se contesta con las cabeceras y nada mas.
+ */
+function eventos(url, req, res, p) {
+  if (req.method === 'HEAD') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    });
+    return res.end();
+  }
+  return canales.suscribir(p.slug, req, res);
+}
+
 const RUTAS = [
   ['GET',  '/api/estado',          apiEstado],
-  ['GET',  '/eventos/:slug',       (url, req, res, p) => canales.suscribir(p.slug, req, res)],
+  ['GET',  '/eventos/:slug',       eventos],
   ['GET',  '/oauth/kick/entrar',   kickEntrar],
   ['GET',  '/oauth/kick/volver',   kickVolver],
   ['GET',  '/oauth/twitch/entrar', twitchEntrar],
@@ -432,8 +521,15 @@ export async function manejar(req, res) {
     if (r.metodo !== req.method && !(r.metodo === 'GET' && req.method === 'HEAD')) {
       return texto(res, 405, `${ruta} solo acepta ${r.metodo}`, { Allow: r.metodo });
     }
+    /* decodeURIComponent tira URIError con un %ZZ o un % suelto. Sin
+       este try eso sale como 500 con stack trace en los logs; lo
+       honesto es 404, que es lo mismo que hace estatico(). */
     const params = {};
-    r.nombres.forEach((n, i) => { params[n] = decodeURIComponent(m[i + 1]); });
+    try {
+      r.nombres.forEach((n, i) => { params[n] = decodeURIComponent(m[i + 1]); });
+    } catch {
+      return texto(res, 404, 'no existe');
+    }
     return r.manejador(url, req, res, params);
   }
 
@@ -447,7 +543,11 @@ export function crearServidor() {
     try {
       await manejar(req, res);
     } catch (e) {
-      console.error('[http]', req.method, req.url, e);
+      /* Solo el pathname, nunca la URL entera: /oauth/kick/volver lleva
+         el `code` de OAuth en la query, es de un solo uso, y los logs
+         de Railway no se borran. Lo mismo cualquier token que algun dia
+         viaje por query. */
+      console.error('[http]', req.method, soloRuta(req.url), e);
       /* Si ya se empezo a escribir (un SSE, un archivo), no se puede
          mandar un status: lo unico honesto es cortar. */
       if (!res.headersSent) json(res, 500, { error: 'error del servidor' });

@@ -27,10 +27,11 @@
 
 <script src="comun/bus.js"></script>
 <script>
-  // El slug del canal a mirar sale de ?canal=, y si no esta usamos
-  // el del dueño por default.
+  // El slug del canal a mirar sale de ?canal=; si no esta, del que el
+  // servidor dice que es el canal del dueño (KICK_SLUG) en
+  // /api/estado. No se escribe ningun slug a mano: con otro KICK_SLUG
+  // cargado, la pagina se quedaba mirando un canal que no existe.
   const parametros = new URLSearchParams(location.search);
-  const slug = parametros.get('canal') || 'istincho';
 
   const puntitoBus  = document.getElementById('puntito-bus');
   const textoBus    = document.getElementById('texto-bus');
@@ -49,22 +50,29 @@
                                  'sin conexión';
   };
 
-  const conexion = window.Sala.conectar(slug, (tipo, datos) => {
-    if (tipo === 'estado') {
-      textoCanal.textContent = `canal: ${datos.slug} · conectados: ${datos.conectados}`;
+  function conectarAlBus(slug) {
+    if (!slug) {
+      textoCanal.textContent =
+        'no hay canal: el servidor no tiene KICK_SLUG cargado. Probá con ?canal=<slug>.';
+      return;
     }
-    // el estado de la conexion puede haber cambiado justo al recibir
-    // el evento (por ejemplo pasa a 'conectado' con el primer 'open')
+    const conexion = window.Sala.conectar(slug, (tipo, datos) => {
+      if (tipo === 'estado') {
+        textoCanal.textContent = `canal: ${datos.slug} · conectados: ${datos.conectados}`;
+      }
+      // el estado de la conexion puede haber cambiado justo al recibir
+      // el evento (por ejemplo pasa a 'conectado' con el primer 'open')
+      mostrarEstadoBus(conexion.estado);
+    });
+
+    // El estado de conexion tambien cambia sin que llegue ningun
+    // evento (por ejemplo al cortarse), asi que se revisa aparte.
     mostrarEstadoBus(conexion.estado);
-  });
+    setInterval(() => mostrarEstadoBus(conexion.estado), 1000);
+  }
 
-  // El estado de conexion tambien cambia sin que llegue ningun
-  // evento (por ejemplo al cortarse), asi que se revisa aparte.
-  mostrarEstadoBus(conexion.estado);
-  setInterval(() => mostrarEstadoBus(conexion.estado), 1000);
-
-  // GET /api/estado: si falla, se muestra con calma y no rompe nada
-  // del resto de la pagina.
+  // GET /api/estado: dice qué canal mirar y cómo está el servidor. Si
+  // falla, se muestra con calma y se intenta igual con ?canal=.
   fetch('/api/estado')
     .then(r => {
       if (!r.ok) throw new Error('http ' + r.status);
@@ -76,9 +84,11 @@
       const hora    = info.hora ? new Date(info.hora).toLocaleTimeString('es-AR') : '—';
       textoServidor.textContent =
         `modo: ${info.modo} · almacén: ${almacen}${motivo} · hora del servidor: ${hora}`;
+      conectarAlBus(parametros.get('canal') || info.slug);
     })
     .catch(() => {
       textoServidor.textContent = 'no se pudo consultar /api/estado';
+      conectarAlBus(parametros.get('canal'));
     });
 </script>
 </body>

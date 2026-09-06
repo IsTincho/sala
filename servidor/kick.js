@@ -121,6 +121,14 @@ const VENTANA_LOGIN = 10 * 60 * 1000;   // lo que dura un login a medias
    ensuciar la base con basura que se vence sola. */
 const pendientes = new Map();
 
+/* Tope duro del Map. La purga por vencimiento corre recien cuando
+   alguien empieza OTRO login: si nadie mas entra, lo pendiente se
+   queda ahi, y mil pedidos a /oauth/kick/entrar hacen crecer el Map
+   sin que nada lo limpie. Mil logins a medio empezar es mas de lo que
+   este servicio va a ver nunca; pasado eso se sueltan los mas viejos
+   (Map conserva el orden de insercion). */
+const TOPE_PENDIENTES = 1000;
+
 /* A donde mandar a la persona despues del login. Se acepta SOLO una
    ruta de este mismo sitio: tiene que empezar con una barra y no con
    dos, porque `//otro.com` es una URL absoluta disfrazada y seria un
@@ -138,6 +146,7 @@ export function urlLogin({ redirect, rol = 'espectador', destino = '' }) {
 
   const ahora = Date.now();
   for (const [k, v] of pendientes) if (v.vence < ahora) pendientes.delete(k);
+  while (pendientes.size >= TOPE_PENDIENTES) pendientes.delete(pendientes.keys().next().value);
 
   const estado = crypto.randomBytes(16).toString('base64url');
   const verificador = crypto.randomBytes(32).toString('base64url');
@@ -172,8 +181,13 @@ export const hayLoginPendiente = estado => pendientes.has(estado);
  */
 export async function canjearCodigo({ code, estado }) {
   const p = pendientes.get(estado);
+  pendientes.delete(estado);          // valga o no, un state se usa una sola vez
   if (!p) throw new Error('state desconocido o vencido: volve a empezar');
-  pendientes.delete(estado);
+  /* El vencimiento se comprueba aca y no solo en la purga de urlLogin:
+     la purga corre cuando alguien empieza otro login, asi que un state
+     solo, sin nadie mas entrando, se estiraba mas alla de los 10
+     minutos. La ventana tiene que valer aunque no pase nadie. */
+  if (p.vence < Date.now()) throw new Error('el login se vencio: volve a empezar');
 
   const r = await fetch(`${ID}/oauth/token`, {
     method: 'POST',

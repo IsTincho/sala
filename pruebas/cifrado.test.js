@@ -106,3 +106,37 @@ test('una CLAVE_CIFRADO de largo incorrecto hace que hayClave() de false y el er
   assert.equal(ok, false);
   assert.match(motivo, /16/);
 });
+
+test('una CLAVE_CIFRADO que no es base64 se rechaza y lo dice', async () => {
+  /* Buffer.from(x, 'base64') no tira NUNCA: lo que no entiende lo
+     ignora en silencio. Antes esto estaba envuelto en un try/catch, o
+     sea que la rama del error era codigo muerto: una clave con un
+     caracter de mas se aceptaba como si nada, porque al ignorarlo
+     quedaban 32 bytes igual. */
+  const conBasura = (() => {
+    const buena = crypto.randomBytes(32).toString('base64');
+    return `${buena.slice(0, 10)}#${buena.slice(10)}`;   // decodifica a los mismos 32 bytes
+  })();
+
+  const antes = process.env.CLAVE_CIFRADO;
+  process.env.CLAVE_CIFRADO = conBasura;
+  try {
+    /* Instancia aparte del modulo: el `?` la separa en el cache. */
+    const otro = await import('../servidor/cifrado.js?clave-invalida=1');
+    assert.equal(otro.hayClave(), false, 'no se acepta una clave con basura adentro');
+    assert.match(otro.porQueNoHayClave(), /base64/);
+  } finally {
+    process.env.CLAVE_CIFRADO = antes;
+  }
+});
+
+test('a la clave se le perdonan los espacios de los costados', async () => {
+  const antes = process.env.CLAVE_CIFRADO;
+  process.env.CLAVE_CIFRADO = `  ${crypto.randomBytes(32).toString('base64')}\n`;
+  try {
+    const otro = await import('../servidor/cifrado.js?clave-con-espacios=1');
+    assert.equal(otro.hayClave(), true, 'un salto de linea al pegar no puede romper todo');
+  } finally {
+    process.env.CLAVE_CIFRADO = antes;
+  }
+});

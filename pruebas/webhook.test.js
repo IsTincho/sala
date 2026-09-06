@@ -153,3 +153,71 @@ test('el fixture tiene la forma que documenta Kick', () => {
   assert.equal(p.broadcaster.channel_slug, 'istincho', 'por aca se sabe a que canal va');
   assert.ok(Array.isArray(p.emotes), 'emotes es un array aparte del content');
 });
+
+/* ------------------------------------------------ el cuerpo en bytes */
+
+test('verifica igual si el cuerpo llega como Buffer', async () => {
+  /* El camino de produccion no decodifica el cuerpo nunca: lo que Kick
+     firmo son bytes, y decodificarlos y volverlos a codificar es lo que
+     rompia la firma cuando un caracter multibyte caia partido entre dos
+     paquetes TCP. */
+  assert.equal(await webhook.verificar(cabecerasFirmadas(PAYLOAD), Buffer.from(PAYLOAD, 'utf8')), true);
+});
+
+test('un cuerpo con emoji verifica igual, venga como Buffer o como texto', async () => {
+  const conEmoji = JSON.stringify({ content: 'buenisima la peli 🎉 ñandú' });
+  const cabeceras = cabecerasFirmadas(conEmoji, { id: 'MENSAJE-EMOJI' });
+  assert.equal(await webhook.verificar(cabeceras, conEmoji), true);
+  assert.equal(await webhook.verificar(cabeceras, Buffer.from(conEmoji, 'utf8')), true);
+});
+
+/* --------------------------------------------- ventana de antiguedad */
+
+test('esReciente acepta lo de ahora y rechaza lo viejo', () => {
+  const ahora = Date.parse('2026-09-06T12:00:00Z');
+
+  assert.equal(webhook.esReciente('2026-09-06T12:00:00Z', ahora), true);
+  assert.equal(webhook.esReciente('2026-09-06T11:55:00Z', ahora), true, 'cinco minutos entra');
+  assert.equal(webhook.esReciente('2026-09-06T11:45:00Z', ahora), false, 'un cuarto de hora ya no');
+
+  /* Tolerancia hacia adelante: el reloj de Kick puede ir adelantado
+     respecto del del contenedor, y eso no es un ataque. */
+  assert.equal(webhook.esReciente('2026-09-06T12:05:00Z', ahora), true);
+  assert.equal(webhook.esReciente('2026-09-06T12:30:00Z', ahora), false);
+
+  /* Los dos formatos de epoch, por si Kick cambia el suyo. */
+  assert.equal(webhook.esReciente(String(Math.floor(ahora / 1000)), ahora), true, 'epoch en segundos');
+  assert.equal(webhook.esReciente(String(ahora), ahora), true, 'epoch en milisegundos');
+  assert.equal(webhook.esReciente(String(Math.floor((ahora - 3600_000) / 1000)), ahora), false);
+});
+
+test('una fecha que no se entiende se deja pasar, y se avisa una sola vez', () => {
+  /* Es la unica parte de la verificacion que falla abierta, y es
+     deliberado: el timestamp entra en la firma, asi que es autentico
+     aunque no lo sepamos leer. Si Kick cambiara el formato, descartar
+     todo dejaria el chat mudo al 100 %. */
+  webhook.olvidarAvisoDeFormato();
+  const avisos = [];
+  const original = console.warn;
+  console.warn = (...a) => avisos.push(a.join(' '));
+  try {
+    for (const basura of ['', 'no es una fecha', undefined, null]) {
+      assert.equal(webhook.esReciente(basura, Date.now()), true, `${basura} no se puede juzgar`);
+    }
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(avisos.length, 1, 'se avisa una vez, no en cada mensaje del chat');
+  assert.match(avisos[0], /Kick-Event-Message-Timestamp/);
+});
+
+test('olvidar deja que un evento que fallo se vuelva a intentar', () => {
+  webhook.olvidarVistos();
+
+  assert.equal(webhook.yaVisto('EVENTO-QUE-FALLA'), false);
+  assert.equal(webhook.yaVisto('EVENTO-QUE-FALLA'), true, 'quedo marcado');
+
+  webhook.olvidar('EVENTO-QUE-FALLA');
+  assert.equal(webhook.yaVisto('EVENTO-QUE-FALLA'), false,
+    'sin esto, el reintento de Kick se contesta "repetido" y el evento se pierde');
+});

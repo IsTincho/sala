@@ -13,6 +13,9 @@
      /oauth/twitch/entrar     vinculacion de Twitch (code flow)
      /oauth/twitch/volver     callback
      /kick/webhook            eventos de Kick, firmados con RSA
+     /panel                   el panel del dueño
+     /chat                    el Chat Global (Kick + Twitch)
+     /api/chat/*              salud, envio y resuscripcion del chat
      /api/estado              como esta el servidor
 
    LO QUE ESTE SERVIDOR NO HACE NUNCA: servir video. El navegador le
@@ -30,10 +33,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as almacen from './almacen.js';
 import * as canales from './canales.js';
+import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
 import * as kick from './kick.js';
 import * as sesion from './sesion.js';
 import * as twitch from './twitch.js';
+import * as vinculos from './vinculos.js';
 import * as webhook from './webhook.js';
 
 const AQUI    = path.dirname(fileURLToPath(import.meta.url));
@@ -257,6 +262,15 @@ const VENTANA_LOGIN = 10 * 60 * 1000;
    de insercion). */
 const TOPE_PENDIENTES = 1000;
 
+/* A donde mandar a la persona cuando termina de loguearse. Se acepta
+   SOLO una ruta de este mismo sitio: tiene que empezar con una barra
+   y no con dos, porque `//otro.com` es una URL absoluta disfrazada y
+   convertiria nuestro callback de OAuth en un redirect abierto.
+   kick.js tiene la misma guarda para lo suyo; esta es para el destino
+   que vuelve del Map de Twitch y para el de Kick al redirigir. */
+const destinoSeguro = d =>
+  (typeof d === 'string' && /^\/[^/\\]/.test(d) ? d : '');
+
 const pendientesTwitch = new Map();
 
 function nuevoEstadoTwitch(destino = '') {
@@ -285,15 +299,15 @@ async function kickEntrar(url, req, res) {
 }
 
 /*
- * En la Fase 0 el callback llega hasta "sos fulano" y ahi se planta: el
- * token se usa para preguntar quien sos y se descarta sin guardarlo.
+ * El callback de Kick, ya con todo lo que la Fase 0 dejo pendiente:
+ * se guarda el vinculo cifrado, se abre la sesion del dueño y se
+ * suscriben los eventos de su canal.
  *
- * Es deliberado. Guardar el refresh token cifrado y decidir roles es
- * trabajo de la Fase 1, y hacerlo a medias ahora dejaria tokens de
- * verdad en la base antes de que exista el codigo que los cuida. Asi,
- * en cambio, el dueño puede probar el circuito entero de OAuth apenas
- * cargue las credenciales, y lo peor que puede pasar es que tenga que
- * loguearse de nuevo la proxima fase.
+ * LOGIN NO ES AUTORIZACION. Entrar con Kick solo prueba quien sos. El
+ * dueño es el que ademas tiene el slug de KICK_SLUG: cualquier otra
+ * persona puede completar este flujo entero y lo unico que se lleva
+ * es una pagina que le dice que no es el dueño. Ningun token de nadie
+ * mas se guarda.
  */
 async function kickVolver(url, req, res) {
   const error = url.searchParams.get('error');
@@ -303,17 +317,64 @@ async function kickVolver(url, req, res) {
   const estado = url.searchParams.get('state') ?? '';
   if (!code || !estado) return pagina(res, 'Falta algo', 'El callback vino sin code o sin state.');
 
+  let t;
+  let yo;
   try {
-    const t = await kick.canjearCodigo({ code, estado });
-    const yo = await kick.quienEs(t.accessToken);
-    const esDueno = Boolean(SLUG_DUENO) && yo.slug.toLowerCase() === SLUG_DUENO;
-    return pagina(res, `Hola, ${yo.nombre}`,
-      `Kick te reconocio (id ${yo.id}${yo.slug ? `, canal ${yo.slug}` : ''}). ` +
-      `${esDueno ? 'Sos el dueño del canal. ' : ''}` +
-      `El token no se guardo: eso llega en la Fase 1.`);
+    t = await kick.canjearCodigo({ code, estado });
+    yo = await kick.quienEs(t.accessToken);
   } catch (e) {
     return pagina(res, 'No se pudo completar el login', e.message);
   }
+
+  /* El login de espectador es de la Fase 2: hoy no hay donde usarlo y
+     guardar su token seria juntar datos de gente para nada. */
+  if (t.rol !== 'dueno') {
+    return pagina(res, `Hola, ${yo.nombre}`,
+      'Kick te reconocio. El login de espectador llega con la Sala, en la Fase 2.');
+  }
+
+  if (!SLUG_DUENO) {
+    return pagina(res, 'Falta KICK_SLUG',
+      'El servidor no sabe cual es el canal del dueño, asi que no puede reconocerte como tal.');
+  }
+  if (yo.slug.toLowerCase() !== SLUG_DUENO) {
+    return pagina(res, `Hola, ${yo.nombre}`,
+      `Esta cuenta es del canal ${yo.slug || '(sin canal)'} y el dueño de esta Sala es ` +
+      `${SLUG_DUENO}. No se guardo nada.`);
+  }
+
+  try {
+    await vinculos.guardar('kick', {
+      usuarioId: yo.id,
+      nombre: yo.nombre,
+      login: yo.slug,
+      slug: yo.slug,
+      accessToken: t.accessToken,
+      refreshToken: t.refreshToken,
+      venceEn: t.venceEn,
+      scopes: t.scopes,
+    });
+  } catch (e) {
+    return pagina(res, 'No se pudo guardar el vinculo', e.message);
+  }
+
+  const cookie = await sesion.crear({
+    tipo: 'dueno',
+    usuario: yo.id,
+    nombre: yo.nombre,
+    slug: yo.slug,
+    agente: req.headers['user-agent'] ?? '',
+  });
+
+  /* La suscripcion se intenta ahora pero NO decide el resultado del
+     login: si Kick esta caido, la sesion ya vale y el verificador de
+     cada cinco minutos la va a crear despues. Fallar aca dejaria al
+     dueño sin poder entrar por algo que se arregla solo. */
+  chat.verificarKick().catch(e => console.warn('[chat] no se pudo suscribir a Kick:', e.message));
+
+  return redirigir(res, destinoSeguro(t.destino) || '/panel', {
+    'Set-Cookie': sesion.cabeceraCookie('dueno', cookie),
+  });
 }
 
 async function twitchEntrar(url, req, res) {
@@ -345,15 +406,37 @@ async function twitchVolver(url, req, res) {
     return pagina(res, 'Ese login ya no vale', 'El state no coincide o se vencio. Proba de nuevo.');
   }
 
+  /* Twitch se VINCULA, no se loguea: la identidad de esta Sala la da
+     Kick. Sin sesion de dueño abierta, un token de Twitch de
+     cualquiera terminaria guardado como si fuera el del dueño, y el
+     servidor mandaria sus mensajes al chat de esa persona. */
+  const suyo = await sesion.leer(req, 'dueno');
+  if (!suyo) {
+    return pagina(res, 'Primero entra con Kick',
+      'Vincular Twitch necesita la sesion del dueño: entra con Kick desde /panel y volve a intentarlo.');
+  }
+
   try {
     const t = await twitch.canjearCodigo({ code, redirect: `${baseDe(req)}/oauth/twitch/volver` });
     const yo = await twitch.usuarioActual(t.accessToken);
-    return pagina(res, `Hola, ${yo.nombre}`,
-      `Twitch te reconocio (id ${yo.id}, usuario ${yo.login}). ` +
-      `El token no se guardo: eso llega en la Fase 1.`);
+    await vinculos.guardar('twitch', {
+      usuarioId: yo.id,
+      nombre: yo.nombre,
+      login: yo.login,
+      slug: yo.login,
+      accessToken: t.accessToken,
+      refreshToken: t.refreshToken,
+      venceEn: t.venceEn,
+      scopes: t.scopes,
+    });
+    /* Se conecta en segundo plano: el navegador no tiene por que
+       esperar a que el WebSocket de Twitch haga su handshake. */
+    chat.conectarTwitch().catch(e => console.warn('[chat] no se pudo conectar Twitch:', e.message));
   } catch (e) {
-    return pagina(res, 'No se pudo completar el login', e.message);
+    return pagina(res, 'No se pudo vincular Twitch', e.message);
   }
+
+  return redirigir(res, destinoSeguro(pendiente.destino) || '/panel');
 }
 
 /* --------------------------------------------------------- webhook */
@@ -412,25 +495,24 @@ async function kickWebhook(url, req, res) {
 }
 
 /*
- * Fase 0: se anota que llego y se reparte crudo por SSE para poder ver
- * el circuito de punta a punta.
+ * Que hacer con un evento de Kick ya verificado.
  *
- * La traduccion al formato unico de mensaje (servidor/mensajes.js) es
- * de la Fase 1. No se inventa aca un formato provisorio: un formato
- * provisorio que se filtra al cliente es despues imposible de cambiar.
+ * La traduccion al formato unico y el reparto por el bus viven en
+ * chat.js: aca solo queda el ruteo y el log. Asi la Sala de la Fase 2
+ * puede usar el mismo camino sin copiar nada.
+ *
+ * OJO EN LA FASE 3: el slug sale de `broadcaster.channel_slug` con el
+ * del dueño como respaldo. Esta bien mientras haya un solo canal, pero
+ * el dia que haya varios creadores un evento sin channel_slug se
+ * difundiria en el canal del DUEÑO, o sea el chat de un creador
+ * cayendo en la sala de otro. Cuando entre el segundo creador hay que
+ * resolver el slug contra la suscripcion (Kick-Event-Subscription-Id)
+ * y descartar lo que no se pueda atribuir, en vez de adivinar.
  */
 async function procesarEvento(evento, cuerpo) {
-  /* OJO EN LA FASE 3: este `??` esta bien mientras haya un solo canal,
-     pero el dia que haya varios creadores un evento sin
-     broadcaster.channel_slug se difundiria en el canal del DUEÑO, o
-     sea el chat de un creador cayendo en la sala de otro. Cuando entre
-     el segundo creador hay que resolver el slug contra la suscripcion
-     (Kick-Event-Subscription-Id) y descartar lo que no se pueda
-     atribuir, en vez de adivinar. */
+  const r = chat.recibirDeKick(evento, cuerpo);
   const slug = cuerpo?.broadcaster?.channel_slug ?? SLUG_DUENO;
-  if (!slug) return;
-  canales.difundir(slug, { tipo: 'kick', evento: evento.tipo, cuando: evento.cuando });
-  console.log(`[webhook] ${evento.tipo} de ${slug}`);
+  console.log(`[webhook] ${evento.tipo} de ${slug}: ${r.hecho}`);
 }
 
 /**
@@ -449,6 +531,35 @@ async function pruebaWebhook(url, req, res) {
   catch { return json(res, 400, { error: 'json invalido' }); }
 
   const slug = url.searchParams.get('canal') ?? cuerpo?.broadcaster?.channel_slug ?? SLUG_DUENO;
+
+  /* Con `?tipo=` el evento entra por el MISMO camino que uno de verdad:
+     se traduce al formato unico y sale como `chat`. Es la unica forma
+     de ver la pagina /chat con mensajes andando en una maquina de casa,
+     porque los webhooks de Kick no llegan a localhost y firmar uno a
+     mano necesitaria la clave privada de Kick.
+
+     Sin `?tipo=` se difunde el cuerpo crudo como evento `prueba`, que es
+     lo que hacia la Fase 0 y sirve para probar el cable del bus sin
+     hablar del formato de los mensajes. */
+  const tipo = url.searchParams.get('tipo');
+  if (tipo) {
+    const evento = {
+      id: `prueba-${nodeCrypto.randomUUID()}`,
+      tipo,
+      cuando: new Date().toISOString(),
+      version: '1',
+      suscripcion: 'prueba',
+    };
+    /* `?canal=` gana sobre lo que diga el payload: el fixture trae el
+       slug del dueño escrito adentro y sin esto no habria forma de
+       probar otro canal. */
+    const conCanal = url.searchParams.get('canal')
+      ? { ...cuerpo, broadcaster: { ...(cuerpo?.broadcaster ?? {}), channel_slug: slug } }
+      : cuerpo;
+    const r = chat.recibirDeKick(evento, conCanal);
+    return json(res, 200, { ok: true, canal: slug, tipo, hecho: r.hecho });
+  }
+
   const cuantos = canales.difundir(slug, {
     tipo: 'prueba',
     cuerpo,
@@ -458,6 +569,99 @@ async function pruebaWebhook(url, req, res) {
 }
 
 /* ------------------------------------------------------------- api */
+
+/**
+ * El cuerpo de un pedido como JSON. Tope chico a proposito: por aca
+ * entran mensajes de chat de 500 caracteres, no archivos.
+ */
+async function leerJson(req, tope = 64 * 1024) {
+  const crudo = await leerCuerpo(req, tope);
+  if (!crudo.length) return {};
+  return JSON.parse(crudo);          // el que llama atrapa y contesta 400
+}
+
+/**
+ * Corre `fn` solo si el pedido trae la sesion del dueño.
+ *
+ * Es la unica puerta del Chat Global. La pagina /chat se sirve a
+ * cualquiera (es HTML sin datos), pero todo lo que trae o manda chat
+ * de verdad pasa por aca.
+ */
+async function conDueno(req, res, fn) {
+  const suyo = await sesion.leer(req, 'dueno');
+  if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
+  return fn(suyo);
+}
+
+/** Como estan las dos vias del chat. */
+async function apiChatSalud(url, req, res) {
+  return conDueno(req, res, () => json(res, 200, chat.salud()));
+}
+
+/**
+ * Manda un mensaje a Kick, a Twitch o a los dos.
+ *
+ * El resultado viene POR RED y no como un si/no global, porque el
+ * caso interesante es el del medio: salio en una y no en la otra. Un
+ * "error" pelado ahi haria que el dueño lo escriba de nuevo y quede
+ * repetido en la red donde si habia salido.
+ */
+async function apiChatEnviar(url, req, res) {
+  return conDueno(req, res, async () => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const destino = ['kick', 'twitch', 'ambos'].includes(pedido?.destino) ? pedido.destino : 'kick';
+    const r = await chat.enviar({
+      texto: pedido?.texto,
+      destino,
+      respondeA: typeof pedido?.respondeA === 'string' ? pedido.respondeA : undefined,
+    });
+
+    if (r.error) return json(res, 400, r);
+
+    const intentos = [r.kick, r.twitch].filter(Boolean);
+    const salioAlguno = intentos.some(x => x.ok);
+    if (salioAlguno) return json(res, 200, r);
+
+    /* Nadie lo recibio. Si el motivo es que nos estan frenando, el
+       codigo tiene que ser 429 para que la pagina sepa esperar en vez
+       de reintentar en el acto. */
+    if (intentos.some(x => x.estado === 429)) {
+      return json(res, 429, {
+        ...r,
+        error: 'las plataformas estan frenando los envios',
+        esperar: 5,
+      }, { 'Retry-After': '5' });
+    }
+    return json(res, 502, { ...r, error: intentos.map(x => x.motivo).join(' · ') || 'no se pudo enviar' });
+  });
+}
+
+/** Vuelve a crear las suscripciones de Kick, a mano. */
+async function apiChatResuscribir(url, req, res) {
+  return conDueno(req, res, async () => {
+    try { return json(res, 200, await chat.resuscribirKick()); }
+    catch (e) { return json(res, 502, { error: e.message }); }
+  });
+}
+
+/* --------------------------------------------------------- paginas
+
+   /panel y /chat son archivos de paginas/, pero con URL sin .html:
+   son direcciones que el dueño escribe a mano y que /chat ademas usa
+   como `start_url` de la app instalada. Un redirect a /chat.html
+   dejaria la app instalada arrancando en una URL distinta de su
+   scope, que es justo lo que rompe la instalacion. */
+
+const servirPagina = archivo => async (url, req, res) => {
+  const falso = new URL(`http://sala.local/${archivo}`);
+  if (await estatico(falso, req, res)) return;
+  return texto(res, 404, 'no existe');
+};
+
+
 
 async function apiEstado(url, req, res) {
   return json(res, 200, {
@@ -498,13 +702,39 @@ function compilar(patron) {
 }
 
 /**
+ * Si este slug puede tener un canal en el bus.
+ *
+ * Sin esta guarda, `/eventos/lo-que-sea` creaba una entrada en el Map
+ * de canales mientras la conexion viviera: cualquiera podia hacer
+ * crecer la memoria del servidor pidiendo slugs inventados, y de paso
+ * el contador de canales de /api/estado se llenaba de basura. La Fase
+ * 0 lo dejo anotado como trabajo de esta fase.
+ *
+ * Pasan el dueño (KICK_SLUG) y cualquier creador dado de alta. Hoy la
+ * coleccion `creadores` esta vacia y el unico que pasa es el dueño;
+ * la Fase 3 la llena y esto sigue valiendo sin tocarlo.
+ */
+async function canalPermitido(slug) {
+  const s = String(slug ?? '').toLowerCase();
+  if (!s) return false;
+  if (SLUG_DUENO && s === SLUG_DUENO) return true;
+  try { return Boolean(await almacen.obtener('creadores', s)); }
+  catch (e) {
+    /* Si el almacen no contesta, no se inventa un permiso. */
+    console.warn('[eventos] no se pudo comprobar el creador:', e.name);
+    return false;
+  }
+}
+
+/**
  * SSE. Un HEAD no abre stream: la respuesta no lleva cuerpo, asi que
  * el handler escribiria eventos en el vacio y el pedido no terminaria
  * nunca. Un monitor de uptime que use HEAD (curl -I es lo primero que
  * prueba cualquiera) dejaria un socket colgado y un cliente fantasma
  * contando en el canal. Se contesta con las cabeceras y nada mas.
  */
-function eventos(url, req, res, p) {
+async function eventos(url, req, res, p) {
+  if (!await canalPermitido(p.slug)) return texto(res, 404, 'ese canal no existe');
   if (req.method === 'HEAD') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -517,6 +747,11 @@ function eventos(url, req, res, p) {
 
 const RUTAS = [
   ['GET',  '/api/estado',          apiEstado],
+  ['GET',  '/api/chat/salud',      apiChatSalud],
+  ['POST', '/api/chat/enviar',     apiChatEnviar],
+  ['POST', '/api/chat/resuscribir', apiChatResuscribir],
+  ['GET',  '/panel',               servirPagina('panel.html')],
+  ['GET',  '/chat',                servirPagina('chat.html')],
   ['GET',  '/eventos/:slug',       eventos],
   ['GET',  '/oauth/kick/entrar',   kickEntrar],
   ['GET',  '/oauth/kick/volver',   kickVolver],
@@ -634,11 +869,20 @@ export async function arrancar() {
 
   canales.arrancarPings();
 
+  /* El Chat Global se levanta solo con lo que haya guardado: si el
+     dueño ya vinculo Twitch, la conexion EventSub vuelve sin que nadie
+     toque nada; si vinculo Kick, se comprueba que la suscripcion siga
+     estando. No se espera: un deploy no tiene por que quedarse sin
+     atender pedidos mientras Twitch hace su handshake. */
+  chat.arrancar({ slug: SLUG_DUENO, base: process.env.URL_BASE ?? '' })
+    .catch(e => console.warn('[chat] no se pudo arrancar:', e.message));
+
   const servidor = crearServidor();
   servidor.listen(PUERTO, () => console.log(`[http] escuchando en :${PUERTO} (modo ${MODO})`));
 
   const apagar = () => {
     console.log('[sala] apagando');
+    chat.parar();
     canales.cerrarTodo();
     servidor.close(() => process.exit(0));
     /* Railway manda SIGTERM y despues mata. Si alguna conexion SSE no

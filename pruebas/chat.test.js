@@ -1,0 +1,167 @@
+/* ============================================================
+   El orquestador del Chat Global: lo que junta las dos redes.
+
+   No se prueba contra Kick ni contra Twitch: se le entregan payloads
+   como los que mandan ellos y se mira que salga por el bus, con la
+   forma unica, una sola vez.
+   ============================================================ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const AQUI = path.dirname(fileURLToPath(import.meta.url));
+const DATOS = await fsp.mkdtemp(path.join(os.tmpdir(), 'sala-chat-'));
+process.env.SALA_DATOS = DATOS;
+process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
+
+const chat = await import('../servidor/chat.js');
+const canales = await import('../servidor/canales.js');
+const mensajes = await import('../servidor/mensajes.js');
+
+const FIXTURE = JSON.parse(
+  fs.readFileSync(path.join(AQUI, 'fijos', 'chat-mensaje.json'), 'utf8'),
+);
+
+const CANAL = 'istincho';
+
+test.beforeEach(() => {
+  chat.reiniciar();
+  canales.cerrarTodo();
+  chat.fijarCanal(CANAL);
+  /* `recordar` guarda en el canal aunque no haya nadie escuchando: es
+     el buffer que ve el que llega despues. */
+  canales.canal(CANAL);
+});
+
+test.after(async () => {
+  chat.parar();
+  canales.cerrarTodo();
+  await fsp.rm(DATOS, { recursive: true, force: true });
+});
+
+const eventoKick = (tipo, cuando = new Date().toISOString()) =>
+  ({ id: 'ev1', tipo, cuando, version: '1', suscripcion: 's1' });
+
+/* ------------------------------------------------------------ Kick */
+
+test('un chat.message.sent de Kick sale por el bus con el formato unico', () => {
+  const r = chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
+  assert.equal(r.hecho, 'chat');
+
+  const guardados = canales.ultimos(CANAL);
+  assert.equal(guardados.length, 1);
+  assert.equal(guardados[0].tipo, 'chat');
+  assert.equal(guardados[0].red, 'kick');
+  assert.equal(guardados[0].usuario, 'unaespectadora');
+  assert.equal(guardados[0].texto, 'que peli mas larga HYPERCLAP');
+});
+
+test('la ultima llegada de Kick se anota, y es lo unico que distingue "callado" de "roto"', () => {
+  assert.equal(chat.salud().kick.ultima, null);
+  chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
+  assert.ok(chat.salud().kick.ultima, 'sin esto no hay indicador de salud posible');
+});
+
+test('livestream.status.updated cambia el estado de vivo', () => {
+  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
+  assert.equal(chat.salud().kick.vivo, true);
+  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: false });
+  assert.equal(chat.salud().kick.vivo, false);
+});
+
+test('el aviso de silencio solo se prende si el canal esta en vivo', () => {
+  /* Con el canal apagado, media hora sin mensajes es lo normal y
+     avisar seria ruido que despues nadie mira. */
+  const dentroDeUnRato = Date.now() + chat.SILENCIO_SOSPECHOSO + 60_000;
+  assert.equal(chat.kickSospechoso(dentroDeUnRato), false, 'apagado: no molesta');
+
+  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
+  assert.equal(chat.kickSospechoso(Date.now()), true,
+    'en vivo y sin un solo mensaje: eso si hay que decirlo');
+
+  chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
+  assert.equal(chat.kickSospechoso(Date.now()), false, 'acaba de llegar uno');
+  assert.equal(chat.kickSospechoso(dentroDeUnRato), true, 'pero si pasan los 5 minutos, si');
+});
+
+test('un evento de Kick que no conocemos no rompe ni ensucia el bus', () => {
+  const r = chat.recibirDeKick(eventoKick('channel.followed'), { broadcaster: { channel_slug: CANAL } });
+  assert.equal(r.hecho, 'ignorado');
+  assert.equal(canales.ultimos(CANAL).length, 0);
+});
+
+/* ---------------------------------------------------------- Twitch */
+
+const mensajeTwitch = id => mensajes.deTwitch({
+  message_id: id,
+  chatter_user_name: 'Fulana',
+  color: '#9146FF',
+  badges: [],
+  message: { text: 'hola', fragments: [{ type: 'text', text: 'hola' }] },
+}, { message_timestamp: new Date().toISOString() });
+
+test('el mismo mensaje de Twitch por las dos vias se muestra una sola vez', () => {
+  /* Mientras el plan B esta prendido, EventSub sigue reintentando: el
+     mismo mensaje puede llegar por WebSocket y por IRC. El id es el
+     mismo por las dos vias, y esa es toda la defensa. */
+  assert.equal(chat.recibirDeTwitch(mensajeTwitch('m1')), true);
+  assert.equal(chat.recibirDeTwitch(mensajeTwitch('m1')), false, 'el repetido no pasa');
+  assert.equal(chat.recibirDeTwitch(mensajeTwitch('m2')), true);
+  assert.equal(canales.ultimos(CANAL).length, 2);
+});
+
+test('la ultima llegada de Twitch se anota', () => {
+  assert.equal(chat.salud().twitch.ultima, null);
+  chat.recibirDeTwitch(mensajeTwitch('m9'));
+  assert.ok(chat.salud().twitch.ultima);
+});
+
+/* ----------------------------------------------------------- salud */
+
+test('la salud tiene la forma que espera la pagina', () => {
+  const s = chat.salud();
+  assert.deepEqual(Object.keys(s).sort(), ['ahora', 'kick', 'twitch']);
+  assert.deepEqual(Object.keys(s.kick).sort(), ['suscripcion', 'ultima', 'vinculado', 'vivo']);
+  assert.deepEqual(Object.keys(s.twitch).sort(), ['estado', 'modo', 'ultima', 'vinculado']);
+  assert.equal(s.kick.suscripcion, 'desconocida');
+  assert.equal(s.twitch.modo, 'ninguno');
+  assert.ok(Date.parse(s.ahora));
+});
+
+/* ---------------------------------------------------------- enviar */
+
+test('no se manda un mensaje vacio ni uno que la plataforma va a rechazar', async () => {
+  assert.match((await chat.enviar({ texto: '   ', destino: 'kick' })).error, /vacio/);
+
+  const largo = 'a'.repeat(501);
+  assert.match((await chat.enviar({ texto: largo, destino: 'kick' })).error, /500/);
+  assert.match((await chat.enviar({ texto: largo, destino: 'twitch' })).error, /Twitch/);
+});
+
+test('sin vinculo, cada red dice que no pudo y no se pierde el resultado de la otra', async () => {
+  const r = await chat.enviar({ texto: 'hola', destino: 'ambos' });
+  assert.equal(r.kick.ok, false);
+  assert.equal(r.twitch.ok, false);
+  assert.match(r.kick.motivo, /vinculo/);
+  assert.match(r.twitch.motivo, /vinculo/);
+});
+
+test('un destino desconocido no manda nada a ningun lado', async () => {
+  const r = await chat.enviar({ texto: 'hola', destino: 'discord' });
+  assert.match(r.error, /destino desconocido/);
+});
+
+test('el tope de Kick cuenta emojis como un caracter, no como dos', async () => {
+  /* 400 emojis son 400 caracteres para Kick y 800 unidades UTF-16
+     para `.length`. Contar mal rechazaria un mensaje que Kick acepta
+     sin problema. */
+  const r = await chat.enviar({ texto: '💀'.repeat(400), destino: 'kick' });
+  assert.equal(r.error, undefined, 'no lo puede rechazar por largo');
+  assert.equal(r.kick.ok, false, 'falla por no haber vinculo, que es otra cosa');
+});

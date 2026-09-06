@@ -98,7 +98,17 @@ function bloqueSse(trozo) {
 let servidor;
 let raiz;
 
+/* Canales que estos tests usan y que no son el del dueño. Desde la
+   Fase 1 `/eventos/:slug` no acepta cualquier slug inventado: pasan el
+   dueño (KICK_SLUG) y los que esten dados de alta en `creadores`. Sin
+   esto, los tests que usan un canal propio se contestarian 404, que es
+   justo el comportamiento nuevo que se quiere. */
+const CANALES_DE_PRUEBA = ['canal-head', 'otrocanal', 'canal-del-cliente'];
+
 test.before(async () => {
+  for (const slug of CANALES_DE_PRUEBA) {
+    await almacen.poner('creadores', slug, { slug, plan: 'amigo' });
+  }
   servidor = crearServidor();
   /* puerto 0 = el que el sistema tenga libre. Fijar uno haria que dos
      corridas en paralelo se pisen. */

@@ -10,7 +10,7 @@ Valores que NO son secretos y sí se anotan acá abajo, en "Datos públicos": do
 
 ## Bloque 1 — Para que la Fase 0 pueda desplegar (15 minutos)
 
-- [ ] **1. Repo en GitHub.** Crear repo privado `sala` en tu cuenta (`IsTincho`). Sin README ni .gitignore (ya existen). Después, desde esta carpeta:
+- [x] **1. Repo en GitHub.** HECHO por el director el 2026-09-06 con `gh`, a pedido del dueño: repo privado `IsTincho/sala` creado vacío y `origin` configurado. Falta el primer push, que espera el ok del dueño. Crear repo privado `sala` en tu cuenta (`IsTincho`). Sin README ni .gitignore (ya existen). Después, desde esta carpeta:
   ```bash
   git remote add origin https://github.com/IsTincho/sala.git
   ```

@@ -4,6 +4,93 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Fase 1: Chat Global
+
+La página `/chat` muestra el chat de Kick y el de Twitch juntos, en vivo, y permite escribir a los dos con la cuenta del dueño. Se instala como app. `/panel` sirve para entrar con Kick y vincular Twitch. 175 tests en verde (eran 103).
+
+**Nada de esto está probado contra las APIs de verdad**, porque las credenciales todavía no existen (tareas 4, 5 y 6 de `TAREAS-DUENO.md`). Al final de esta entrada está la lista exacta de lo que falta verificar y de lo que puede llegar a fallar la primera vez.
+
+### Lo que quedó funcionando
+
+- `servidor/mensajes.js`: traduce `chat.message.sent` de Kick, `channel.chat.message` de Twitch y un PRIVMSG de IRC al **formato único** documentado en el README. Un solo lugar en todo el proyecto sabe cómo es el payload de cada plataforma.
+- `servidor/vinculos.js`: los tokens del dueño en cada red, cifrados con AES-256-GCM en la colección `tokens`, con el refresh serializado por red (Twitch rota el refresh token en cada uso: dos refrescos en paralelo se pisan y dejan escrito uno que ya no vale).
+- `servidor/chat.js`: junta las dos vías, la salud, el envío y el plan B.
+- `servidor/irc.js`: cliente de IRC anónimo (`justinfan`) sobre TLS, sólo lectura, con reconexión propia.
+- `/panel`, `/chat`, `/api/chat/salud`, `/api/chat/enviar`, `/api/chat/resuscribir`, más `manifest.webmanifest`, `sw.js` y los dos íconos PNG (generados a mano con `node:zlib`, sin dependencias).
+- Los callbacks de OAuth ya no se plantan en "sos fulano": guardan el vínculo cifrado, abren la sesión del dueño y suscriben los eventos de su canal.
+
+### Decisiones y por qué
+
+**1. Las posiciones de emote de Kick no se usan; se parsea el markup.** Kick manda el emote dos veces: incrustado en `content` como `[emote:4148074:HYPERCLAP]` y aparte en un array con posiciones `s`/`e`. Esas posiciones son índices sobre `content` **con el markup adentro**, o sea sobre un texto que nadie ve nunca. Como igual hay que sacar el markup para mostrar el mensaje, quedarse con los índices de Kick obligaría a recalcularlos; parsear el markup da la respuesta directa. De paso: el fixture de la Fase 0 tenía las posiciones corridas en uno (decía 20–44 donde el markup está en 19–43). Se corrigió y se documentó adentro del propio fixture, porque hoy no las lee nadie pero alguien las va a copiar.
+
+**2. Los índices de emote son puntos de código, con el fin exclusivo.** `.length` de JavaScript cuenta unidades UTF-16, así que un emoji fuera del plano básico cuenta dos. Twitch, por IRC, indexa por punto de código y con el fin **inclusivo**. Mezclar las dos unidades desalinea todos los emotes que vengan después del primer emoji del mensaje: la imagen aparece comiéndose una letra, sólo en algunos mensajes, y mirando el código no se ve. El formato único fija una sola convención (puntos de código, `[inicio, fin)`), la conversión del `+1` de IRC se hace en un solo lugar, y **cada test de posiciones lleva un emoji adelante a propósito**: sin él, el código roto pasa igual. Se comprobó rompiendo `mensajes.js` a mano (contar con `.length`, sacar el `+1`) y verificando que caen 5 tests.
+
+**3. La salud NO sale por el bus SSE.** Estaba difundiéndose como un evento más y se sacó antes de cerrar la fase. El bus de un canal es público: en la Fase 2 lo escucha cualquiera que esté mirando la peli, y la salud dice qué redes tiene vinculadas el dueño, en qué modo está su conexión y si su canal está en vivo. No es un secreto, pero es información de su cuenta y no tiene por qué viajarle a todo el que abra la sala. Ahora `/chat` la pide cada 15 segundos contra `/api/chat/salud`, que exige la cookie del dueño; el reloj de "hace N minutos" lo mueve la página sola cada segundo, así que entre pedido y pedido igual avanza.
+
+**4. La verificación de la suscripción de Kick es la mitad de la historia, y hay que saberlo.** La API de Kick **no devuelve ningún estado por suscripción**: `GET /events/subscriptions` trae id, evento, versión y fechas, y nada más. O sea que "sigue activa" sólo se puede comprobar como "sigue existiendo". Si Kick dejara de entregar webhooks —el caso típico: la URL del webhook no cargada a mano en el portal— la suscripción aparecería igual de sana. Por eso el chequeo de los 5 minutos va acompañado del dato que sí sirve: cuándo llegó el último mensaje de verdad, cruzado con si el canal está en vivo (`livestream.status.updated`). El aviso grande de `/chat` sale de ese cruce, no de la API.
+
+**5. `/eventos/:slug` valida el slug** contra `KICK_SLUG` y contra la colección `creadores`, que era una de las notas que la Fase 0 dejó anotadas. Antes, cualquier slug inventado contestaba 200 y creaba una entrada en el Map de canales mientras la conexión viviera: memoria del servidor a pedido de cualquiera, y `/api/estado` devolvía esa lista de basura. Como consecuencia, tres tests de la Fase 0 que usaban canales propios ahora los dan de alta en `creadores` en su `before`.
+
+**6. El endpoint de prueba local ahora puede inyectar un chat de verdad.** Con `?tipo=chat.message.sent`, `/api/prueba/webhook` entra por el mismo camino que un webhook real (traductor incluido) y sale como `chat`. Sin eso no había forma de ver `/chat` con mensajes andando en una máquina de casa: los webhooks de Kick no llegan a localhost y firmar uno a mano necesitaría la clave privada de Kick. Sin `?tipo=` sigue haciendo exactamente lo de antes, que es lo que prueba la Fase 0.
+
+**7. Cada mensaje entra en las tres listas del DOM, no en la que corresponde a la vista.** Es un bug que se encontró mirando la página en el navegador, no en los tests: la versión anterior elegía la lista al recibir el mensaje, así que tocar el botón de vista mostraba una lista vacía —el historial estaba en la otra— hasta que alguien volviera a hablar. Ahora el mensaje se agrega a la lista mezclada y a la columna de su red siempre, y lo que se ve lo decide el CSS. Cuesta tener el mensaje dos veces en el DOM (dos listas de 300 como máximo) y ahorra tener que rearmar el historial cada vez que se toca un botón. Lo mismo con el filtro por red en la vista mezclada: esconde con CSS en vez de no agregar, porque si no volver a "todas" no podría traer de vuelta lo que ya pasó.
+
+**8. El plan B es de sólo lectura y se prende solo.** Después de más de 3 fallos seguidos de EventSub se abre el IRC anónimo, y se apaga en cuanto EventSub vuelve a conectar. Mientras los dos están prendidos llegan mensajes repetidos; el dedupe es por id de mensaje, que **es el mismo por las dos vías** (el tag `id` de IRC es el `message_id` de EventSub). Escribir sigue yendo por Helix con el token del dueño: un `justinfan` no puede hablar. El modo aparece en el indicador de salud, así que si el chat viene por el plan B se ve en pantalla.
+
+  El modo anónimo de IRC es lo único de todo el proyecto que **no está documentado oficialmente** por Twitch: está confirmado en sus foros de desarrolladores y lo usa toda librería de chat que existe. Por eso es el plan B y no el plan A.
+
+**9. Twitch se vincula, no se loguea.** `/oauth/twitch/volver` exige la cookie de dueño antes de canjear el código. Sin esa guarda, cualquiera podía completar el flujo de Twitch y su token quedaba guardado como si fuera el del dueño: el servidor terminaría mandando los mensajes del Chat Global al chat de esa persona. La identidad de esta Sala la da Kick y sólo Kick.
+
+### Lo que hay que verificar cuando estén las credenciales
+
+Esto es lo que puede fallar la primera vez, con lo que hay que mirar:
+
+1. **El scope de Twitch para enviar.** El brief pide `user:read:chat user:write:chat` y eso es lo que se pide. La referencia de Helix que se leyó para esta fase quedó truncada justo ahí y una de las lecturas devolvió `chat:edit`, que es el scope viejo de IRC. Si el primer envío a Twitch da 401 con un token recién sacado, es esto: hay que agregar el scope que pida el error en `SCOPES_DEFECTO` de `servidor/twitch.js` y volver a vincular.
+2. **La URL del webhook de Kick cargada a mano** (paso 4 bis de `TAREAS-DUENO.md`). Sin eso, todo parece andar: la suscripción se crea, `/api/chat/salud` dice "activa" y no llega ni un mensaje. El aviso de los 5 minutos con el canal en vivo existe justamente para este caso.
+3. **Que el `broadcaster_user_id` de Kick sea el `user_id` del dueño.** El código lo asume (es lo que dice la doc y lo que devuelve `/channels`). Si las suscripciones se crean pero para el canal equivocado, es acá.
+4. **Que la página sea instalable.** No se pudo comprobar: el navegador con el que se probó bloquea el registro de service workers, así que `navigator.serviceWorker.register` falla con "unknown error occurred when fetching the script" en cualquier scope, incluso con el `/sw.js` sirviéndose 200 y con el tipo correcto. El registro está en un `try/catch` y la página funciona igual. Hay que abrir `/chat` en el dominio de Railway (HTTPS de verdad) y mirar Lighthouse.
+5. **`files.kick.com/emotes/{id}/fullsize`** tampoco está documentado por Kick: es la URL que sirve su propio front. Si un día los emotes de Kick dejan de cargar, es una línea en `servidor/mensajes.js`. La CDN de Twitch sí está documentada, y se comprobó que `default/dark/2.0` contesta 200 (`animated` da 404 para un emote estático, así que `default` es la opción correcta).
+
+### Archivos tocados
+
+Nuevos: `servidor/{mensajes,vinculos,chat,irc}.js`, `paginas/{chat.html,panel.html,manifest.webmanifest,sw.js,icono-192.png,icono-512.png}`, `paginas/chat/{chat.css,chat.js,demo.js}`, `pruebas/{mensajes,vinculos,chat,chat-http,irc}.test.js`.
+Editados: `servidor/index.js`, `pruebas/servidor.test.js`, `pruebas/fijos/chat-mensaje.json`, `README.md`, `BITACORA.md`.
+
+### Cómo verlo funcionando
+
+```bash
+npm test                                  # 175 tests
+npm run local                             # con MODO=local y KICK_SLUG cargados
+```
+
+La página entera, sin backend ni credenciales:
+
+- `http://localhost:8778/chat?demo=1`
+- `http://localhost:8778/chat?demo=1&vista=columnas&letra=grande`
+
+Un mensaje de verdad, traducido, entrando por el bus:
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  --data-binary @pruebas/fijos/chat-mensaje.json \
+  'localhost:8778/api/prueba/webhook?tipo=chat.message.sent&canal=istincho'
+
+curl -sN localhost:8778/eventos/istincho | head -4     # sale como "tipo":"chat"
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8778/eventos/inventado   # 404
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8778/api/chat/salud      # 401 sin cookie
+```
+
+### Pendiente
+
+- Todo lo de la lista de arriba: nada de esto tocó una API real.
+- El envío con "Ambos" no se pudo probar de punta a punta por lo mismo. La lógica de "salió en una y falló en la otra" está escrita y tiene tests con las dos redes fallando, pero el camino feliz nunca corrió.
+- **`/api/estado` sigue siendo público y sigue devolviendo `canales.resumen()` de todos los canales.** La Fase 0 lo anotó y sigue anotado: hoy es inocuo, en la Fase 3 es la lista de creadores servida a cualquiera.
+- **Los índices y el TTL de sesiones en el almacén** (la otra nota de la Fase 0) no entraron: no hacía falta ninguno para esta fase, y escribirlos sin Mongo cargado sería escribir código que nadie puede probar.
+- El plan B no se probó contra el IRC real de Twitch, sólo contra un servidor de mentira en `node:net`. Lo que eso no cubre es el TLS y el handshake real.
+- `SCOPES.dueno` de Kick pide `channel:read` además de los tres del brief. Viene de la Fase 0 y hace falta: sin él no se puede saber el slug del canal de quien entró, que es exactamente lo que decide si es el dueño.
+
+---
+
 ## 2026-09-06 — Fase 0: arreglos de la verificación
 
 Dos verificadores independientes revisaron la Fase 0 y encontraron cinco fallas reales más trece cosas menores. Están todas arregladas, y una segunda pasada del verificador encontró cuatro cosas más que también entraron (abajo). 103 tests en verde (eran 52); cada falla tiene un test que **falla con el código anterior**, verificado extrayendo el commit viejo a una carpeta aparte y corriéndole encima las pruebas nuevas (`afb4461` para la primera tanda, `23f6d9c` para la segunda).

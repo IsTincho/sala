@@ -81,10 +81,18 @@ servidor/
   almacen.js    Mongo si hay MONGODB_URI, archivos JSON si no
   cifrado.js    AES-256-GCM para los tokens, HMAC para las cookies
   sesion.js     sala_dueno y sala_espectador, dos cosas separadas
+  vinculos.js   los tokens del dueño en cada red, cifrados, y su refresh
   kick.js       OAuth 2.1 + PKCE, chat, suscripción a eventos
   twitch.js     OAuth, Helix, y el cliente EventSub por WebSocket
+  irc.js        IRC anónimo de Twitch: el plan B cuando EventSub se cae
+  mensajes.js   traduce Kick y Twitch al formato único de mensaje
+  chat.js       junta las dos redes, la salud y el envío
   webhook.js    verificación RSA de los webhooks de Kick y deduplicación
-paginas/        HTML, CSS y JS puros. Sin frameworks, sin bundler.
+paginas/
+  chat.html     el Chat Global, instalable como app
+  panel.html    el panel del dueño (mínimo: entrar y vincular)
+  chat/         css y js del chat, más demo.js para ?demo=1
+  manifest.webmanifest, sw.js, icono-*.png   lo que hace la PWA instalable
 pruebas/        node --test, sin librerías
 herramientas/   scripts que corren en la PC del dueño (Fase 2)
 ```
@@ -105,12 +113,17 @@ Reglas que no se negocian:
 | Ruta | Qué es |
 |---|---|
 | `/` | Página de estado: si el servidor está vivo y conectado al bus |
-| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream |
+| `/chat` | **Chat Global**: Kick y Twitch juntos, con caja para escribir a los dos. Se instala como app |
+| `/panel` | Panel del dueño: entrar con Kick, vincular Twitch, ver la salud |
+| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404 |
 | `/api/estado` | JSON con modo, almacén, canales y qué variables faltan |
 | `/oauth/kick/entrar` · `/oauth/kick/volver` | Login con Kick (OAuth 2.1 + PKCE) |
 | `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch |
 | `/kick/webhook` | Eventos de Kick. 401 si la firma no da |
-| `/api/prueba/webhook` | **Sólo con `MODO=local`.** Inyecta un evento sin firma, para desarrollar sin webhooks reales |
+| `/api/chat/salud` | Cómo está cada red. Pide cookie de dueño |
+| `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos. Pide cookie de dueño |
+| `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick. Pide cookie de dueño |
+| `/api/prueba/webhook` | **Sólo con `MODO=local`.** Inyecta un evento sin firma, para desarrollar sin webhooks reales. Con `?tipo=chat.message.sent` entra por el mismo camino que uno real y sale traducido como `chat` |
 
 ### Cómo sale un evento por SSE
 
@@ -122,3 +135,22 @@ data: {"tipo":"kick","evento":"chat.message.sent","cuando":"2026-09-06T19:31:00.
 ```
 
 No como `event: <tipo>`. Por la especificación de SSE, un evento con nombre sólo llega al listener de ese nombre y nunca dispara `message`: el cliente no puede suscribirse a un tipo que todavía no existe. Con el tipo adentro del `data`, `window.Sala.conectar(slug, (tipo, datos) => …)` recibe cualquier cosa que difunda el servidor, incluidos los tipos que agreguen las fases siguientes.
+
+Los tipos que existen hoy: `estado` (al conectarse), `chat` (un mensaje, en el formato único) y `reloj` (Fase 2).
+
+**Lo que NO sale por el bus: la salud.** El bus de un canal es público —en la Fase 2 lo escucha cualquiera que esté mirando la peli— y la salud dice si el dueño tiene vinculada cada red y en qué modo está su conexión. Eso se pide contra `/api/chat/salud`, que exige la cookie del dueño.
+
+### El formato único de mensaje
+
+```json
+{
+  "tipo": "chat", "red": "kick",
+  "id": "01JG…", "usuario": "unaespectadora", "color": "#ff5733",
+  "insignias": [{ "tipo": "moderator", "texto": "Moderator" }],
+  "texto": "que peli mas larga HYPERCLAP",
+  "emotes": [{ "id": "4148074", "inicio": 19, "fin": 28, "url": "https://files.kick.com/emotes/4148074/fullsize" }],
+  "hora": "2026-01-14T16:08:06.000Z"
+}
+```
+
+`inicio` y `fin` cuentan **puntos de código Unicode** sobre `texto`, y el emote ocupa `[inicio, fin)`. Se corta con `[...texto]`, nunca con `texto.slice`: un índice de string cuenta unidades UTF-16, y un solo emoji antes de un emote corre de lugar todos los que vengan después.

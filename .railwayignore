@@ -1,0 +1,21 @@
+# En Railway solo corre el servidor y las paginas. Todo lo demas sobra.
+
+# Tests y sus fijos: no se corren en produccion
+pruebas/
+
+# Herramientas de la PC del dueño (subida de video con ffmpeg y R2)
+herramientas/
+
+# Documentacion del proyecto
+*.md
+
+.git/
+node_modules/
+*.log
+
+# secretos: cualquier .env, se llame como se llame (igual que .gitignore)
+*.env
+!*.env.ejemplo
+
+# datos de runtime en local; en Railway manda Mongo
+servidor/datos/

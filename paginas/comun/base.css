@@ -1,0 +1,122 @@
+/* ============================================================
+   Base compartida por todas las paginas de Sala (index, y despues
+   /chat, /sala/:slug y /panel encima de esto). Sistema chico y
+   solido: variables, reset minimo y un puñado de piezas
+   reutilizables, no estilos sueltos para una sola pagina.
+
+   Tema oscuro por defecto porque esto se usa mientras se streamea
+   de noche; se respeta prefers-color-scheme: light para quien lo
+   abra de dia. Los colores de marca (--kick, --twitch) se definen
+   ya aunque esta pagina casi no los use: el chat de Fase 1 los
+   necesita y conviene que el nombre no cambie despues.
+   ============================================================ */
+
+:root{
+  /* colores de marca, fijos por identidad visual, no por tema */
+  --kick:   #53fc18;
+  --twitch: #9146ff;
+
+  /* paleta oscura (default) */
+  --fondo:        #0e1013;
+  --fondo-tarjeta:#181b20;
+  --borde:        #2a2e35;
+  --texto:        #e8eaed;
+  --texto-tenue:  #9aa0aa;
+  --acento:       #53fc18;
+
+  --bien:    #3ecf5f;
+  --regular: #e8b93c;
+  --mal:     #e8503c;
+
+  --fuente: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+
+  --espacio-1: 0.25rem;
+  --espacio-2: 0.5rem;
+  --espacio-3: 1rem;
+  --espacio-4: 1.5rem;
+  --espacio-5: 2.5rem;
+
+  --radio: 0.6rem;
+}
+
+@media (prefers-color-scheme: light){
+  :root{
+    --fondo:         #f5f6f8;
+    --fondo-tarjeta: #ffffff;
+    --borde:         #dcdfe4;
+    --texto:         #1a1d21;
+    --texto-tenue:   #5b6270;
+    --acento:        #1f9d3c;
+
+    --bien:    #1f9d3c;
+    --regular: #ad7f10;
+    --mal:     #c9351f;
+  }
+}
+
+*, *::before, *::after{ box-sizing: border-box; }
+
+html, body{
+  margin: 0;
+  padding: 0;
+}
+
+body{
+  min-height: 100vh;
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: var(--fuente);
+  line-height: 1.5;
+  /* nada de scroll horizontal en celular: el ancho manda, nunca se
+     desborda por un hijo mas ancho que la pantalla */
+  overflow-x: hidden;
+}
+
+img, svg{ max-width: 100%; }
+
+a{ color: var(--acento); }
+
+/* ---------- piezas reutilizables ---------- */
+
+/* contenedor centrado con ancho maximo, para no tener texto de
+   punta a punta en pantallas anchas */
+.contenedor{
+  width: 100%;
+  max-width: 40rem;
+  margin-inline: auto;
+  padding-inline: var(--espacio-3);
+}
+
+/* tarjeta: el bloque visual basico para agrupar informacion */
+.tarjeta{
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: var(--espacio-4);
+}
+
+/* puntito de estado con tres variantes: bien / regular / mal.
+   Se usa junto a un texto que dice que significa cada color, nunca
+   solo, para no depender del color como unico canal de informacion. */
+.puntito{
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  flex: none;
+}
+
+.puntito.bien{    background: var(--bien); }
+.puntito.regular{ background: var(--regular); }
+.puntito.mal{     background: var(--mal); }
+
+@media (prefers-reduced-motion: no-preference){
+  .puntito.regular{
+    animation: sala-parpadeo 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes sala-parpadeo{
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}

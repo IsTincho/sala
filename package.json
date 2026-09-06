@@ -1,0 +1,20 @@
+{
+  "name": "sala",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chat Global (Kick + Twitch) y Sala para ver pelis con el chat real de Kick",
+  "type": "module",
+  "main": "servidor/index.js",
+  "scripts": {
+    "start": "node servidor/index.js",
+    "local": "node --env-file-if-exists=servidor/.env servidor/index.js",
+    "dev": "node --env-file-if-exists=servidor/.env --watch servidor/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mongodb": "^7.6.0"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "_comentario": "Payload real de chat.message.sent version 1 de Kick, con los nombres de campo tal cual los documenta https://docs.kick.com/events/event-types. Los ids y nombres son inventados; la FORMA no. Lo que mas se olvida y por eso esta aca: los badges y el color cuelgan de sender.identity (no hay array de badges arriba de todo), identity puede venir null, el color se llama username_color, y los emotes aparecen dos veces: incrustados en content como [emote:id:nombre] y aparte en el array emotes con posiciones s/e.",
+  "message_id": "01JGXYZ4K8QW3RSTVN6MPB7CDE",
+  "replies_to": null,
+  "broadcaster": {
+    "is_anonymous": false,
+    "user_id": 4242,
+    "username": "IsTincho",
+    "is_verified": true,
+    "profile_picture": "https://files.kick.com/images/user/4242/profile_image/conversion/x.webp",
+    "channel_slug": "istincho",
+    "identity": null
+  },
+  "sender": {
+    "is_anonymous": false,
+    "user_id": 987654,
+    "username": "unaespectadora",
+    "is_verified": false,
+    "profile_picture": "https://files.kick.com/images/user/987654/profile_image/conversion/y.webp",
+    "channel_slug": "unaespectadora",
+    "identity": {
+      "username_color": "#FF5733",
+      "badges": [
+        { "text": "Moderator", "type": "moderator" },
+        { "text": "Subscriber", "type": "subscriber", "count": 3 }
+      ]
+    }
+  },
+  "content": "que peli mas larga [emote:4148074:HYPERCLAP]",
+  "emotes": [
+    { "emote_id": "4148074", "positions": [{ "s": 20, "e": 44 }] }
+  ],
+  "created_at": "2026-01-14T16:08:06Z"
+}

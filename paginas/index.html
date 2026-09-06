@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sala</title>
+<link rel="stylesheet" href="comun/base.css">
+</head>
+<body>
+<main class="contenedor">
+  <h1>Sala</h1>
+  <p>Chat de Kick y Twitch juntos, y ver pelis con el chat real al lado.</p>
+
+  <section class="tarjeta" aria-live="polite">
+    <p>
+      <span id="puntito-bus" class="puntito mal"></span>
+      <span id="texto-bus">sin conexión</span>
+    </p>
+    <p id="texto-canal"></p>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Servidor</h2>
+    <p id="texto-servidor">consultando…</p>
+  </section>
+</main>
+
+<script src="comun/bus.js"></script>
+<script>
+  // El slug del canal a mirar sale de ?canal=, y si no esta usamos
+  // el del dueño por default.
+  const parametros = new URLSearchParams(location.search);
+  const slug = parametros.get('canal') || 'istincho';
+
+  const puntitoBus  = document.getElementById('puntito-bus');
+  const textoBus    = document.getElementById('texto-bus');
+  const textoCanal  = document.getElementById('texto-canal');
+  const textoServidor = document.getElementById('texto-servidor');
+
+  // Traduce el estado de la conexion SSE a puntito + texto legible.
+  const mostrarEstadoBus = estado => {
+    puntitoBus.className = 'puntito ' + (
+      estado === 'conectado' ? 'bien' :
+      estado === 'conectando' ? 'regular' : 'mal'
+    );
+    textoBus.textContent =
+      estado === 'conectado'  ? 'conectado al bus' :
+      estado === 'conectando' ? 'reconectando…' :
+                                 'sin conexión';
+  };
+
+  const conexion = window.Sala.conectar(slug, (tipo, datos) => {
+    if (tipo === 'estado') {
+      textoCanal.textContent = `canal: ${datos.slug} · conectados: ${datos.conectados}`;
+    }
+    // el estado de la conexion puede haber cambiado justo al recibir
+    // el evento (por ejemplo pasa a 'conectado' con el primer 'open')
+    mostrarEstadoBus(conexion.estado);
+  });
+
+  // El estado de conexion tambien cambia sin que llegue ningun
+  // evento (por ejemplo al cortarse), asi que se revisa aparte.
+  mostrarEstadoBus(conexion.estado);
+  setInterval(() => mostrarEstadoBus(conexion.estado), 1000);
+
+  // GET /api/estado: si falla, se muestra con calma y no rompe nada
+  // del resto de la pagina.
+  fetch('/api/estado')
+    .then(r => {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    })
+    .then(info => {
+      const almacen = info.almacen?.modo ?? 'desconocido';
+      const motivo  = info.almacen?.motivo ? ` (${info.almacen.motivo})` : '';
+      const hora    = info.hora ? new Date(info.hora).toLocaleTimeString('es-AR') : '—';
+      textoServidor.textContent =
+        `modo: ${info.modo} · almacén: ${almacen}${motivo} · hora del servidor: ${hora}`;
+    })
+    .catch(() => {
+      textoServidor.textContent = 'no se pudo consultar /api/estado';
+    });
+</script>
+</body>
+</html>

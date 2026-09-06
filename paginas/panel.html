@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel · Sala</title>
+<link rel="stylesheet" href="comun/base.css">
+<style>
+  /* estilos minimos propios del panel: la Fase 2 completa esto,
+     por ahora solo lo justo para que el layout no quede feo */
+  .fila-botones{
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--espacio-3);
+    margin: var(--espacio-3) 0;
+  }
+  .boton-grande{
+    flex: 1 1 12rem;
+    display: block;
+    text-align: center;
+    text-decoration: none;
+    font-weight: 600;
+    background: var(--fondo-tarjeta);
+    color: var(--texto);
+    border: 1px solid var(--borde);
+    border-radius: var(--radio);
+    padding: var(--espacio-3);
+  }
+  .boton-grande:hover{ border-color: var(--acento); }
+  /* apagado: primero hay que entrar con Kick para poder vincular Twitch.
+     No se usa <a disabled>, que no existe: se marca con aria-disabled y
+     se le saca el aspecto de boton usable con esta clase. */
+  .boton-grande.apagado{
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .fila-red{
+    display: flex;
+    align-items: center;
+    gap: var(--espacio-2);
+    margin: var(--espacio-2) 0;
+  }
+  .boton-secundario{
+    font: inherit;
+    background: var(--fondo);
+    color: var(--texto);
+    border: 1px solid var(--borde);
+    border-radius: var(--radio);
+    padding: 0.4rem 0.8rem;
+    cursor: pointer;
+  }
+  button:focus-visible, a:focus-visible{
+    outline: 2px solid var(--acento);
+    outline-offset: 2px;
+  }
+</style>
+</head>
+<body>
+<main class="contenedor">
+  <h1>Panel</h1>
+
+  <section class="tarjeta" id="tarjeta-estado" aria-live="polite">
+    <p id="texto-carga">consultando…</p>
+  </section>
+
+  <div class="fila-botones">
+    <a id="link-kick" class="boton-grande" href="/oauth/kick/entrar?rol=dueno&destino=/panel">Entrar con Kick</a>
+    <a id="link-twitch" class="boton-grande apagado" href="/oauth/twitch/entrar?destino=/panel" aria-disabled="true">Vincular Twitch</a>
+  </div>
+
+  <p><a href="/chat">Abrir el Chat Global</a></p>
+</main>
+
+<script>
+  const textoCarga   = document.getElementById('texto-carga');
+  const tarjetaEstado = document.getElementById('tarjeta-estado');
+  const linkKick   = document.getElementById('link-kick');
+  const linkTwitch = document.getElementById('link-twitch');
+
+  // arma una fila "puntito + texto" para una red dentro de la tarjeta de estado
+  function filaRed(colorPuntito, texto) {
+    const p = document.createElement('p');
+    p.className = 'fila-red';
+    const puntito = document.createElement('span');
+    puntito.className = 'puntito ' + colorPuntito;
+    const span = document.createElement('span');
+    span.textContent = texto;
+    p.append(puntito, span);
+    return p;
+  }
+
+  function formatearUltima(iso) {
+    if (!iso) return 'sin mensajes todavía';
+    return 'última: ' + new Date(iso).toLocaleString('es-AR');
+  }
+
+  function mostrarSinSesion() {
+    textoCarga.textContent = 'todavía no entraste con Kick';
+    // sin sesion de dueño no se puede vincular Twitch: se apaga el link
+    // hasta que haya sesion (login con Kick no autoriza nada por si solo,
+    // pero sin el no hay ni siquiera con quien asociar el vinculo)
+    linkTwitch.classList.add('apagado');
+    linkTwitch.setAttribute('aria-disabled', 'true');
+  }
+
+  function mostrarEstado(salud) {
+    tarjetaEstado.innerHTML = ''; // seguro: el contenido siguiente se arma con createElement/textContent, no con datos crudos de afuera
+
+    const kick = salud.kick;
+    const colorKick = !kick.vinculado ? 'mal' : kick.suscripcion === 'activa' ? 'bien' : kick.suscripcion === 'falta' ? 'regular' : 'regular';
+    tarjetaEstado.appendChild(filaRed(colorKick,
+      `Kick: ${kick.vinculado ? 'vinculado' : 'no vinculado'} · suscripción ${kick.suscripcion} · ${formatearUltima(kick.ultima)}`));
+
+    const twitch = salud.twitch;
+    const colorTwitch = !twitch.vinculado ? 'mal' : twitch.estado === 'conectado' ? 'bien' : twitch.estado === 'cortado' ? 'mal' : 'regular';
+    tarjetaEstado.appendChild(filaRed(colorTwitch,
+      `Twitch: ${twitch.vinculado ? 'vinculado' : 'no vinculado'} · ${twitch.estado} (${twitch.modo}) · ${formatearUltima(twitch.ultima)}`));
+
+    if (kick.vinculado) {
+      const boton = document.createElement('button');
+      boton.type = 'button';
+      boton.className = 'boton-secundario';
+      boton.textContent = 'Resuscribir Kick';
+      boton.addEventListener('click', () => {
+        boton.disabled = true;
+        fetch('/api/chat/resuscribir', { method: 'POST', credentials: 'same-origin' })
+          .then(() => location.reload())
+          .catch(() => { boton.disabled = false; boton.textContent = 'no se pudo, reintentar'; });
+      });
+      tarjetaEstado.appendChild(boton);
+    }
+
+    // ya hay sesion: se puede vincular Twitch, y los links pasan a "volver a"
+    linkTwitch.classList.remove('apagado');
+    linkTwitch.removeAttribute('aria-disabled');
+    linkKick.textContent = 'Volver a entrar con Kick';
+    if (twitch.vinculado) linkTwitch.textContent = 'Volver a vincular Twitch';
+  }
+
+  fetch('/api/chat/salud', { credentials: 'same-origin' })
+    .then(r => {
+      if (r.status === 401) { mostrarSinSesion(); return null; }
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    })
+    .then(salud => { if (salud) mostrarEstado(salud); })
+    .catch(() => { textoCarga.textContent = 'no se pudo consultar el estado'; });
+</script>
+</body>
+</html>

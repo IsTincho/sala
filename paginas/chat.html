@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Global · Sala</title>
+<meta name="theme-color" content="#0e1013">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icono-192.png">
+<link rel="stylesheet" href="comun/base.css">
+<link rel="stylesheet" href="chat/chat.css">
+</head>
+<body>
+<div class="chat-app">
+
+  <!-- banda de aviso especial: kick vivo pero sin mensajes hace rato -->
+  <div id="banda-resuscribir" class="banda-aviso banda-aviso-mal" hidden>
+    <span>hace más de 5 minutos que no llega nada de Kick y el canal está en vivo</span>
+    <button type="button" id="boton-resuscribir">Resuscribir</button>
+    <span id="texto-resuscribir" class="texto-tenue"></span>
+  </div>
+
+  <!-- aviso de sesion (401 en /api/chat/salud) -->
+  <div id="banda-sesion" class="banda-aviso banda-aviso-regular" hidden>
+    <span>todavía no entraste con Kick: no se puede escribir ni ver el estado de las conexiones.</span>
+    <a href="/panel">Ir al Panel</a>
+  </div>
+
+  <header class="barra-superior">
+    <div class="barra-controles">
+      <button type="button" id="boton-vista" class="boton-chip" aria-pressed="false">Vista: mezclada</button>
+      <button type="button" id="boton-letra" class="boton-chip" aria-pressed="false">Letra: normal</button>
+      <button type="button" id="boton-filtro" class="boton-chip" aria-pressed="false">Filtro: todas</button>
+    </div>
+    <div class="barra-salud" role="status" aria-live="polite">
+      <span class="item-salud">
+        <span id="puntito-kick" class="puntito mal"></span>
+        <span id="texto-kick">Kick · sin datos</span>
+      </span>
+      <span class="item-salud">
+        <span id="puntito-twitch" class="puntito mal"></span>
+        <span id="texto-twitch">Twitch · sin datos</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="area-mensajes" id="area-mensajes">
+    <!-- vista mezclada: una sola lista -->
+    <div class="columna columna-mezclada" id="columna-mezclada">
+      <ol class="lista-mensajes" id="lista-mezclada" role="log" aria-live="polite"></ol>
+      <button type="button" class="boton-volver-abajo" id="boton-abajo-mezclada" hidden>
+        Volver abajo <span class="contador-nuevos" id="contador-mezclada"></span>
+      </button>
+    </div>
+
+    <!-- vista columnas: kick y twitch por separado -->
+    <div class="columna columna-kick" id="columna-kick" hidden>
+      <h2 class="titulo-columna">Kick</h2>
+      <ol class="lista-mensajes" id="lista-kick" role="log" aria-live="polite"></ol>
+      <button type="button" class="boton-volver-abajo" id="boton-abajo-kick" hidden>
+        Volver abajo <span class="contador-nuevos" id="contador-kick"></span>
+      </button>
+    </div>
+    <div class="columna columna-twitch" id="columna-twitch" hidden>
+      <h2 class="titulo-columna">Twitch</h2>
+      <ol class="lista-mensajes" id="lista-twitch" role="log" aria-live="polite"></ol>
+      <button type="button" class="boton-volver-abajo" id="boton-abajo-twitch" hidden>
+        Volver abajo <span class="contador-nuevos" id="contador-twitch"></span>
+      </button>
+    </div>
+  </main>
+
+  <div id="aviso-envio" class="banda-aviso" hidden>
+    <span id="texto-aviso-envio"></span>
+    <button type="button" id="boton-cerrar-aviso" aria-label="Cerrar aviso">×</button>
+  </div>
+
+  <footer class="caja-escritura">
+    <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
+      placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
+    <div class="fila-controles-envio">
+      <select id="select-destino" class="select-destino" aria-label="Enviar a">
+        <option value="kick">Kick</option>
+        <option value="twitch">Twitch</option>
+        <option value="ambos">Ambos</option>
+      </select>
+      <span id="contador-caracteres" class="contador-caracteres">0/500</span>
+      <button type="button" id="boton-enviar" class="boton-enviar">Enviar</button>
+    </div>
+  </footer>
+
+</div>
+
+<script src="comun/bus.js"></script>
+<script src="chat/chat.js"></script>
+</body>
+</html>

@@ -1,0 +1,375 @@
+/* ============================================================
+   Estilos del Chat Global (/chat). Se apila encima de base.css y
+   usa sus variables (--fondo, --borde, --texto, etc); las propias
+   de aca son solo las que hacen falta para el layout del chat.
+
+   Pensado para vivir en una ventana aparte en un segundo monitor:
+   ocupa 100dvh sin scroll de pagina, solo la lista de mensajes
+   scrollea. dvh en vez de vh porque en algunos navegadores moviles
+   vh no descuenta las barras propias del navegador y deja un
+   pedazo de la caja de escritura tapado.
+   ============================================================ */
+
+:root{
+  /* tamano base de la tipografia del chat; ?letra=grande lo pisa
+     desde JS escribiendo esta misma variable en el estilo inline
+     del elemento raiz */
+  --tam-chat: 0.95rem;
+
+  /* variables propias, en español, para no mezclar con las de base.css */
+  --chat-fila-hover: rgba(255,255,255,0.04);
+  --chat-alto-barra: 2.75rem;
+}
+
+@media (prefers-color-scheme: light){
+  :root{
+    --chat-fila-hover: rgba(0,0,0,0.03);
+  }
+}
+
+/* el atributo [hidden] tiene la misma especificidad que .banda-aviso o
+   .columna (una sola clase), y como esta hoja se carga despues que la
+   del navegador, sin esto un elemento con display:flex propio (como
+   .banda-aviso o .columna) le gana al [hidden] del navegador y queda
+   visible aunque JS le haya puesto hidden=true. */
+[hidden]{ display: none !important; }
+
+html, body{
+  height: 100%;
+  overflow: hidden; /* el scroll vive adentro de .lista-mensajes, no en la pagina */
+}
+
+.chat-app{
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  font-size: var(--tam-chat);
+}
+
+/* ---------- barra superior ---------- */
+
+.barra-superior{
+  flex: none;
+  min-height: var(--chat-alto-barra);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--espacio-2);
+  padding: var(--espacio-1) var(--espacio-3);
+  background: var(--fondo-tarjeta);
+  border-bottom: 1px solid var(--borde);
+  flex-wrap: wrap;
+}
+
+.barra-controles{
+  display: flex;
+  gap: var(--espacio-1);
+  flex-wrap: wrap;
+}
+
+.boton-chip{
+  font: inherit;
+  font-size: 0.85em;
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.boton-chip:hover{ background: var(--chat-fila-hover); }
+
+.boton-chip[aria-pressed="true"]{
+  border-color: var(--acento);
+  color: var(--acento);
+}
+
+.barra-salud{
+  display: flex;
+  gap: var(--espacio-3);
+  flex-wrap: wrap;
+  font-size: 0.85em;
+  color: var(--texto-tenue);
+}
+
+.item-salud{
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  white-space: nowrap;
+}
+
+/* ---------- bandas de aviso (sesion, resuscribir, envio) ---------- */
+
+.banda-aviso{
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--espacio-2);
+  padding: var(--espacio-2) var(--espacio-3);
+  font-size: 0.9em;
+  border-bottom: 1px solid var(--borde);
+}
+
+.banda-aviso-mal{
+  background: color-mix(in srgb, var(--mal) 18%, var(--fondo));
+}
+
+.banda-aviso-regular{
+  background: color-mix(in srgb, var(--regular) 18%, var(--fondo));
+}
+
+.banda-aviso button,
+.banda-aviso a{
+  font: inherit;
+  cursor: pointer;
+}
+
+.banda-aviso button{
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.2rem 0.6rem;
+}
+
+#boton-cerrar-aviso{
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  font-size: 1.2em;
+  line-height: 1;
+  padding: 0 0.3rem;
+}
+
+/* ---------- area de mensajes ---------- */
+
+.area-mensajes{
+  flex: 1 1 auto;
+  min-height: 0; /* clave en flex: sin esto no se puede achicar para scrollear adentro */
+  display: flex;
+  overflow: hidden;
+}
+
+.columna{
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.columna-kick + .columna-twitch{
+  border-left: 1px solid var(--borde);
+}
+
+.titulo-columna{
+  flex: none;
+  margin: 0;
+  padding: var(--espacio-1) var(--espacio-2);
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--texto-tenue);
+  border-bottom: 1px solid var(--borde);
+}
+
+.lista-mensajes{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin: 0;
+  padding: var(--espacio-2);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-2);
+}
+
+.mensaje{
+  border-radius: var(--radio);
+  padding: 0.3rem 0.5rem;
+  overflow-wrap: anywhere; /* mensajes largos sin espacios no rompen el ancho */
+}
+
+.mensaje:hover{ background: var(--chat-fila-hover); }
+
+/* El filtro por red de la vista mezclada. Se esconde con CSS y no
+   sacando el mensaje de la lista: sacarlo haria que volver a "todas"
+   no pueda traer de vuelta lo que ya paso. */
+.lista-mensajes[data-filtro="kick"]   > .mensaje[data-red="twitch"],
+.lista-mensajes[data-filtro="twitch"] > .mensaje[data-red="kick"]{
+  display: none;
+}
+
+.mensaje-respuesta{
+  font-size: 0.8em;
+  color: var(--texto-tenue);
+  margin-bottom: 0.15em;
+}
+
+.mensaje-linea{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35em;
+}
+
+.chip-red{
+  flex: none;
+  font-size: 0.7em;
+  font-weight: 600;
+  border-radius: 0.3em;
+  padding: 0.05em 0.4em;
+  color: #04110a; /* texto oscuro fijo: los chips van sobre fondos claros de marca */
+}
+
+.chip-red-kick{ background: var(--kick); }
+.chip-red-twitch{ background: var(--twitch); color: #fff; }
+
+.usuario{
+  font-weight: 600;
+}
+
+.chip-insignia{
+  flex: none;
+  font-size: 0.68em;
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: 0.3em;
+  padding: 0 0.35em;
+  color: var(--texto-tenue);
+}
+
+.texto-mensaje{
+  display: block;
+  white-space: pre-wrap;
+}
+
+.emote{
+  height: 1.6em;
+  vertical-align: middle;
+  display: inline-block;
+}
+
+/* ---------- boton flotante volver abajo ---------- */
+
+.boton-volver-abajo{
+  position: absolute;
+  bottom: var(--espacio-2);
+  left: 50%;
+  transform: translateX(-50%);
+  font: inherit;
+  font-size: 0.85em;
+  background: var(--acento);
+  color: #04110a;
+  border: none;
+  border-radius: var(--radio);
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.contador-nuevos{ font-weight: 700; }
+
+/* ---------- caja de escritura ---------- */
+
+.caja-escritura{
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-1);
+  padding: var(--espacio-2) var(--espacio-3);
+  background: var(--fondo-tarjeta);
+  border-top: 1px solid var(--borde);
+}
+
+.campo-texto{
+  font: inherit;
+  resize: none;
+  min-height: 2.2em;
+  max-height: 6.5em; /* ~4 lineas */
+  overflow-y: auto;
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.4rem 0.6rem;
+}
+
+.campo-texto:disabled{ opacity: 0.6; }
+
+.fila-controles-envio{
+  display: flex;
+  align-items: center;
+  gap: var(--espacio-2);
+}
+
+.select-destino{
+  font: inherit;
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.3rem 0.4rem;
+}
+
+.contador-caracteres{
+  font-size: 0.8em;
+  color: var(--texto-tenue);
+  margin-left: auto;
+}
+
+.contador-caracteres.excedido{
+  color: var(--mal);
+  font-weight: 600;
+}
+
+.boton-enviar{
+  font: inherit;
+  background: var(--acento);
+  color: #04110a;
+  border: none;
+  border-radius: var(--radio);
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.boton-enviar:disabled{
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---------- foco visible en todo control interactivo ---------- */
+
+button:focus-visible,
+a:focus-visible,
+textarea:focus-visible,
+select:focus-visible{
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
+.texto-tenue{ color: var(--texto-tenue); }
+
+/* ---------- pantalla angosta: columnas cae a mezclada ---------- */
+
+@media (max-width: 640px){
+  .area-mensajes[data-vista="columnas"] .columna-kick,
+  .area-mensajes[data-vista="columnas"] .columna-twitch{
+    display: none !important;
+  }
+  .area-mensajes[data-vista="columnas"] .columna-mezclada{
+    display: flex !important;
+  }
+}
+
+/* ---------- reduced motion: nada de animaciones propias del chat ---------- */
+
+@media (prefers-reduced-motion: reduce){
+  .lista-mensajes{ scroll-behavior: auto; }
+}

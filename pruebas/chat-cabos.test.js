@@ -45,7 +45,6 @@ const mensajeDeKick = (slug) => ({
 test.beforeEach(() => {
   chat.reiniciar();
   canales.cerrarTodo();
-  chat.fijarCanal(CANAL);
   canales.canal(CANAL);
 });
 
@@ -55,43 +54,49 @@ test.after(async () => {
   await fsp.rm(DATOS, { recursive: true, force: true });
 });
 
-/* ------------------------------- el webhook no fabrica canales */
+/* ------------------------------- el webhook no fabrica canales
 
-test('un evento de Kick con otro slug no crea el canal ni entra al bus', () => {
-  /* `canales.recordar` CREA el canal que no exista, y el slug sale del
-     payload. O sea que por el webhook se podian fabricar canales del
-     bus con cualquier nombre, salteando el `canalPermitido` que
-     /eventos/:slug ya exige del otro lado.
+   OJO, ESTO SE MUDO EN LA FASE 3. La guarda que antes vivia acá —el
+   `if (slug !== slugDueno)` de `recibirDeKick`, que devolvia
+   `canal ajeno`— ya no está en `chat.js`: la atribución de un evento a
+   una sala es una pregunta de inquilino y no de chat, y vive en
+   `creadores.salaDelEvento()`. Las pruebas de que un payload no puede
+   fabricar canales del bus están en `pruebas/creadores.test.js` y, de
+   punta a punta contra el webhook de verdad, en `pruebas/multicanal.test.js`.
 
-     Hoy es inocuo: solo entra lo que Kick firma y solo esta suscripto
-     el canal del dueño. En la Fase 3, con el ruteo por slug de verdad,
-     es exactamente la misma puerta: el chat de un canal cayendo en la
-     sala de otro, y un mapa de canales que crece con lo que diga un
-     payload. */
-  const r = chat.recibirDeKick(eventoKick('chat.message.sent'), mensajeDeKick('canal-ajeno'));
+   Lo que queda acá es lo de este módulo: que un evento con la sala YA
+   RESUELTA entre, y entre en esa y no en otra. */
 
-  assert.equal(r.hecho, 'canal ajeno');
-  assert.equal(canales.hayCanal('canal-ajeno'), false,
-    'el webhook fabrico un canal del bus con el slug que traia el payload');
-  assert.equal(canales.ultimos(CANAL).length, 0,
-    'y tampoco se cuela en el canal del dueño');
-});
-
-test('el mismo evento con el slug del dueño sigue entrando', () => {
-  /* La contracara, para que el arreglo no sea "no entra nada". */
-  const r = chat.recibirDeKick(eventoKick('chat.message.sent'), mensajeDeKick(CANAL));
+test('un evento con la sala resuelta entra en ESA sala y en ninguna otra', () => {
+  const r = chat.recibirDeKick(CANAL, eventoKick('chat.message.sent'), mensajeDeKick(CANAL));
 
   assert.equal(r.hecho, 'chat');
   assert.equal(canales.ultimos(CANAL).length, 1);
+  assert.equal(canales.hayCanal('canal-ajeno'), false,
+    'no se toca ningún canal que nadie pidió');
 });
 
-test('un evento sin broadcaster sigue yendo al canal del dueño', () => {
-  /* `livestream.status.updated` llega sin `broadcaster` y cae en el
-     respaldo. Es el camino que usa el aviso de "en vivo". */
-  const r = chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
+test('el slug que manda es el que se le pasa, no el que trae el payload', () => {
+  /* La contracara del punto de arriba, y la razón por la que la
+     atribución se resuelve afuera: acá el payload dice `canal-ajeno` y
+     el mensaje tiene que caer igual en la sala que se pidió. Si este
+     módulo volviera a mirar `broadcaster.channel_slug`, este test se
+     cae. */
+  const r = chat.recibirDeKick(CANAL, eventoKick('chat.message.sent'), mensajeDeKick('canal-ajeno'));
+
+  assert.equal(r.hecho, 'chat');
+  assert.equal(canales.ultimos(CANAL).length, 1);
+  assert.equal(canales.hayCanal('canal-ajeno'), false,
+    'el payload no puede fabricar un canal del bus con el nombre que quiera');
+});
+
+test('un evento sin broadcaster entra igual en la sala que se le pasó', () => {
+  /* `livestream.status.updated` llega sin `broadcaster`. Es el camino
+     que usa el aviso de "en vivo". */
+  const r = chat.recibirDeKick(CANAL, eventoKick('livestream.status.updated'), { is_live: true });
 
   assert.equal(r.hecho, 'vivo');
-  assert.equal(chat.salud().kick.vivo, true);
+  assert.equal(chat.salud(CANAL).kick.vivo, true);
 });
 
 /* --------------------------- el tope de Twitch, en puntos de codigo */
@@ -109,13 +114,13 @@ test('el tope de Twitch cuenta puntos de codigo, no graphemes', async () => {
   const texto = FAMILIA.repeat(80);
   assert.equal([...texto].length, 560);
 
-  const r = await chat.enviar({ texto, destino: 'twitch' });
+  const r = await chat.enviar(CANAL, { texto, destino: 'twitch' });
   assert.match(String(r.error), /560 caracteres/,
     'con 560 puntos de codigo Twitch no lo acepta y hay que decirlo antes de mandar');
 
   /* Y con destino "ambos" no sale en ninguna: es la decision escrita
      de la fase, validar las dos antes de mandarle nada a ninguna. */
-  const ambos = await chat.enviar({ texto, destino: 'ambos' });
+  const ambos = await chat.enviar(CANAL, { texto, destino: 'ambos' });
   assert.match(String(ambos.error), /560 caracteres/);
   assert.equal(ambos.kick, undefined, 'no se le mando nada a Kick');
 });
@@ -128,7 +133,7 @@ test('el tope de Twitch no cuenta unidades UTF-16', async () => {
   assert.equal([...texto].length, 300);
   assert.equal(texto.length, 600);
 
-  const r = await chat.enviar({ texto, destino: 'twitch' });
+  const r = await chat.enviar(CANAL, { texto, destino: 'twitch' });
   assert.equal(r.error, undefined, `el largo no tenia que ser un problema: ${r.error}`);
   /* Sin vinculo guardado no puede salir, y ese es el motivo esperado:
      lo que importa es que la validacion de largo lo dejo pasar. */

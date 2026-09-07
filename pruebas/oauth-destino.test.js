@@ -117,7 +117,7 @@ test.after(async () => {
   chat.fijarConexiones();
   globalThis.fetch = fetchDeVerdad;
   canales.cerrarTodo();
-  await vinculos.olvidar('twitch');
+  await vinculos.olvidar('istincho', 'twitch');
   await new Promise(ok => servidor.close(ok));
   await fsp.rm(DATOS, { recursive: true, force: true });
 });

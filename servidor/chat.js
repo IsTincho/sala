@@ -1,5 +1,5 @@
 /* ============================================================
-   El Chat Global: lo que junta las dos redes en un solo lugar.
+   El chat de cada canal: lo que junta las dos redes en un solo lugar.
 
    Este modulo es el que sabe:
      - que el chat de Kick entra por webhook y el de Twitch por
@@ -7,8 +7,27 @@
      - que los dos terminan en el mismo canal del bus, con el mismo
        formato de mensaje,
      - como esta la salud de cada via, para poder decirlo en pantalla
-       en vez de dejar al dueño mirando un chat mudo sin saber por
+       en vez de dejar al creador mirando un chat mudo sin saber por
        que.
+
+   ---------------------------------------------------------------
+   UN JUEGO DE ESTADO POR SALA
+
+   Hasta la Fase 2 todo esto era estado de modulo: UNA conexion de
+   Twitch, UN plan B, UN "cuando llego el ultimo mensaje". Con varios
+   creadores cada una de esas cosas es por sala, asi que viven adentro
+   de `porCanal`, un Map de slug a "canal de chat".
+
+   Lo que NO cambio es la logica: el plan B, la coalescencia del
+   prendido, el dedupe y el orden de las banderas son exactamente los
+   de la Fase 1, que costaron dos rondas de verificacion. Se movieron
+   de lugar, no se reescribieron.
+
+   El slug es obligatorio y va primero en todas las funciones. Sin
+   valor por defecto, por el mismo motivo que en `vinculos.js`: un
+   default que apunte al dueño convierte cualquier olvido en un mensaje
+   de un creador cayendo en la sala de otro, y anda "bien" hasta que
+   haya dos.
 
    ---------------------------------------------------------------
    POR QUE HACE FALTA UN INDICADOR DE SALUD Y NO ALCANZA CON "ANDA"
@@ -29,7 +48,25 @@
    un rato pueden estar los dos trayendo los mismos mensajes. El id
    de mensaje de Twitch es el mismo por las dos vias (el tag `id` de
    IRC es el `message_id` de EventSub), asi que alcanza con recordar
-   los ultimos ids vistos.
+   los ultimos ids vistos. El anillo es POR SALA: dos creadores no
+   comparten ids, y compartir el Set haria que el mensaje de uno
+   silenciara el del otro si por casualidad coincidieran.
+
+   ---------------------------------------------------------------
+   EL TOPE DE CONEXIONES DE TWITCH
+
+   Twitch permite hasta 3 WebSockets con suscripciones por par (client
+   id, user id), o sea que una conexion por creador es legal por mas
+   creadores que haya: cada uno es otro user id, y leer el chat propio
+   con el token propio cuesta 0 del presupuesto de 10
+   (dev.twitch.tv/docs/eventsub/handling-websocket-events).
+
+   Lo que no escala es esta maquina: 900 WebSockets abiertos en un
+   contenedor de Railway son 900 sockets, 900 timers de keepalive y
+   900 buffers. Por eso hay un tope propio, chico y visible en el
+   panel, en vez de un limite que se descubra la noche que se caiga
+   todo. Twitch es opcional por creador; Kick, que es lo que la Sala
+   necesita, entra por webhook y no gasta una conexion.
    ============================================================ */
 
 import * as canales from './canales.js';
@@ -55,31 +92,57 @@ export const SILENCIO_SOSPECHOSO = 5 * 60 * 1000;
    las dos vias no llegan separadas por mas que segundos. */
 const TOPE_VISTOS = 500;
 
+/* Cuantas conexiones EventSub sostiene este proceso a la vez. Ver el
+   bloque de arriba. Se puede subir por variable cuando se mida cuanto
+   aguanta el contenedor de verdad. */
+export const TOPE_TWITCH = Number(process.env.TOPE_TWITCH ?? 50);
+
+/* Mas de tres fallos seguidos de EventSub y se prende el IRC
+   anonimo. Tres y no uno: una reconexion suelta es normal (Twitch
+   recicla sus servidores) y prender el plan B por eso seria tener
+   dos conexiones abiertas todo el tiempo. */
+export const FALLOS_PARA_PLAN_B = 3;
+
 /* --------------------------------------------------------- estado */
 
-/* De donde sale el canal del dueño.
-
-   `arrancar()` lo fija con lo que le pasa index.js, pero el modulo
-   tiene que saberlo TAMBIEN sin que nadie lo arranque: `recibirDeKick`
-   compara contra este slug para no dejar que el payload de un webhook
-   fabrique canales del bus con el nombre que se le ocurra, y ese
-   camino existe desde que hay servidor, no desde que hay `arrancar`.
-   Es la misma variable de entorno que lee index.js, leida igual. */
-const SLUG_DEL_ENTORNO = (process.env.KICK_SLUG ?? '').toLowerCase();
-
-let slugDueno = SLUG_DEL_ENTORNO;
 let urlBase = '';
-
-const estado = {
-  kick: { ultima: null, suscripcion: 'desconocida', vivo: false, vinculado: false },
-  twitch: { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false },
-};
-
-let conexionTwitch = null;
-let conexionIrc = null;
-const vistosTwitch = new Set();
-
 let timerVerificacion = null;
+
+const porCanal = new Map();   // slug -> canal de chat
+
+const nuevoCanalDeChat = slug => ({
+  slug,
+  kick: { ultima: null, suscripcion: 'desconocida', vivo: false, vinculado: false },
+  twitch: { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false, tope: false },
+  conexionTwitch: null,
+  conexionIrc: null,
+  vistos: new Set(),
+  /* Prender el plan B tiene que pedir el vinculo, o sea que CEDE EL
+     CONTROL en medio de la operacion. Estas dos son la reserva del
+     lugar: sin ellas, entre el `if (conexionIrc)` y la asignacion
+     entraba otra llamada y se abrian dos conexiones IRC. */
+  prendiendoPlanB: null,
+  planBPedido: false,
+});
+
+const normalizar = s => String(s ?? '').toLowerCase();
+
+function exigirSlug(slug) {
+  const s = normalizar(slug);
+  if (!s) throw new Error('chat: falta el slug de la sala');
+  return s;
+}
+
+/** El canal de chat de una sala, creandolo si es la primera vez. */
+function canalDeChat(slug) {
+  const s = exigirSlug(slug);
+  if (!porCanal.has(s)) porCanal.set(s, nuevoCanalDeChat(s));
+  return porCanal.get(s);
+}
+
+/* `salud()` NO crea la entrada: una pagina que pregunte por una sala
+   cualquiera no tiene por que hacer crecer el Map. */
+const canalSiHay = slug => porCanal.get(normalizar(slug)) ?? null;
 
 /* ------------------------------------------------------- costuras
 
@@ -128,29 +191,24 @@ export function fijarConexiones(dobles) {
 export function reiniciar() {
   parar();
   fijarConexiones();
-  slugDueno = SLUG_DEL_ENTORNO;
   urlBase = '';
-  estado.kick = { ultima: null, suscripcion: 'desconocida', vivo: false, vinculado: false };
-  estado.twitch = { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false };
-  vistosTwitch.clear();
+  porCanal.clear();
 }
 
 /* ------------------------------------------------------- arranque */
 
 /**
- * Pone en marcha lo que se pueda con lo que haya guardado.
+ * Pone en marcha lo que se pueda con lo que haya guardado, para TODAS
+ * las salas vinculadas.
  *
  * Se llama al arrancar el servidor. No tira NUNCA: un vinculo que no
  * se puede levantar tiene que dejar el servidor arriba y decirlo en
- * la pagina de salud, no impedir que el sitio exista.
+ * la pagina de salud, no impedir que el sitio exista. Y un creador que
+ * falla no puede dejar sin arrancar a los que vienen despues, por eso
+ * cada uno va en su propio try.
  */
-export async function arrancar({ slug, base } = {}) {
-  slugDueno = String(slug ?? '').toLowerCase();
+export async function arrancar({ base } = {}) {
   urlBase = String(base ?? '');
-  if (!slugDueno) {
-    console.warn('[chat] sin KICK_SLUG: el Chat Global no sabe de que canal es');
-    return;
-  }
 
   /* Idempotente a proposito. Hoy lo llama solo index.arrancar(), pero
      un segundo llamado pisaba `timerVerificacion` y dejaba el
@@ -159,37 +217,56 @@ export async function arrancar({ slug, base } = {}) {
   clearInterval(timerVerificacion);
   timerVerificacion = null;
 
-  try { await verificarKick(); }
-  catch (e) { console.warn('[chat] no se pudo verificar la suscripcion de Kick:', e.message); }
+  await verificarTodas();
 
-  try { await conectarTwitch(); }
-  catch (e) { console.warn('[chat] no se pudo conectar Twitch:', e.message); }
+  for (const slug of await salasDe('twitch')) {
+    try { await conectarTwitch(slug); }
+    catch (e) { console.warn(`[chat] ${slug}: no se pudo conectar Twitch:`, e.message); }
+  }
 
   timerVerificacion = setInterval(() => {
-    verificarKick().catch(e => console.warn('[chat] verificacion de Kick:', e.message));
+    verificarTodas().catch(e => console.warn('[chat] verificacion:', e.message));
   }, CADA_VERIFICACION);
   timerVerificacion.unref?.();
 }
 
-/** Corta todo: los timers y las dos conexiones de Twitch. */
+async function salasDe(red) {
+  try { return await vinculos.salasCon(red); }
+  catch (e) {
+    console.warn(`[chat] no se pudieron listar las salas con ${red}:`, e.name);
+    return [];
+  }
+}
+
+/** Comprueba la suscripcion de Kick de cada sala vinculada. */
+export async function verificarTodas() {
+  for (const slug of await salasDe('kick')) {
+    try { await verificarKick(slug); }
+    catch (e) { console.warn(`[chat] ${slug}: no se pudo verificar la suscripcion de Kick:`, e.message); }
+  }
+}
+
+/** Corta todo: los timers y las conexiones de Twitch de cada sala. */
 export function parar() {
   clearInterval(timerVerificacion);
   timerVerificacion = null;
-  /* Antes de cerrar: si hay un prendido de plan B a medio camino,
-     esto es lo que evita que termine abriendo un IRC despues de que
-     todo se apago. */
-  planBPedido = false;
-  if (conexionTwitch) { conexionTwitch.cerrar(); conexionTwitch = null; }
-  if (conexionIrc) { conexionIrc.cerrar(); conexionIrc = null; }
-  estado.twitch.modo = 'ninguno';
-  estado.twitch.estado = 'cortado';
+  for (const c of porCanal.values()) {
+    /* Antes de cerrar: si hay un prendido de plan B a medio camino,
+       esto es lo que evita que termine abriendo un IRC despues de que
+       todo se apago. */
+    c.planBPedido = false;
+    if (c.conexionTwitch) { c.conexionTwitch.cerrar(); c.conexionTwitch = null; }
+    if (c.conexionIrc) { c.conexionIrc.cerrar(); c.conexionIrc = null; }
+    c.twitch.modo = 'ninguno';
+    c.twitch.estado = 'cortado';
+  }
 }
 
 /* ----------------------------------------------------------- Kick */
 
 /**
- * Se fija que la suscripcion a chat.message.sent siga existiendo y la
- * vuelve a crear si no.
+ * Se fija que la suscripcion a chat.message.sent de una sala siga
+ * existiendo y la vuelve a crear si no.
  *
  * OJO: la API de Kick NO devuelve un estado por suscripcion. Lo unico
  * que se puede comprobar es que la suscripcion EXISTA; que Kick le
@@ -199,19 +276,20 @@ export function parar() {
  * ciclo: cuando llego el ultimo mensaje de verdad (`ultima`) y si el
  * canal esta transmitiendo segun la API (`vivo`).
  */
-export async function verificarKick() {
-  const v = await vinculos.acceso('kick').catch(e => {
-    console.warn('[chat] el vinculo de Kick no sirve:', e.message);
+export async function verificarKick(slug) {
+  const c = canalDeChat(slug);
+  const v = await vinculos.acceso(c.slug, 'kick').catch(e => {
+    console.warn(`[chat] ${c.slug}: el vinculo de Kick no sirve:`, e.message);
     return null;
   });
   if (!v) {
-    estado.kick.vinculado = false;
-    estado.kick.suscripcion = 'desconocida';
+    c.kick.vinculado = false;
+    c.kick.suscripcion = 'desconocida';
     return { vinculado: false };
   }
-  estado.kick.vinculado = true;
+  c.kick.vinculado = true;
 
-  await revisarSiEstaEnVivo(v.accessToken);
+  await revisarSiEstaEnVivo(c, v.accessToken);
 
   const actuales = await kick.listarSuscripciones(v.accessToken, v.usuarioId);
   const falta = kick.EVENTOS.filter(
@@ -219,13 +297,13 @@ export async function verificarKick() {
   );
 
   if (!falta.length) {
-    estado.kick.suscripcion = 'activa';
+    c.kick.suscripcion = 'activa';
     return { vinculado: true, resuscrito: false };
   }
 
-  console.warn(`[chat] faltaban ${falta.length} suscripciones de Kick: se vuelven a crear`);
+  console.warn(`[chat] ${c.slug}: faltaban ${falta.length} suscripciones de Kick: se vuelven a crear`);
   await kick.suscribirEventos(v.accessToken, v.usuarioId, urlBase ? `${urlBase}/kick/webhook` : '');
-  estado.kick.suscripcion = 'activa';
+  c.kick.suscripcion = 'activa';
   return { vinculado: true, resuscrito: true };
 }
 
@@ -246,59 +324,55 @@ export async function verificarKick() {
  *
  * Se consulta en el ciclo de los cinco minutos, no en cada request:
  * es un dato que cambia dos veces por noche. Lo que queda guardado en
- * `estado.kick.vivo` es la cache hasta la vuelta siguiente.
+ * `c.kick.vivo` es la cache hasta la vuelta siguiente.
  */
-async function revisarSiEstaEnVivo(accessToken) {
-  if (!slugDueno) return;
+async function revisarSiEstaEnVivo(c, accessToken) {
   try {
-    const c = await kick.canalPorSlug(slugDueno, accessToken);
-    estado.kick.vivo = c.vivo;
+    const canal = await kick.canalPorSlug(c.slug, accessToken);
+    c.kick.vivo = canal.vivo;
   } catch (e) {
     /* No se pisa lo que dijo el webhook: que la API no conteste no es
        "se apago el stream". */
-    console.warn('[chat] no se pudo consultar si el canal esta en vivo:', e.message);
+    console.warn(`[chat] ${c.slug}: no se pudo consultar si el canal esta en vivo:`, e.message);
   }
 }
 
-/** Fuerza la resuscripcion, aunque parezca que esta todo bien. */
-export async function resuscribirKick() {
-  const v = await vinculos.acceso('kick');
+/** Fuerza la resuscripcion de una sala, aunque parezca que esta todo bien. */
+export async function resuscribirKick(slug) {
+  const c = canalDeChat(slug);
+  const v = await vinculos.acceso(c.slug, 'kick');
   if (!v) throw new Error('no hay vinculo con Kick');
   await kick.suscribirEventos(v.accessToken, v.usuarioId, urlBase ? `${urlBase}/kick/webhook` : '');
-  estado.kick.suscripcion = 'activa';
+  c.kick.suscripcion = 'activa';
   return { ok: true };
 }
 
 /**
- * Un evento de Kick ya verificado. Devuelve que se hizo con el, para
- * que el que llama pueda loguearlo.
+ * Un evento de Kick ya verificado, para una sala YA RESUELTA.
+ *
+ * El slug NO sale de aca: lo resuelve `creadores.salaDelEvento()`
+ * contra el indice de creadores y esta ruta solo recibe salas que
+ * existen. Antes este modulo lo sacaba del payload y comparaba contra
+ * el canal del dueño, que era la forma de un solo inquilino de decir
+ * lo mismo. Que la atribucion viva en un lado y el chat en otro es lo
+ * que hace que agregar una sala no toque este archivo.
+ *
+ * Devuelve que se hizo con el evento, para que el que llama lo loguee.
  */
-export function recibirDeKick(evento, cuerpo) {
-  const slug = String(cuerpo?.broadcaster?.channel_slug ?? slugDueno ?? '').toLowerCase();
-  if (!slug) return { hecho: 'sin canal' };
-  /* El slug lo elige el PAYLOAD, y `canales.recordar` crea el canal del
-     bus que no exista. Sin esto, cualquier evento que entre por el
-     webhook puede fabricar canales nuevos con el nombre que quiera,
-     salteando el `canalPermitido` que /eventos/:slug ya exige del otro
-     lado. Hoy solo esta suscripto el canal del dueño y no cambia nada;
-     en la Fase 3, cuando el ruteo por slug sea de verdad, es la misma
-     puerta. La atribucion multi-canal se resuelve ahi contra la
-     suscripcion (Kick-Event-Subscription-Id), no adivinando. */
-  if (slug !== slugDueno) return { hecho: 'canal ajeno' };
+export function recibirDeKick(slug, evento, cuerpo) {
+  const c = canalDeChat(slug);
 
   if (evento?.tipo === 'chat.message.sent') {
     const mensaje = mensajes.deKick(cuerpo, { hora: evento.cuando });
     if (!mensaje) return { hecho: 'payload raro' };
-    estado.kick.ultima = new Date();
-    canales.recordar(slug, mensaje);
+    c.kick.ultima = new Date();
+    canales.recordar(c.slug, mensaje);
     return { hecho: 'chat', mensaje };
   }
 
   if (evento?.tipo === 'livestream.status.updated') {
     const vivo = mensajes.vivoDeKick(cuerpo);
-    if (vivo !== null) {
-      estado.kick.vivo = vivo;
-    }
+    if (vivo !== null) c.kick.vivo = vivo;
     return { hecho: 'vivo', vivo };
   }
 
@@ -307,120 +381,128 @@ export function recibirDeKick(evento, cuerpo) {
 
 /* --------------------------------------------------------- Twitch */
 
+/** Cuantas salas tienen ahora mismo una conexion EventSub abierta. */
+export const conexionesTwitch = () =>
+  [...porCanal.values()].filter(c => c.conexionTwitch).length;
+
 /**
- * Abre (o reabre) la conexion EventSub con el vinculo guardado.
- * Si no hay vinculo, no hace nada y lo dice.
+ * Abre (o reabre) la conexion EventSub de una sala con su vinculo
+ * guardado. Si no hay vinculo, no hace nada y lo dice.
  */
-export async function conectarTwitch() {
-  const v = await vinculos.acceso('twitch').catch(e => {
-    console.warn('[chat] el vinculo de Twitch no sirve:', e.message);
+export async function conectarTwitch(slug) {
+  const c = canalDeChat(slug);
+  const v = await vinculos.acceso(c.slug, 'twitch').catch(e => {
+    console.warn(`[chat] ${c.slug}: el vinculo de Twitch no sirve:`, e.message);
     return null;
   });
   if (!v) {
-    estado.twitch.vinculado = false;
-    estado.twitch.modo = 'ninguno';
-    estado.twitch.estado = 'cortado';
+    c.twitch.vinculado = false;
+    c.twitch.modo = 'ninguno';
+    c.twitch.estado = 'cortado';
     return { vinculado: false };
   }
-  estado.twitch.vinculado = true;
+  c.twitch.vinculado = true;
 
-  if (conexionTwitch) conexionTwitch.cerrar();
+  /* El tope se mira ANTES de cerrar la conexion vieja: si esta sala ya
+     tenia una, reconectarla no suma ninguna y tiene que poder hacerse
+     aunque estemos en el tope. */
+  if (!c.conexionTwitch && conexionesTwitch() >= TOPE_TWITCH) {
+    c.twitch.tope = true;
+    c.twitch.modo = 'ninguno';
+    c.twitch.estado = 'cortado';
+    console.warn(`[chat] ${c.slug}: no se conecta Twitch, ya hay ${TOPE_TWITCH} conexiones abiertas ` +
+                 `(TOPE_TWITCH). Kick sigue andando por webhook.`);
+    return { vinculado: true, tope: true };
+  }
+  c.twitch.tope = false;
 
-  conexionTwitch = crearConexion.eventSub({
+  if (c.conexionTwitch) c.conexionTwitch.cerrar();
+
+  c.conexionTwitch = crearConexion.eventSub({
     /* El token se pide DE NUEVO en cada suscripcion, no se captura el
        de ahora: entre una reconexion y la siguiente pueden pasar
        horas y el access token dura una. */
     suscribir: async (sessionId) => {
-      const actual = await vinculos.acceso('twitch');
+      const actual = await vinculos.acceso(c.slug, 'twitch');
       if (!actual) throw new Error('se perdio el vinculo de Twitch');
       await twitch.suscribirChat({
         accessToken: actual.accessToken,
         sessionId,
-        /* El dueño escucha SU PROPIO canal: broadcaster y usuario que
-           lee son la misma persona. En la Fase 3, con otros
-           creadores, esto deja de ser cierto. */
+        /* Cada creador escucha SU PROPIO canal: broadcaster y usuario
+           que lee son la misma persona, y por eso la suscripcion
+           cuesta 0 del presupuesto de Twitch. */
         broadcasterId: actual.usuarioId,
         usuarioId: actual.usuarioId,
       });
     },
     alMensaje: (evento, metadata) => {
-      const mensaje = mensajes.deTwitch(evento, metadata);
-      recibirDeTwitch(mensaje);
+      recibirDeTwitch(c.slug, mensajes.deTwitch(evento, metadata));
     },
     alEstado: (nuevo) => {
       /* alEstado tambien avisa cosas que no son estados de conexion
          ("revocado:...", "error_suscripcion:..."). Esas se loguean y
          no pisan el estado, que tiene cuatro valores y nada mas. */
       if (['cortado', 'conectando', 'conectado', 'reconectando'].includes(nuevo)) {
-        estado.twitch.estado = nuevo;
+        c.twitch.estado = nuevo;
         if (nuevo === 'conectado') {
-          estado.twitch.modo = 'eventsub';
-          apagarPlanB();
+          c.twitch.modo = 'eventsub';
+          apagarPlanB(c);
         }
       } else {
-        console.warn('[chat] twitch avisa:', nuevo);
+        console.warn(`[chat] ${c.slug}: twitch avisa:`, nuevo);
       }
-      revisarPlanB();
+      revisarPlanB(c);
     },
   });
 
-  estado.twitch.modo = 'eventsub';
-  conexionTwitch.conectar();
+  c.twitch.modo = 'eventsub';
+  c.conexionTwitch.conectar();
   return { vinculado: true };
 }
 
-/** Un mensaje de Twitch, venga por donde venga. */
-export function recibirDeTwitch(mensaje) {
+/** Cierra la conexion de Twitch de una sala y olvida su vinculo. */
+export async function desvincularTwitch(slug) {
+  const c = canalDeChat(slug);
+  c.planBPedido = false;
+  if (c.conexionTwitch) { c.conexionTwitch.cerrar(); c.conexionTwitch = null; }
+  if (c.conexionIrc) { c.conexionIrc.cerrar(); c.conexionIrc = null; }
+  c.twitch = { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false, tope: false };
+  await vinculos.olvidar(c.slug, 'twitch');
+  return { ok: true };
+}
+
+/** Un mensaje de Twitch de una sala, venga por donde venga. */
+export function recibirDeTwitch(slug, mensaje) {
   if (!mensaje) return false;
+  const c = canalDeChat(slug);
   /* El dedupe existe por la ventana en la que EventSub y el plan B
      estan los dos prendidos. El id es el mismo por las dos vias. */
   if (mensaje.id) {
-    if (vistosTwitch.has(mensaje.id)) return false;
-    vistosTwitch.add(mensaje.id);
-    if (vistosTwitch.size > TOPE_VISTOS) {
-      vistosTwitch.delete(vistosTwitch.values().next().value);
+    if (c.vistos.has(mensaje.id)) return false;
+    c.vistos.add(mensaje.id);
+    if (c.vistos.size > TOPE_VISTOS) {
+      c.vistos.delete(c.vistos.values().next().value);
     }
   }
-  estado.twitch.ultima = new Date();
-  if (slugDueno) canales.recordar(slugDueno, mensaje);
+  c.twitch.ultima = new Date();
+  canales.recordar(c.slug, mensaje);
   return true;
 }
 
 /* --------------------------------------------------------- plan B */
 
-/* Mas de tres fallos seguidos de EventSub y se prende el IRC
-   anonimo. Tres y no uno: una reconexion suelta es normal (Twitch
-   recicla sus servidores) y prender el plan B por eso seria tener
-   dos conexiones abiertas todo el tiempo. */
-export const FALLOS_PARA_PLAN_B = 3;
-
-/* Prender el plan B tiene que pedir el vinculo, o sea que CEDE EL
-   CONTROL en medio de la operacion. Estas dos variables son la
-   reserva del lugar: sin ellas, entre el `if (conexionIrc)` y la
-   asignacion entraba otra llamada y se abrian dos conexiones IRC.
-
-   No era un caso raro: `revisarPlanB` sale de cada cambio de estado
-   de EventSub, y los estados vienen de a pares sin ceder el control
-   (un `cortado` y el `conectando` del reintento). La segunda ganaba
-   la variable y la primera quedaba conectada a irc.chat.twitch.tv
-   para siempre, con su propio backoff: ni apagarPlanB ni parar
-   llegaban a ella, porque las dos cierran `conexionIrc` y esa ya era
-   la otra. */
-let prendiendoPlanB = null;   // promesa del prendido en curso, o null
-let planBPedido = false;      // se pidio y todavia no se apago
-
-function revisarPlanB() {
-  if (!conexionTwitch) return;
+function revisarPlanB(c) {
+  if (!c.conexionTwitch) return;
   /* Con EventSub conectado no hay nada que suplir, por mas fallos que
      haya acumulado antes. La clase pone el contador en cero al recibir
      el welcome, pero depender de eso significa que el dia que cambie,
      el plan B se prende justo despues de apagarse. */
-  if (conexionTwitch.estado === 'conectado') return;
-  if (conexionTwitch.intentosFallidosSeguidos > FALLOS_PARA_PLAN_B) prenderPlanB();
+  if (c.conexionTwitch.estado === 'conectado') return;
+  if (c.conexionTwitch.intentosFallidosSeguidos > FALLOS_PARA_PLAN_B) prenderPlanB(c);
 }
 
-function prenderPlanB() {
-  if (conexionIrc) return Promise.resolve();
+function prenderPlanB(c) {
+  if (c.conexionIrc) return Promise.resolve();
   /* La bandera se levanta ANTES de colgarse del prendido en vuelo, y
      no despues. Al reves, un pedido que llegaba con otro en camino
      devolvia la promesa vieja y se perdia: si en el medio hubo un
@@ -428,61 +510,64 @@ function prenderPlanB() {
      cancelado y aborta al despertar, asi que el pedido nuevo no
      abria nada y nadie volvia a intentarlo hasta el cambio de estado
      siguiente. */
-  planBPedido = true;
-  if (prendiendoPlanB) return prendiendoPlanB;      // ya hay uno en camino
-  prendiendoPlanB = abrirPlanB().finally(() => { prendiendoPlanB = null; });
-  return prendiendoPlanB;
+  c.planBPedido = true;
+  if (c.prendiendoPlanB) return c.prendiendoPlanB;      // ya hay uno en camino
+  c.prendiendoPlanB = abrirPlanB(c).finally(() => { c.prendiendoPlanB = null; });
+  return c.prendiendoPlanB;
 }
 
-async function abrirPlanB() {
-  const v = await vinculos.leer('twitch').catch(e => {
-    console.warn('[chat] no se pudo leer el vinculo de Twitch para el plan B:', e.message);
+async function abrirPlanB(c) {
+  const v = await vinculos.leer(c.slug, 'twitch').catch(e => {
+    console.warn(`[chat] ${c.slug}: no se pudo leer el vinculo de Twitch para el plan B:`, e.message);
     return null;
   });
 
   /* Mientras se leia el vinculo, EventSub pudo volver (apagarPlanB) o
      el modulo pudo pararse. Abrir ahora dejaria prendido un IRC que
      ya nadie quiere y que nadie va a cerrar. */
-  if (!planBPedido || conexionIrc) return;
+  if (!c.planBPedido || c.conexionIrc) return;
 
   const canalTwitch = v?.login ?? '';
   if (!canalTwitch) {
-    console.warn('[chat] no se puede prender el plan B: no se sabe el canal de Twitch');
+    console.warn(`[chat] ${c.slug}: no se puede prender el plan B: no se sabe el canal de Twitch`);
     return;
   }
 
-  console.warn(`[chat] EventSub fallo ${FALLOS_PARA_PLAN_B}+ veces seguidas: ` +
+  console.warn(`[chat] ${c.slug}: EventSub fallo ${FALLOS_PARA_PLAN_B}+ veces seguidas: ` +
                `se prende el IRC anonimo mientras se sigue reintentando`);
-  estado.twitch.modo = 'irc';
-  conexionIrc = crearConexion.irc({
+  c.twitch.modo = 'irc';
+  c.conexionIrc = crearConexion.irc({
     canal: canalTwitch,
-    alMensaje: mensaje => recibirDeTwitch(mensaje),
+    alMensaje: mensaje => recibirDeTwitch(c.slug, mensaje),
   });
-  conexionIrc.conectar();
+  c.conexionIrc.conectar();
 }
 
-function apagarPlanB() {
+function apagarPlanB(c) {
   /* Primero se cancela el pedido, aunque todavia no haya conexion:
      puede haber un prendido en vuelo esperando el vinculo. */
-  planBPedido = false;
-  if (!conexionIrc) return;
-  console.log('[chat] EventSub volvio: se apaga el IRC anonimo');
-  conexionIrc.cerrar();
-  conexionIrc = null;
+  c.planBPedido = false;
+  if (!c.conexionIrc) return;
+  console.log(`[chat] ${c.slug}: EventSub volvio: se apaga el IRC anonimo`);
+  c.conexionIrc.cerrar();
+  c.conexionIrc = null;
 }
 
 /* --------------------------------------------------------- enviar */
 
 /**
- * Manda un mensaje a una red o a las dos, con la cuenta del dueño.
+ * Manda un mensaje a una red o a las dos, con la cuenta del creador de
+ * esta sala.
  *
  * Devuelve un resultado POR RED. No tira si una falla: que Twitch
  * rechace no tiene por que borrar el hecho de que en Kick salio, y
  * la pagina tiene que poder decir exactamente eso.
  *
+ * @param {string} slug
  * @param {{texto:string, destino:'kick'|'twitch'|'ambos', respondeA?:string}} pedido
  */
-export async function enviar({ texto, destino = 'kick', respondeA } = {}) {
+export async function enviar(slug, { texto, destino = 'kick', respondeA } = {}) {
+  const s = exigirSlug(slug);
   const cuerpo = String(texto ?? '').trim();
   if (!cuerpo) return { error: 'el mensaje esta vacio' };
 
@@ -510,17 +595,17 @@ export async function enviar({ texto, destino = 'kick', respondeA } = {}) {
 
   const salida = {};
   const tareas = [];
-  if (destino === 'kick' || destino === 'ambos') tareas.push(enviarAKick(cuerpo, respondeA, salida));
-  if (destino === 'twitch' || destino === 'ambos') tareas.push(enviarATwitch(cuerpo, respondeA, salida));
+  if (destino === 'kick' || destino === 'ambos') tareas.push(enviarAKick(s, cuerpo, respondeA, salida));
+  if (destino === 'twitch' || destino === 'ambos') tareas.push(enviarATwitch(s, cuerpo, respondeA, salida));
   if (!tareas.length) return { error: `destino desconocido: ${destino}` };
 
   await Promise.all(tareas);
   return salida;
 }
 
-async function enviarAKick(texto, respondeA, salida) {
+async function enviarAKick(slug, texto, respondeA, salida) {
   try {
-    const v = await vinculos.acceso('kick');
+    const v = await vinculos.acceso(slug, 'kick');
     if (!v) { salida.kick = { ok: false, motivo: 'no hay vinculo con Kick' }; return; }
     const r = await kick.enviarMensaje(v.accessToken, v.usuarioId, texto, { respondeA });
     salida.kick = r.enviado
@@ -531,9 +616,9 @@ async function enviarAKick(texto, respondeA, salida) {
   }
 }
 
-async function enviarATwitch(texto, respondeA, salida) {
+async function enviarATwitch(slug, texto, respondeA, salida) {
   try {
-    const v = await vinculos.acceso('twitch');
+    const v = await vinculos.acceso(slug, 'twitch');
     if (!v) { salida.twitch = { ok: false, motivo: 'no hay vinculo con Twitch' }; return; }
     const r = await twitch.enviarMensaje({
       accessToken: v.accessToken,
@@ -567,26 +652,35 @@ function estadoDeError(e) {
 
 /* ---------------------------------------------------------- salud */
 
+const SIN_NADA = {
+  kick: { vinculado: false, ultima: null, suscripcion: 'desconocida', vivo: false, sospechoso: false },
+  twitch: { vinculado: false, ultima: null, estado: 'cortado', modo: 'ninguno', tope: false },
+};
+
 /**
- * Como esta cada via, en un objeto listo para mandar tal cual.
+ * Como esta cada via de una sala, en un objeto listo para mandar tal
+ * cual.
  *
  * NO SALE POR EL BUS SSE, y es a proposito. El bus de un canal es
- * publico: en la Fase 2 lo escucha cualquiera que este mirando la
- * peli. La salud dice si el dueño tiene vinculada cada red, si su
+ * publico: desde la Fase 2 lo escucha cualquiera que este mirando la
+ * peli. La salud dice si el creador tiene vinculada cada red, si su
  * conexion esta en el plan B y si su canal esta en vivo: no es un
- * secreto, pero es informacion de la cuenta del dueño y no tiene por
- * que viajar a todo el que abra la sala. La pide /chat contra
- * /api/chat/salud, que exige la cookie del dueño.
+ * secreto, pero es informacion de la cuenta del creador y no tiene por
+ * que viajar a todo el que abra la sala. La piden /chat y /panel
+ * contra rutas que exigen la cookie de esa sala.
  */
-export function salud() {
-  const twitchEstado = conexionTwitch?.estado ?? estado.twitch.estado;
-  const ultimaTwitch = ultimaDe(estado.twitch.ultima, conexionIrc?.ultimaLlegada);
+export function salud(slug, ahora = Date.now()) {
+  const c = canalSiHay(slug);
+  if (!c) return { ...SIN_NADA, ahora: new Date(ahora).toISOString() };
+
+  const twitchEstado = c.conexionTwitch?.estado ?? c.twitch.estado;
+  const ultimaTwitch = ultimaDe(c.twitch.ultima, c.conexionIrc?.ultimaLlegada);
   return {
     kick: {
-      vinculado: estado.kick.vinculado,
-      ultima: estado.kick.ultima ? estado.kick.ultima.toISOString() : null,
-      suscripcion: estado.kick.suscripcion,
-      vivo: estado.kick.vivo,
+      vinculado: c.kick.vinculado,
+      ultima: c.kick.ultima ? c.kick.ultima.toISOString() : null,
+      suscripcion: c.kick.suscripcion,
+      vivo: c.kick.vivo,
       /* El veredicto viaja hecho, no los ingredientes. La pagina lo
          calculaba por su cuenta y con OTRA regla (pedia que hubiera
          llegado al menos un mensaje), asi que el caso que motiva todo
@@ -594,15 +688,19 @@ export function salud() {
          prendia la banda en pantalla aunque el servidor lo
          considerara sospechoso. Una sola fuente de verdad, y es
          esta. */
-      sospechoso: kickSospechoso(),
+      sospechoso: kickSospechoso(slug, ahora),
     },
     twitch: {
-      vinculado: estado.twitch.vinculado,
+      vinculado: c.twitch.vinculado,
       ultima: ultimaTwitch ? ultimaTwitch.toISOString() : null,
       estado: twitchEstado,
-      modo: conexionIrc ? 'irc' : estado.twitch.modo,
+      modo: c.conexionIrc ? 'irc' : c.twitch.modo,
+      /* Que la conexion no se abrio por el tope de este proceso, no
+         por un problema del creador. Sin esto, su panel diria
+         "cortado" y no habria forma de distinguirlo de Twitch caido. */
+      tope: Boolean(c.twitch.tope),
     },
-    ahora: new Date().toISOString(),
+    ahora: new Date(ahora).toISOString(),
   };
 }
 
@@ -615,21 +713,17 @@ const ultimaDe = (a, b) => {
 /**
  * Si hace demasiado que Kick no dice nada con el canal en vivo.
  *
- * Es la regla del aviso grande de /chat, y vive aca y en ningun otro
- * lado: sale por `salud()` y la pagina la muestra, no la recalcula.
+ * Es la regla del aviso grande de /chat y de /panel, y vive aca y en
+ * ningun otro lado: sale por `salud()` y la pagina la muestra, no la
+ * recalcula.
  *
  * "Nunca llego un mensaje" cuenta como silencio, no como excusa: el
  * caso tipico de esto es la URL del webhook sin cargar en el portal
  * de Kick, donde no llega ni el primero.
  */
-export function kickSospechoso(ahora = Date.now()) {
-  if (!estado.kick.vivo) return false;
-  const t = estado.kick.ultima?.getTime() ?? 0;
+export function kickSospechoso(slug, ahora = Date.now()) {
+  const c = canalSiHay(slug);
+  if (!c || !c.kick.vivo) return false;
+  const t = c.kick.ultima?.getTime() ?? 0;
   return ahora - t > SILENCIO_SOSPECHOSO;
-}
-
-/* Solo para los tests y para el arranque: dejar anotado el canal sin
-   levantar conexiones. */
-export function fijarCanal(slug) {
-  slugDueno = String(slug ?? '').toLowerCase();
 }

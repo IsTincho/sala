@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creadores · Sala</title>
+<link rel="stylesheet" href="/comun/base.css">
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<main class="contenedor contenedor-admin">
+  <h1>Creadores</h1>
+
+  <div id="aviso-admin" class="banda-aviso" hidden>
+    <span id="texto-aviso-admin"></span>
+    <button type="button" id="boton-cerrar-aviso-admin" aria-label="Cerrar aviso">×</button>
+  </div>
+
+  <section class="tarjeta" id="tarjeta-resumen" aria-live="polite">
+    <p id="texto-carga-admin">consultando…</p>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Las salas</h2>
+    <!-- Tabla y no lista: son cinco columnas que se comparan entre
+         filas, que es exactamente para lo que existe una tabla. Va
+         adentro de un contenedor con scroll propio para que en celular
+         se deslice la tabla y no la página. -->
+    <div class="marco-tabla">
+      <table class="tabla-creadores">
+        <thead>
+          <tr>
+            <th scope="col">Canal</th>
+            <th scope="col">Plan</th>
+            <th scope="col">Vence</th>
+            <th scope="col">Uso</th>
+            <th scope="col">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="filas-creadores"></tbody>
+      </table>
+    </div>
+    <p class="linea-tenue" id="sin-creadores" hidden>
+      Todavía no hay ninguno. Se dan de alta solos entrando por <code>/crear</code>.
+    </p>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Qué puede tocar esta pantalla</h2>
+    <p class="linea-tenue">
+      Sólo <b>amigo</b> y <b>pendiente</b>. Los planes <b>pago</b> y
+      <b>vencido</b> los pone el proveedor de cobro cuando avisa, y ponerlos a
+      mano acá haría que la base y el proveedor digan cosas distintas sin forma
+      de saber cuál manda.
+    </p>
+    <p class="linea-tenue">
+      La columna <b>Plan</b> muestra el guardado y, si no coinciden, entre
+      paréntesis el que vale hoy: un «pago» con la fecha ya pasada cuenta como
+      vencido aunque el aviso del proveedor nunca haya llegado.
+    </p>
+  </section>
+
+  <p><a href="/panel">Volver a mi panel</a></p>
+</main>
+
+<script src="/admin/admin.js"></script>
+</body>
+</html>

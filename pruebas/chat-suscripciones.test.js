@@ -123,7 +123,7 @@ const ircQueNadieDeberiaPedir = () => {
 };
 
 async function guardarVinculoKick() {
-  await vinculos.guardar('kick', {
+  await vinculos.guardar(CANAL, 'kick', {
     usuarioId: USUARIO,
     nombre: 'IsTincho',
     slug: CANAL,
@@ -135,7 +135,7 @@ async function guardarVinculoKick() {
 }
 
 async function guardarVinculoTwitch() {
-  await vinculos.guardar('twitch', {
+  await vinculos.guardar(CANAL, 'twitch', {
     usuarioId: '777',
     nombre: 'IsTincho',
     login: CANAL,
@@ -155,8 +155,8 @@ test.beforeEach(async () => {
   eventSubs = [];
   enVivo = false;
   falla = null;
-  await vinculos.olvidar('kick');
-  await vinculos.olvidar('twitch');
+  await vinculos.olvidar(CANAL, 'kick');
+  await vinculos.olvidar(CANAL, 'twitch');
   ircsPedidos = [];
   chat.fijarConexiones({
     eventSub: opciones => { const c = new EventSubFalso(opciones); eventSubs.push(c); return c; },
@@ -227,25 +227,23 @@ test('suscribirEventos no toca nada si ya estan las dos', async () => {
 /* ------------------------------------------ la verificacion de Kick */
 
 test('sin vinculo con Kick no se pide nada y se dice que no esta vinculado', async () => {
-  chat.fijarCanal(CANAL);
-  const r = await chat.verificarKick();
+  const r = await chat.verificarKick(CANAL);
 
   assert.deepEqual(r, { vinculado: false });
-  assert.equal(chat.salud().kick.vinculado, false);
-  assert.equal(chat.salud().kick.suscripcion, 'desconocida',
+  assert.equal(chat.salud(CANAL).kick.vinculado, false);
+  assert.equal(chat.salud(CANAL).kick.suscripcion, 'desconocida',
     'no se puede decir "activa" de algo que no se miro');
   assert.equal(llamadas.length, 0, 'y no se molesta a la API de Kick');
 });
 
 test('con las dos suscripciones puestas, la verificacion no resuscribe', async () => {
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
   suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
-  const r = await chat.verificarKick();
+  const r = await chat.verificarKick(CANAL);
 
   assert.deepEqual(r, { vinculado: true, resuscrito: false });
-  assert.equal(chat.salud().kick.suscripcion, 'activa');
+  assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa');
   assert.equal(pedidosA('/events/subscriptions').filter(l => l.metodo === 'POST').length, 0);
 });
 
@@ -254,17 +252,16 @@ test('si falta una suscripcion, la verificacion la vuelve a crear', async () => 
      se queda mudo. Si la verificacion no resuscribe pero igual dice
      "activa", la pantalla miente y nadie se entera hasta que alguien
      pregunta por que no escribe nadie. */
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
   suscripciones = [];
 
-  const r = await chat.verificarKick();
+  const r = await chat.verificarKick(CANAL);
 
   assert.deepEqual(r, { vinculado: true, resuscrito: true });
   const creaciones = pedidosA('/events/subscriptions').filter(l => l.metodo === 'POST');
   assert.equal(creaciones.length, 1, 'tiene que haber creado las suscripciones que faltaban');
   assert.deepEqual(creaciones[0].cuerpo.events, kick.EVENTOS);
-  assert.equal(chat.salud().kick.suscripcion, 'activa');
+  assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa');
 });
 
 test('la version de una suscripcion se compara como numero, venga como venga', async () => {
@@ -274,11 +271,10 @@ test('la version de una suscripcion se compara como numero, venga como venga', a
      CINCO MINUTOS, para siempre, contra la cuota de Kick. El fixture
      de los otros tests usa numeros, asi que ese caso no lo mira
      nadie. */
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
   suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: String(e.version) }));
 
-  const r = await chat.verificarKick();
+  const r = await chat.verificarKick(CANAL);
 
   assert.deepEqual(r, { vinculado: true, resuscrito: false },
     'estan las dos: no hay nada que volver a crear');
@@ -286,14 +282,13 @@ test('la version de una suscripcion se compara como numero, venga como venga', a
 });
 
 test('resuscribir a mano crea las suscripciones aunque parezca que esta todo bien', async () => {
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
   suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
-  const r = await chat.resuscribirKick();
+  const r = await chat.resuscribirKick(CANAL);
 
   assert.deepEqual(r, { ok: true });
-  assert.equal(chat.salud().kick.suscripcion, 'activa');
+  assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa');
 });
 
 /* -------------------------------------------- el "esta en vivo" (D2) */
@@ -304,55 +299,52 @@ test('el "en vivo" sale de la API de Kick, no de haber recibido un webhook', asy
      Si `vivo` dependiera del webhook `livestream.status.updated`,
      seria false para siempre y el aviso que existe para detectar
      justamente esto no podria aparecer nunca. */
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
   enVivo = true;
 
-  assert.equal(chat.salud().kick.vivo, false, 'antes de preguntar no se sabe');
+  assert.equal(chat.salud(CANAL).kick.vivo, false, 'antes de preguntar no se sabe');
 
-  await chat.verificarKick();
+  await chat.verificarKick(CANAL);
 
   assert.equal(pedidosA('/channels').length, 1, 'tiene que preguntarle a la API');
-  assert.equal(chat.salud().kick.vivo, true);
-  assert.equal(chat.salud().kick.sospechoso, true,
+  assert.equal(chat.salud(CANAL).kick.vivo, true);
+  assert.equal(chat.salud(CANAL).kick.sospechoso, true,
     'en vivo y sin un solo mensaje en la vida: eso es exactamente lo que hay que avisar');
 });
 
 test('si la API dice que el canal se apago, el aviso se apaga', async () => {
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
 
   /* El webhook llego cuando arranco el stream (la via rapida) */
-  chat.recibirDeKick(
+  chat.recibirDeKick(CANAL, 
     { id: 'ev', tipo: 'livestream.status.updated', cuando: new Date().toISOString() },
     { is_live: true },
   );
-  assert.equal(chat.salud().kick.vivo, true);
+  assert.equal(chat.salud(CANAL).kick.vivo, true);
 
   /* ...y despues el stream termino. Si el aviso dependiera solo del
      webhook y ese webhook se perdiera, la banda roja se quedaria
      puesta el resto de la noche. */
   enVivo = false;
-  await chat.verificarKick();
+  await chat.verificarKick(CANAL);
 
-  assert.equal(chat.salud().kick.vivo, false);
-  assert.equal(chat.salud().kick.sospechoso, false);
+  assert.equal(chat.salud(CANAL).kick.vivo, false);
+  assert.equal(chat.salud(CANAL).kick.sospechoso, false);
 });
 
 test('si la API no contesta, no se pisa lo que se sabia', async () => {
   /* Que Kick tenga un mal minuto no es "se apago el stream". */
-  chat.fijarCanal(CANAL);
   await guardarVinculoKick();
-  chat.recibirDeKick(
+  chat.recibirDeKick(CANAL, 
     { id: 'ev', tipo: 'livestream.status.updated', cuando: new Date().toISOString() },
     { is_live: true },
   );
 
   falla = '/channels';
-  await chat.verificarKick();
+  await chat.verificarKick(CANAL);
 
-  assert.equal(chat.salud().kick.vivo, true, 'se queda con lo ultimo que sabia');
-  assert.equal(chat.salud().kick.suscripcion, 'activa', 'y la verificacion sigue su camino');
+  assert.equal(chat.salud(CANAL).kick.vivo, true, 'se queda con lo ultimo que sabia');
+  assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa', 'y la verificacion sigue su camino');
 });
 
 /* -------------------------------------------------------- arrancar */
@@ -364,12 +356,12 @@ test('al arrancar, si hay token de Twitch guardado, se reconecta solo', async ()
   await guardarVinculoTwitch();
   suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
-  await chat.arrancar({ slug: CANAL, base: 'https://sala.example' });
+  await chat.arrancar({ base: 'https://sala.example' });
 
   assert.equal(eventSubs.length, 1, 'tiene que abrir la conexion EventSub sola');
   assert.equal(eventSubs[0].conectada, true);
-  assert.equal(chat.salud().twitch.vinculado, true);
-  assert.equal(chat.salud().kick.suscripcion, 'activa', 'y de paso verifica Kick');
+  assert.equal(chat.salud(CANAL).twitch.vinculado, true);
+  assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa', 'y de paso verifica Kick');
 
   chat.parar();
 });
@@ -377,11 +369,11 @@ test('al arrancar, si hay token de Twitch guardado, se reconecta solo', async ()
 test('sin vinculo de Twitch, arrancar no abre ninguna conexion y el servidor sigue arriba', async () => {
   await guardarVinculoKick();
 
-  await chat.arrancar({ slug: CANAL, base: 'https://sala.example' });
+  await chat.arrancar({ base: 'https://sala.example' });
 
   assert.equal(eventSubs.length, 0);
-  assert.equal(chat.salud().twitch.vinculado, false);
-  assert.equal(chat.salud().twitch.estado, 'cortado');
+  assert.equal(chat.salud(CANAL).twitch.vinculado, false);
+  assert.equal(chat.salud(CANAL).twitch.estado, 'cortado');
 
   chat.parar();
 });
@@ -398,8 +390,8 @@ test('la verificacion se repite cada cinco minutos, y arrancar dos veces no la d
 
   t.mock.timers.enable({ apis: ['setInterval'] });
 
-  await chat.arrancar({ slug: CANAL, base: 'https://sala.example' });
-  await chat.arrancar({ slug: CANAL, base: 'https://sala.example' });
+  await chat.arrancar({ base: 'https://sala.example' });
+  await chat.arrancar({ base: 'https://sala.example' });
 
   const antes = pedidosA('/events/subscriptions').length;
   t.mock.timers.tick(chat.CADA_VERIFICACION);
@@ -420,14 +412,13 @@ test('la verificacion se repite cada cinco minutos, y arrancar dos veces no la d
 /* ------------------------------------- la salud tampoco sale por aca */
 
 test('nada de todo esto difunde la salud por el bus publico', async () => {
-  chat.fijarCanal(CANAL);
   const oyente = escuchar(CANAL);
   await guardarVinculoKick();
   await guardarVinculoTwitch();
   enVivo = true;
 
-  await chat.arrancar({ slug: CANAL, base: 'https://sala.example' });
-  chat.salud();
+  await chat.arrancar({ base: 'https://sala.example' });
+  chat.salud(CANAL);
   chat.parar();
 
   assert.deepEqual([...new Set(oyente.tipos())], ['estado'],

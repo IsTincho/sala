@@ -211,14 +211,30 @@ test.before(async () => {
   }
 
   /* El dueño vinculado: de acá sale el broadcaster_user_id al que se
-     le mandan los mensajes de los espectadores. */
-  await vinculos.guardar('kick', {
+     le mandan los mensajes de los espectadores de SU sala. */
+  await vinculos.guardar(SLUG, 'kick', {
     usuarioId: '4242',
     nombre: 'IsTincho',
     login: SLUG,
     slug: SLUG,
     accessToken: 'acceso-dueno',
     refreshToken: 'refresco-dueno',
+    venceEn: Date.now() + 3600_000,
+    scopes: 'user:read chat:write events:subscribe',
+  });
+
+  /* Y el OTRO creador, con SU propio canal de Kick y un
+     broadcaster_user_id distinto. Es lo que hace que el test de
+     aislamiento del chat pueda distinguir "fue a la sala correcta" de
+     "no fue a ningún lado": con la sala ajena sin vincular, un mensaje
+     que se ruteara mal daría el mismo 503 que uno bien ruteado. */
+  await vinculos.guardar(OTRO, 'kick', {
+    usuarioId: '7777',
+    nombre: 'Otro Creador',
+    login: OTRO,
+    slug: OTRO,
+    accessToken: 'acceso-otro',
+    refreshToken: 'refresco-otro',
     venceEn: Date.now() + 3600_000,
     scopes: 'user:read chat:write events:subscribe',
   });
@@ -464,13 +480,50 @@ test('DELETE con un id inválido da 400 y no toca nada', async () => {
   assert.equal(estado, 400);
 });
 
-test('/api/videos con GET pide cookie de dueño, no la clave', async () => {
+test('/api/videos con GET pide cookie o clave, y sin nada da 401', async () => {
+  /*
+   * CAMBIO DELIBERADO SOBRE UNA DECISIÓN DE LA FASE 2, anotado en la
+   * bitácora.
+   *
+   * Este test decía que la clave de subida servía para ESCRIBIR el
+   * catálogo y no para leerlo. Con un solo creador esa restricción no
+   * costaba nada; con la Fase 3 sí, porque `subir.py --listar` de un
+   * creador no tiene otra forma de saber qué hay del lado del
+   * servidor: no tiene cookie ni token de R2.
+   *
+   * Y la restricción dejó de ser coherente. Desde que la misma clave
+   * firma los DELETE de R2 de su prefijo (que es lo que necesita
+   * `--borrar`), poder leer el catálogo es estrictamente menos que lo
+   * que ya podía hacer. La regla que queda, y que este test fija, es
+   * más simple de enunciar: **la clave puede todo sobre los videos de
+   * SU sala, y nada más.**
+   */
   const sinNada = await pedirJson('/api/videos');
   assert.equal(sinNada.estado, 401);
-  /* La clave sirve para escribir el catálogo desde una terminal, no
-     para leerlo desde cualquier lado. */
+
   const conClave = await pedirJson('/api/videos', { clave: claveSubida });
-  assert.equal(conClave.estado, 401);
+  assert.equal(conClave.estado, 200);
+  assert.ok(conClave.datos.videos.every(v => v.slug === SLUG),
+    'y lo que lista es el catálogo de SU sala');
+});
+
+test('la clave NO abre nada que no sean los videos de su sala', async () => {
+  /* La otra mitad de la regla, y la que impide que "la clave puede
+     leer" se estire hasta "la clave es una sesión". Un `.env` filtrado
+     no puede volverse el panel de nadie. */
+  const panel = await pedirJson('/api/panel', { clave: claveSubida });
+  assert.equal(panel.estado, 401, 'el panel es de la cookie');
+
+  const nuevaClave = await pedirJson('/api/panel/clave', { metodo: 'POST', clave: claveSubida });
+  assert.equal(nuevaClave.estado, 401, 'con la clave no se genera otra clave');
+
+  const reloj = await pedirJson(`/api/sala/${SLUG}/reloj`, {
+    metodo: 'POST', clave: claveSubida, cuerpo: { accion: 'detener' },
+  });
+  assert.equal(reloj.estado, 401, 'y no se maneja la película');
+
+  const salud = await pedirJson('/api/chat/salud', { clave: claveSubida });
+  assert.equal(salud.estado, 401);
 });
 
 test('una ruta con dos métodos no contesta 405 al método bueno', async () => {
@@ -808,44 +861,68 @@ test('no se puede escribir en una sala que no existe', async () => {
   assert.equal(pedidosAKick.length, 0, 'no se le puede haber pedido nada a Kick');
 });
 
-test('escribir en la sala de OTRO creador no le cae al dueño en el chat', async () => {
+test('escribir en la sala de OTRO creador va al canal de ESE creador', async () => {
   /*
-   * EL AGUJERO QUE LA FASE 3 HEREDABA. `apiSalaChat` aceptaba cualquier
-   * slug permitido y después mandaba el mensaje a
-   * `vinculos.identidad('kick')`, que es el canal del DUEÑO. O sea: un
-   * espectador escribiendo en /api/sala/otrocanal/chat le publicaba en
-   * kick.com/istincho.
+   * EL AGUJERO QUE LA FASE 2 DEJÓ MARCADO, ahora cerrado de verdad.
    *
-   * El reloj ya tenía su guard `slug !== SLUG_DUENO` con el comentario
-   * de la Fase 3; el chat no tenía ninguno de los dos. Hoy `otrocanal`
-   * está dado de alta en `creadores`, así que pasa `canalPermitido` y
-   * llega hasta acá: es exactamente el escenario de la Fase 3, un año
-   * antes.
+   * `apiSalaChat` aceptaba cualquier slug permitido y después mandaba
+   * el mensaje a `vinculos.identidad('kick')` —sin slug—, que es el
+   * canal del DUEÑO. Un espectador escribiendo en
+   * /api/sala/otrocanal/chat le publicaba en kick.com/istincho. La
+   * Fase 2 lo tapó con un 503 y su propio autor lo llamó "un cartel de
+   * obra, no la solución".
    *
-   * 503 y no 403 a propósito: quien pide no es el dueño de nada, y el
-   * problema no es de permisos sino que esa sala todavía no tiene a
-   * dónde mandar. Es el mismo 503 de "el canal todavía no está
-   * vinculado con Kick" que ya existía, detectado antes.
+   * Ahora se rutea. Lo que este test mira no es un código de estado
+   * sino A DÓNDE FUE EL MENSAJE: el `broadcaster_user_id` del cuerpo
+   * que salió hacia Kick tiene que ser el del OTRO creador (7777) y no
+   * el del dueño (4242). Con el ruteo roto esto contesta 200 igual: la
+   * única forma de ver la diferencia es abrir el pedido.
    */
   espectadores.reiniciar();
   pedidosAKick = [];
   respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true, message_id: 'm' } }, cabeceras: {} };
-  /* Igual que el de arriba, y acá importa más: si el pedido muriera
-     antes por falta de sesión, el `pedidosAKick.length === 0` del final
-     sería verdad sin que la guarda exista, y el test estaría pasando
-     por el motivo equivocado. Con este espectador, sin la guarda el
-     mensaje llega a Kick de verdad. */
+  /* Espectador propio y vivo: con uno al que otro test ya le cerró la
+     sesión, el pedido moriría en 401 antes de llegar al ruteo y el
+     test pasaría por el motivo equivocado. */
   const cookie = await nuevoEspectador('1005', 'la de la sala ajena');
 
-  const { estado, datos } = await pedirJson(`/api/sala/${OTRO}/chat`, {
+  const { estado } = await pedirJson(`/api/sala/${OTRO}/chat`, {
     metodo: 'POST', cookie, cuerpo: { texto: 'hola sala ajena' },
   });
 
+  assert.equal(estado, 200, `contestó ${estado}`);
+  assert.equal(pedidosAKick.length, 1, 'tiene que haber salido exactamente un mensaje');
+
+  const cuerpo = JSON.parse(pedidosAKick[0].cuerpo);
+  assert.equal(cuerpo.broadcaster_user_id, 7777,
+    'el mensaje tiene que caer en el canal de ESA sala');
+  assert.notEqual(cuerpo.broadcaster_user_id, 4242,
+    'y NO en el del dueño del servicio, que es el bug que esto viene a cerrar');
+});
+
+test('una sala sin Kick vinculado contesta 503 y no manda nada a ningún lado', async () => {
+  /* El 503 que queda es el de verdad: esta sala existe pero todavía no
+     vinculó Kick, o sea que no hay a dónde mandar. Antes este código
+     hacía las veces de "no sé rutear esto"; ahora dice sólo lo que
+     dice.
+
+     Es también el control negativo del test de arriba: sin él, un
+     ruteo que mandara todo al dueño y otro que no mandara nada se
+     verían igual desde afuera en la mitad de los casos. */
+  const SINKICK = 'salasinkick';
+  await almacen.poner('creadores', SINKICK, { slug: SINKICK, plan: 'amigo', usuarioId: '8888' });
+
+  espectadores.reiniciar();
+  pedidosAKick = [];
+  const cookie = await nuevoEspectador('1006', 'la de la sala sin kick');
+
+  const { estado, datos } = await pedirJson(`/api/sala/${SINKICK}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'hola' },
+  });
+
   assert.equal(estado, 503, `contestó ${estado}`);
-  assert.match(datos.error, /todavia no puede recibir mensajes/);
-  /* Lo que de verdad importa: NADA salió al canal del dueño. */
-  assert.equal(pedidosAKick.length, 0,
-    'el mensaje de una sala ajena no puede terminar en el chat de Kick del dueño');
+  assert.match(datos.error, /no esta vinculado con Kick/);
+  assert.equal(pedidosAKick.length, 0, 'no puede haber salido nada hacia Kick');
 });
 
 /* ================================================ entrar y salir

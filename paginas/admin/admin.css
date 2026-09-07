@@ -1,0 +1,121 @@
+/* ============================================================
+   /admin. Una tabla y poco más.
+   ============================================================ */
+
+.contenedor-admin{
+  max-width: 56rem;
+  padding-block: var(--espacio-4);
+}
+
+.contenedor-admin .tarjeta{
+  margin-block: var(--espacio-3);
+}
+
+.linea-tenue{
+  color: var(--texto-tenue);
+  font-size: 0.92rem;
+}
+
+/* La tabla se desliza sola adentro de su marco. Sin esto, en un
+   celular la tabla empuja el ancho del body y aparece scroll
+   horizontal en toda la página. */
+.marco-tabla{
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tabla-creadores{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.tabla-creadores th,
+.tabla-creadores td{
+  text-align: left;
+  padding: var(--espacio-2) var(--espacio-2);
+  border-bottom: 1px solid var(--borde);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.tabla-creadores th{
+  color: var(--texto-tenue);
+  font-weight: 600;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tabla-creadores .puntito{
+  margin-right: var(--espacio-2);
+}
+
+.nombre-creador{
+  color: var(--texto-tenue);
+}
+
+.marca-mudo{
+  display: block;
+  color: var(--mal);
+  font-size: 0.8rem;
+  white-space: normal;
+}
+
+.acciones{
+  display: flex;
+  gap: var(--espacio-2);
+  flex-wrap: wrap;
+}
+
+.boton-admin{
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: var(--espacio-1) var(--espacio-3);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.boton-admin:hover:not(:disabled){
+  border-color: var(--acento);
+}
+
+.boton-admin:disabled{
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.alerta-tope{
+  border-left: 3px solid var(--regular);
+  padding-left: var(--espacio-3);
+  color: var(--regular);
+}
+
+/* La banda de aviso, igual que en /panel. */
+.banda-aviso{
+  display: flex;
+  gap: var(--espacio-3);
+  align-items: center;
+  justify-content: space-between;
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--mal);
+  border-radius: var(--radio);
+  padding: var(--espacio-3);
+  margin-bottom: var(--espacio-3);
+}
+
+.banda-aviso button{
+  background: none;
+  border: none;
+  color: var(--texto-tenue);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Sin esto, `hidden` no esconde nada donde el CSS puso un display:
+   las bandas de aviso son flex. Ya mordió en la Fase 2. */
+[hidden]{ display: none !important; }

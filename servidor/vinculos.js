@@ -1,25 +1,45 @@
 /* ============================================================
-   Los vinculos del dueño con cada red.
+   Los vinculos de cada creador con cada red.
 
-   Un vinculo es "el dueño le dio permiso a Sala para hablar y
-   escuchar en su nombre en esta red". Guarda quien es en esa red y
-   los tokens para actuar por el.
+   Un vinculo es "el dueño de esta sala le dio permiso a Sala para
+   hablar y escuchar en su nombre en esta red". Guarda quien es en esa
+   red y los tokens para actuar por el.
 
-   Se guardan en la coleccion `tokens`, un documento por red, con el
-   id `kick:dueno` / `twitch:dueno`. Un documento por red y no uno
-   solo con las dos adentro: vincular Twitch no tiene por que poder
-   pisar el vinculo de Kick.
+   Se guardan en la coleccion `tokens`, un documento por sala y por
+   red, con el id `kick:<slug>` / `twitch:<slug>`. Un documento por red
+   y no uno solo con las dos adentro: vincular Twitch no tiene por que
+   poder pisar el vinculo de Kick.
+
+   ---------------------------------------------------------------
+   EL SLUG VA PRIMERO Y NO TIENE VALOR POR DEFECTO
+
+   Hasta la Fase 2 esto guardaba UN vinculo, el del dueño, con el id
+   literal `kick:dueno`, y la firma era `leer('kick')`. Al pasar a
+   varios creadores lo comodo habria sido agregar el slug al final con
+   el del dueño como default. No se hizo, a proposito, y es la decision
+   mas importante de este archivo.
+
+   El bug que la Fase 2 dejo anotado para esta fase era exactamente
+   ese: `apiSalaChat` llamaba a `identidad('kick')` y le mandaba el
+   mensaje del espectador al canal del DUEÑO, estuviera en la sala que
+   estuviera. Con un default, cualquier call site nuevo que se olvide
+   del slug repite el bug y anda "bien" hasta el dia que haya dos
+   creadores hablando a la vez. Sin default, olvidarse tira.
+
+   Va primero porque es la dimension que manda: se lee "el vinculo de
+   ESTA sala con Kick", y quien escribe la llamada tiene que pensar de
+   que sala esta hablando antes que en ninguna otra cosa.
 
    ---------------------------------------------------------------
    LOS TOKENS VAN CIFRADOS, SIEMPRE
 
-   El refresh token de Kick del dueño es permiso permanente para
+   El refresh token de Kick de un creador es permiso permanente para
    escribir en su chat con su nombre. Un volcado de Mongo que los
-   traiga en claro es alguien hablando como el dueño en su propio
-   canal. Van cifrados con AES-256-GCM y una clave que solo vive en
-   las variables de Railway (servidor/cifrado.js). Sin CLAVE_CIFRADO
-   no se guarda NADA: es preferible que el vinculo no se pueda hacer
-   a que quede un token en claro esperando.
+   traiga en claro es alguien hablando como el en su propio canal. Van
+   cifrados con AES-256-GCM y una clave que solo vive en las variables
+   de Railway (servidor/cifrado.js). Sin CLAVE_CIFRADO no se guarda
+   NADA: es preferible que el vinculo no se pueda hacer a que quede un
+   token en claro esperando.
 
    El access token tambien se cifra, aunque dure una hora. Cuesta lo
    mismo y evita la conversacion de "este cual era".
@@ -31,8 +51,11 @@
    el viejo deja de servir. Si dos pedidos refrescan a la vez, los dos
    parten del mismo refresh token: el segundo en llegar a Twitch se
    come un error y, peor, el que guarde ultimo puede dejar escrito un
-   token que ya no vale. Por eso el refresh se serializa por red: el
-   segundo que llega se cuelga de la promesa del primero.
+   token que ya no vale. Por eso el refresh se serializa POR SALA Y
+   POR RED: el segundo que llega se cuelga de la promesa del primero.
+   La clave del Map es `${red}:${slug}` y no solo la red, que con
+   varios creadores haria que el refresh de uno bloqueara al de otro y,
+   peor, le devolviera su token.
    ============================================================ */
 
 import * as almacen from './almacen.js';
@@ -42,35 +65,44 @@ import * as twitch from './twitch.js';
 
 export const REDES = ['kick', 'twitch'];
 
-const idDe = red => `${red}:dueno`;
+/* El mismo slug que aceptan `creadores.js` y `videos.js`. Se valida
+   aca tambien porque de este id depende que documento se lee: un slug
+   raro que se colara escribiria en la fila de otro. */
+const SLUG_VALIDO = /^[a-z0-9][a-z0-9_-]{0,49}$/;
+
+const idDe = (slug, red) => `${red}:${slug}`;
 
 /* Cuanto antes de que venza se considera que un access token ya no
    sirve. Un token que vence en el medio de un pedido da un 401 que
    despues cuesta entender. */
 const MARGEN = 60_000;
 
-function validarRed(red) {
+function validar(slug, red) {
   if (!REDES.includes(red)) throw new Error(`red desconocida: ${red}`);
-  return red;
+  const s = String(slug ?? '').toLowerCase();
+  if (!SLUG_VALIDO.test(s)) throw new Error(`slug invalido: ${JSON.stringify(String(slug ?? ''))}`);
+  return s;
 }
 
 /* --------------------------------------------------------- guardar */
 
 /**
- * Guarda (o reemplaza) el vinculo del dueño con una red.
+ * Guarda (o reemplaza) el vinculo de una sala con una red.
  *
+ * @param {string} slug            la sala
  * @param {'kick'|'twitch'} red
- * @param {object} datos  usuarioId, nombre, login, slug, accessToken,
- *                        refreshToken, venceEn, scopes
+ * @param {object} datos  usuarioId, nombre, login, slug (el de la red),
+ *                        accessToken, refreshToken, venceEn, scopes
  */
-export async function guardar(red, datos) {
-  validarRed(red);
+export async function guardar(slug, red, datos) {
+  const s = validar(slug, red);
   if (!cifrado.hayClave()) {
     throw new Error(`no se puede guardar el vinculo sin CLAVE_CIFRADO (${cifrado.porQueNoHayClave()})`);
   }
 
-  await almacen.poner('tokens', idDe(red), {
+  await almacen.poner('tokens', idDe(s, red), {
     red,
+    sala: s,
     usuarioId: String(datos.usuarioId ?? ''),
     nombre: String(datos.nombre ?? ''),
     login: String(datos.login ?? ''),
@@ -94,15 +126,16 @@ export async function guardar(red, datos) {
  * es un vinculo que no existe, y hay que volver a entrar. No se
  * borra solo, para que quede el rastro de que hubo uno.
  */
-export async function leer(red) {
-  validarRed(red);
-  const doc = await almacen.obtener('tokens', idDe(red));
+export async function leer(slug, red) {
+  const s = validar(slug, red);
+  const doc = await almacen.obtener('tokens', idDe(s, red));
   if (!doc) return null;
   if (!cifrado.hayClave()) return null;
 
   try {
     return {
       red,
+      sala: s,
       usuarioId: doc.usuarioId ?? '',
       nombre: doc.nombre ?? '',
       login: doc.login ?? '',
@@ -116,32 +149,33 @@ export async function leer(red) {
   } catch (e) {
     /* e.name y no e.message: los errores de descifrado no traen el
        secreto, pero la regla de la casa es no confiar en eso. */
-    console.warn(`[vinculos] no se pudo descifrar el vinculo de ${red} (${e.name}): hay que volver a vincular`);
+    console.warn(`[vinculos] no se pudo descifrar el vinculo de ${red} de ${s} (${e.name}): hay que volver a vincular`);
     return null;
   }
 }
 
-export async function olvidar(red) {
-  validarRed(red);
-  return almacen.quitar('tokens', idDe(red));
+export async function olvidar(slug, red) {
+  const s = validar(slug, red);
+  return almacen.quitar('tokens', idDe(s, red));
 }
 
 /**
- * Quien es el dueño en esta red, SIN tokens y sin refrescar nada.
+ * Quien es esta sala en esta red, SIN tokens y sin refrescar nada.
  *
  * Existe para el camino del espectador: para mandarle un mensaje al
- * chat del dueño hace falta su `broadcaster_user_id` y nada mas. Con
- * `acceso('kick')` se conseguiria igual, pero refrescaria su token
- * (un pedido a Kick) en cada mensaje que escriba cualquiera, y
- * ademas devolveria un access token a un camino que no tiene por que
- * verlo. El refresh token no sale de este modulo nunca.
+ * chat de un canal hace falta su `broadcaster_user_id` y nada mas. Con
+ * `acceso(slug, 'kick')` se conseguiria igual, pero refrescaria el
+ * token del creador (un pedido a Kick) en cada mensaje que escriba
+ * cualquiera, y ademas devolveria un access token a un camino que no
+ * tiene por que verlo. El refresh token no sale de este modulo nunca.
  */
-export async function identidad(red) {
-  validarRed(red);
-  const doc = await almacen.obtener('tokens', idDe(red));
+export async function identidad(slug, red) {
+  const s = validar(slug, red);
+  const doc = await almacen.obtener('tokens', idDe(s, red));
   if (!doc) return null;
   return {
     red,
+    sala: s,
     usuarioId: doc.usuarioId ?? '',
     nombre: doc.nombre ?? '',
     login: doc.login ?? '',
@@ -149,46 +183,63 @@ export async function identidad(red) {
   };
 }
 
-export const hayVinculo = async red => Boolean(await leer(red));
+export const hayVinculo = async (slug, red) => Boolean(await leer(slug, red));
+
+/**
+ * Las salas que tienen vinculo con una red.
+ *
+ * Lo usa el arranque: hay que levantar la conexion EventSub de cada
+ * creador que haya vinculado Twitch, y comprobar la suscripcion de
+ * Kick de cada uno. Devuelve solo los slugs, sin tocar los tokens.
+ */
+export async function salasCon(red) {
+  if (!REDES.includes(red)) throw new Error(`red desconocida: ${red}`);
+  const docs = await almacen.listar('tokens', { red });
+  return docs
+    .map(d => String(d.sala ?? '').toLowerCase())
+    .filter(s => SLUG_VALIDO.test(s));
+}
 
 /* ---------------------------------------------------------- acceso */
 
-/* red -> promesa del refresh en curso. Ver el bloque de arriba sobre
-   la rotacion del refresh token de Twitch. */
+/* `${red}:${slug}` -> promesa del refresh en curso. Ver el bloque de
+   arriba sobre la rotacion del refresh token de Twitch. */
 const refrescando = new Map();
 
 /**
- * Un access token usable para esta red, refrescando si hace falta.
+ * Un access token usable para esta sala y esta red, refrescando si
+ * hace falta.
  *
  * Devuelve null si no hay vinculo. Tira si hay vinculo pero el
- * refresh fallo: eso es algo que el dueño tiene que ver, no algo que
+ * refresh fallo: eso es algo que el creador tiene que ver, no algo que
  * se pueda ignorar en silencio.
  *
  * @returns {Promise<{accessToken:string, usuarioId:string, slug:string, login:string}|null>}
  */
-export async function acceso(red) {
-  validarRed(red);
-  const v = await leer(red);
+export async function acceso(slug, red) {
+  const s = validar(slug, red);
+  const v = await leer(s, red);
   if (!v) return null;
 
   if (v.accessToken && Date.now() + MARGEN < v.venceEn) return quedarse(v);
 
   if (!v.refreshToken) {
-    throw new Error(`el vinculo de ${red} vencio y no hay refresh token: hay que volver a vincular`);
+    throw new Error(`el vinculo de ${red} de ${s} vencio y no hay refresh token: hay que volver a vincular`);
   }
 
-  if (!refrescando.has(red)) {
-    refrescando.set(red, refrescar(red, v).finally(() => refrescando.delete(red)));
+  const clave = idDe(s, red);
+  if (!refrescando.has(clave)) {
+    refrescando.set(clave, refrescar(s, red, v).finally(() => refrescando.delete(clave)));
   }
-  return refrescando.get(red);
+  return refrescando.get(clave);
 }
 
-async function refrescar(red, viejo) {
+async function refrescar(slug, red, viejo) {
   const nuevo = red === 'kick'
     ? await kick.refrescar(viejo.refreshToken)
     : await twitch.refrescar(viejo.refreshToken);
 
-  await guardar(red, {
+  await guardar(slug, red, {
     ...viejo,
     accessToken: nuevo.accessToken,
     /* Twitch rota el refresh token; Kick a veces no manda uno nuevo y
@@ -207,6 +258,7 @@ async function refrescar(red, viejo) {
 const quedarse = v => ({
   accessToken: v.accessToken,
   usuarioId: v.usuarioId,
+  sala: v.sala,
   slug: v.slug,
   login: v.login,
   nombre: v.nombre,
@@ -217,10 +269,11 @@ const quedarse = v => ({
    Lo que se puede mostrar en una pantalla. Sin tokens ni pedazos de
    tokens: esta pagina se mira con la pantalla al aire. */
 
-export async function resumen() {
+export async function resumen(slug) {
   const salida = {};
   for (const red of REDES) {
-    const doc = await almacen.obtener('tokens', idDe(red));
+    const s = validar(slug, red);
+    const doc = await almacen.obtener('tokens', idDe(s, red));
     salida[red] = doc
       ? {
           vinculado: true,

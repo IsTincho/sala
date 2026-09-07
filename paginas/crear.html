@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crear tu Sala · Sala</title>
+<link rel="stylesheet" href="/comun/base.css">
+<link rel="stylesheet" href="/crear/crear.css">
+</head>
+<body>
+<main class="contenedor contenedor-crear">
+  <h1>Creá tu Sala</h1>
+
+  <p class="entrada">
+    Pasá una película en una página tuya, con tu cámara al lado y el chat real
+    de tu canal de Kick a la derecha. La gente entra, escribe con su propia
+    cuenta, y lo que escribe aparece en tu chat de Kick.
+  </p>
+
+  <section class="tarjeta">
+    <h2>Cómo funciona</h2>
+    <ol class="pasos">
+      <li>Entrás con Kick. Tu Sala queda en <code>/sala/tu-canal</code>.</li>
+      <li>Subís un video desde tu PC con el script, y queda en tu catálogo.</li>
+      <li>Desde tu panel tocás play, y todos los que estén mirando ven el mismo segundo.</li>
+    </ol>
+    <p class="linea-tenue">
+      Tu Sala arranca <b>pendiente</b>: se puede abrir y leer el chat, pero no
+      reproduce hasta que tengas un plan activo. Desde tu panel vas a poder
+      suscribirte.
+    </p>
+  </section>
+
+  <section class="tarjeta" id="tarjeta-permisos">
+    <h2>Qué permisos te va a pedir Kick</h2>
+    <ul class="permisos">
+      <li><b>Ver tu cuenta y tu canal</b>, para saber cuál es tu Sala.</li>
+      <li><b>Escribir en tu chat</b>, para que los mensajes de la Sala lleguen ahí.</li>
+      <li><b>Suscribirse a tus eventos</b>, para poder leer tu chat en vivo.</li>
+    </ul>
+    <p class="linea-tenue">
+      Nada de eso te da un bot: los mensajes salen con la cuenta de cada
+      persona, no con la nuestra.
+    </p>
+  </section>
+
+  <!-- El checkbox es la puerta de la aceptación. El botón queda
+       apagado hasta que se marca, y la versión aceptada viaja en el
+       link: el servidor la guarda con la fecha. -->
+  <section class="tarjeta">
+    <label class="acepto">
+      <input type="checkbox" id="acepto-terminos">
+      <span>
+        Leí y acepto los <a href="/terminos" target="_blank" rel="noopener">términos de uso</a>.
+        Entiendo que el contenido que suba es mío y que respondo por él.
+      </span>
+    </label>
+
+    <p>
+      <a id="boton-entrar" class="boton-crear apagado" aria-disabled="true"
+         href="/oauth/kick/entrar?rol=creador&amp;destino=/panel&amp;terminos=1">Entrar con Kick y crear mi Sala</a>
+    </p>
+
+    <p class="linea-tenue" id="aviso-acepto">
+      Marcá la casilla para poder seguir.
+    </p>
+  </section>
+
+  <p class="linea-tenue">
+    ¿Ya tenés una Sala? <a href="/panel">Andá a tu panel</a>.
+  </p>
+</main>
+
+<script src="/crear/crear.js"></script>
+</body>
+</html>

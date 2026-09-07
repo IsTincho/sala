@@ -32,9 +32,21 @@ export const hayCredenciales = () => Boolean(CLIENT_ID && CLIENT_SECRET);
 /* Los scopes que pide cada rol. El espectador pide lo minimo que
    necesita para que su mensaje salga con su nombre: identificarse y
    escribir. Nada mas. Pedir de mas espanta gente en la pantalla de
-   permisos y no nos sirve para nada. */
+   permisos y no nos sirve para nada.
+
+   `creador` y `dueno` piden lo mismo, y son dos nombres porque son dos
+   puertas: `dueno` es el link de /panel (el que ya tiene sala) y
+   `creador` es el de /crear (el que la esta creando). Lo que hace cada
+   uno con el resultado lo decide `kickVolver`, no los scopes.
+
+   `channel:read` NO esta en la lista del brief (que pide `user:read
+   chat:write events:subscribe`) y hace falta igual: /users de Kick no
+   devuelve el slug del canal, sale de /channels, y sin el slug no se
+   puede saber de que sala es esta persona ni si es el dueño del
+   servicio. Sin ese scope el alta no puede funcionar. */
 export const SCOPES = {
   dueno: ['user:read', 'channel:read', 'chat:write', 'events:subscribe'],
+  creador: ['user:read', 'channel:read', 'chat:write', 'events:subscribe'],
   espectador: ['user:read', 'chat:write'],
 };
 
@@ -144,10 +156,17 @@ const destinoSeguro = d =>
 
 /**
  * Arma la URL de autorizacion y se acuerda del verificador.
- * @param {{redirect:string, rol?:string, destino?:string}} opciones
+ *
+ * `terminos` es la version del texto de /terminos que la persona
+ * acepto antes de empezar. Viaja EN EL SERVIDOR, adentro de este Map,
+ * y no en la URL del callback: asi el que vuelve no puede inventarse
+ * una aceptacion que nunca hubo cambiando un parametro, y la fecha que
+ * queda guardada es la del flujo de verdad.
+ *
+ * @param {{redirect:string, rol?:string, destino?:string, terminos?:string}} opciones
  * @returns {{url:string, estado:string}}
  */
-export function urlLogin({ redirect, rol = 'espectador', destino = '' }) {
+export function urlLogin({ redirect, rol = 'espectador', destino = '', terminos = '' }) {
   if (!hayCredenciales()) throw new Error('faltan KICK_CLIENT_ID / KICK_CLIENT_SECRET');
 
   const ahora = Date.now();
@@ -163,6 +182,8 @@ export function urlLogin({ redirect, rol = 'espectador', destino = '' }) {
     redirect,
     rol: SCOPES[rol] ? rol : 'espectador',
     destino: destinoSeguro(destino),
+    /* Recortada: es una version, no un texto. */
+    terminos: String(terminos ?? '').slice(0, 16),
     vence: ahora + VENTANA_LOGIN,
   });
 
@@ -218,6 +239,7 @@ export async function canjearCodigo({ code, estado }) {
     scopes: d.scope ?? '',
     rol: p.rol,
     destino: p.destino,
+    terminos: p.terminos ?? '',
   };
 }
 

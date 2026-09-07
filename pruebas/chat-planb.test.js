@@ -103,10 +103,9 @@ function socketFalso(registro) {
 async function preparar() {
   chat.reiniciar();
   canales.cerrarTodo();
-  chat.fijarCanal(CANAL);
   canales.canal(CANAL);
 
-  await vinculos.guardar('twitch', {
+  await vinculos.guardar(CANAL, 'twitch', {
     usuarioId: '777',
     nombre: 'IsTincho',
     login: CANAL,
@@ -133,7 +132,7 @@ async function preparar() {
     },
   });
 
-  await chat.conectarTwitch();
+  await chat.conectarTwitch(CANAL);
   assert.equal(eventSubs.length, 1, 'conectarTwitch tiene que abrir EventSub');
 
   return { eventSubs, ircs, sockets, twitch: eventSubs[0] };
@@ -159,7 +158,7 @@ test('con tres fallos seguidos el plan B no se prende', async () => {
   await asentarse();
 
   assert.equal(sockets.length, 0, 'ni una conexion de IRC');
-  assert.equal(chat.salud().twitch.modo, 'eventsub');
+  assert.equal(chat.salud(CANAL).twitch.modo, 'eventsub');
 });
 
 test('pasados los tres fallos se prende el IRC anonimo y se ve en la salud', async () => {
@@ -169,7 +168,7 @@ test('pasados los tres fallos se prende el IRC anonimo y se ve en la salud', asy
   await asentarse();
 
   assert.equal(sockets.length, 1, 'una conexion de IRC, y una sola');
-  assert.equal(chat.salud().twitch.modo, 'irc',
+  assert.equal(chat.salud(CANAL).twitch.modo, 'irc',
     'si el chat viene por el plan B tiene que verse en pantalla');
 
   /* Sigue siendo de solo lectura: un justinfan no puede hablar. */
@@ -218,7 +217,7 @@ test('un prendido a medio camino no abre nada si EventSub vuelve mientras tanto'
   await asentarse();
 
   assert.equal(sockets.length, 0, 'no se abrio ningun IRC');
-  assert.equal(chat.salud().twitch.modo, 'eventsub');
+  assert.equal(chat.salud(CANAL).twitch.modo, 'eventsub');
 });
 
 test('un pedido que llega con otro en vuelo no se pierde aunque en el medio se haya apagado', async () => {
@@ -244,7 +243,7 @@ test('un pedido que llega con otro en vuelo no se pierde aunque en el medio se h
 
   assert.equal(sockets.length, 1,
     'el ultimo pedido se colgo del prendido en vuelo y se perdio: el chat de Twitch queda mudo');
-  assert.equal(chat.salud().twitch.modo, 'irc');
+  assert.equal(chat.salud(CANAL).twitch.modo, 'irc');
 });
 
 /* --------------------------------------------------------- el apagado */
@@ -260,7 +259,7 @@ test('cuando EventSub vuelve, el IRC se apaga', async () => {
   await asentarse();
 
   assert.equal(sockets[0].destruido, true, 'el socket del plan B tiene que cerrarse');
-  assert.equal(chat.salud().twitch.modo, 'eventsub',
+  assert.equal(chat.salud(CANAL).twitch.modo, 'eventsub',
     'y la salud tiene que dejar de decir que el chat viene por IRC');
 });
 
@@ -314,7 +313,7 @@ test('mientras el plan B esta prendido, sus mensajes entran por el mismo camino'
 
   /* Y el dedupe con EventSub sigue valiendo: el mismo id por la otra
      via no se muestra dos veces. */
-  chat.recibirDeTwitch(mensajes.deTwitch({
+  chat.recibirDeTwitch(CANAL, mensajes.deTwitch({
     message_id: 'abc123',
     chatter_user_name: 'Fulana',
     color: '#9146FF',
@@ -344,11 +343,11 @@ test('la salud no viaja por el bus publico, pase lo que pase con las conexiones'
     `@id=zzz;display-name=Alguien :a!a@a.tmi.twitch.tv PRIVMSG #${CANAL} :hola\r\n`);
   twitch.avisar('conectado');             // vuelve EventSub y se apaga el plan B
   await asentarse();
-  chat.recibirDeKick(
+  chat.recibirDeKick(CANAL, 
     { id: 'ev', tipo: 'livestream.status.updated', cuando: new Date().toISOString() },
     { is_live: true },
   );
-  chat.salud();
+  chat.salud(CANAL);
 
   const tipos = oyente.tipos();
   assert.ok(tipos.length > 0, 'algo tiene que haber salido, si no el test no prueba nada');

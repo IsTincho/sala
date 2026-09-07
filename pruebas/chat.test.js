@@ -34,7 +34,6 @@ const CANAL = 'istincho';
 test.beforeEach(() => {
   chat.reiniciar();
   canales.cerrarTodo();
-  chat.fijarCanal(CANAL);
   /* `recordar` guarda en el canal aunque no haya nadie escuchando: es
      el buffer que ve el que llega despues. */
   canales.canal(CANAL);
@@ -52,7 +51,7 @@ const eventoKick = (tipo, cuando = new Date().toISOString()) =>
 /* ------------------------------------------------------------ Kick */
 
 test('un chat.message.sent de Kick sale por el bus con el formato unico', () => {
-  const r = chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
+  const r = chat.recibirDeKick(CANAL, eventoKick('chat.message.sent'), FIXTURE);
   assert.equal(r.hecho, 'chat');
 
   const guardados = canales.ultimos(CANAL);
@@ -64,31 +63,31 @@ test('un chat.message.sent de Kick sale por el bus con el formato unico', () => 
 });
 
 test('la ultima llegada de Kick se anota, y es lo unico que distingue "callado" de "roto"', () => {
-  assert.equal(chat.salud().kick.ultima, null);
-  chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
-  assert.ok(chat.salud().kick.ultima, 'sin esto no hay indicador de salud posible');
+  assert.equal(chat.salud(CANAL).kick.ultima, null);
+  chat.recibirDeKick(CANAL, eventoKick('chat.message.sent'), FIXTURE);
+  assert.ok(chat.salud(CANAL).kick.ultima, 'sin esto no hay indicador de salud posible');
 });
 
 test('livestream.status.updated cambia el estado de vivo', () => {
-  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
-  assert.equal(chat.salud().kick.vivo, true);
-  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: false });
-  assert.equal(chat.salud().kick.vivo, false);
+  chat.recibirDeKick(CANAL, eventoKick('livestream.status.updated'), { is_live: true });
+  assert.equal(chat.salud(CANAL).kick.vivo, true);
+  chat.recibirDeKick(CANAL, eventoKick('livestream.status.updated'), { is_live: false });
+  assert.equal(chat.salud(CANAL).kick.vivo, false);
 });
 
 test('el aviso de silencio solo se prende si el canal esta en vivo', () => {
   /* Con el canal apagado, media hora sin mensajes es lo normal y
      avisar seria ruido que despues nadie mira. */
   const dentroDeUnRato = Date.now() + chat.SILENCIO_SOSPECHOSO + 60_000;
-  assert.equal(chat.kickSospechoso(dentroDeUnRato), false, 'apagado: no molesta');
+  assert.equal(chat.kickSospechoso(CANAL, dentroDeUnRato), false, 'apagado: no molesta');
 
-  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
-  assert.equal(chat.kickSospechoso(Date.now()), true,
+  chat.recibirDeKick(CANAL, eventoKick('livestream.status.updated'), { is_live: true });
+  assert.equal(chat.kickSospechoso(CANAL, Date.now()), true,
     'en vivo y sin un solo mensaje: eso si hay que decirlo');
 
-  chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
-  assert.equal(chat.kickSospechoso(Date.now()), false, 'acaba de llegar uno');
-  assert.equal(chat.kickSospechoso(dentroDeUnRato), true, 'pero si pasan los 5 minutos, si');
+  chat.recibirDeKick(CANAL, eventoKick('chat.message.sent'), FIXTURE);
+  assert.equal(chat.kickSospechoso(CANAL, Date.now()), false, 'acaba de llegar uno');
+  assert.equal(chat.kickSospechoso(CANAL, dentroDeUnRato), true, 'pero si pasan los 5 minutos, si');
 });
 
 test('el veredicto sale por la salud, que es lo unico que mira la pagina', () => {
@@ -96,20 +95,20 @@ test('el veredicto sale por la salud, que es lo unico que mira la pagina', () =>
      no la lleva, la pagina no tiene con que prender la banda: no le
      queda mas que recalcularla con una regla propia, que es
      exactamente lo que hacia y lo que no coincidia. */
-  assert.equal(chat.salud().kick.sospechoso, false, 'canal apagado: nada que avisar');
+  assert.equal(chat.salud(CANAL).kick.sospechoso, false, 'canal apagado: nada que avisar');
 
-  chat.recibirDeKick(eventoKick('livestream.status.updated'), { is_live: true });
-  assert.equal(chat.salud().kick.sospechoso, true,
+  chat.recibirDeKick(CANAL, eventoKick('livestream.status.updated'), { is_live: true });
+  assert.equal(chat.salud(CANAL).kick.sospechoso, true,
     'en vivo y sin un solo mensaje: eso es justo lo que hay que decir');
-  assert.equal(chat.salud().kick.sospechoso, chat.kickSospechoso(),
+  assert.equal(chat.salud(CANAL).kick.sospechoso, chat.kickSospechoso(CANAL),
     'la salud dice lo mismo que la regla, no una version parecida');
 
-  chat.recibirDeKick(eventoKick('chat.message.sent'), FIXTURE);
-  assert.equal(chat.salud().kick.sospechoso, false, 'llego uno: se apaga');
+  chat.recibirDeKick(CANAL, eventoKick('chat.message.sent'), FIXTURE);
+  assert.equal(chat.salud(CANAL).kick.sospechoso, false, 'llego uno: se apaga');
 });
 
 test('un evento de Kick que no conocemos no rompe ni ensucia el bus', () => {
-  const r = chat.recibirDeKick(eventoKick('channel.followed'), { broadcaster: { channel_slug: CANAL } });
+  const r = chat.recibirDeKick(CANAL, eventoKick('channel.followed'), { broadcaster: { channel_slug: CANAL } });
   assert.equal(r.hecho, 'ignorado');
   assert.equal(canales.ultimos(CANAL).length, 0);
 });
@@ -128,25 +127,29 @@ test('el mismo mensaje de Twitch por las dos vias se muestra una sola vez', () =
   /* Mientras el plan B esta prendido, EventSub sigue reintentando: el
      mismo mensaje puede llegar por WebSocket y por IRC. El id es el
      mismo por las dos vias, y esa es toda la defensa. */
-  assert.equal(chat.recibirDeTwitch(mensajeTwitch('m1')), true);
-  assert.equal(chat.recibirDeTwitch(mensajeTwitch('m1')), false, 'el repetido no pasa');
-  assert.equal(chat.recibirDeTwitch(mensajeTwitch('m2')), true);
+  assert.equal(chat.recibirDeTwitch(CANAL, mensajeTwitch('m1')), true);
+  assert.equal(chat.recibirDeTwitch(CANAL, mensajeTwitch('m1')), false, 'el repetido no pasa');
+  assert.equal(chat.recibirDeTwitch(CANAL, mensajeTwitch('m2')), true);
   assert.equal(canales.ultimos(CANAL).length, 2);
 });
 
 test('la ultima llegada de Twitch se anota', () => {
-  assert.equal(chat.salud().twitch.ultima, null);
-  chat.recibirDeTwitch(mensajeTwitch('m9'));
-  assert.ok(chat.salud().twitch.ultima);
+  assert.equal(chat.salud(CANAL).twitch.ultima, null);
+  chat.recibirDeTwitch(CANAL, mensajeTwitch('m9'));
+  assert.ok(chat.salud(CANAL).twitch.ultima);
 });
 
 /* ----------------------------------------------------------- salud */
 
 test('la salud tiene la forma que espera la pagina', () => {
-  const s = chat.salud();
+  const s = chat.salud(CANAL);
   assert.deepEqual(Object.keys(s).sort(), ['ahora', 'kick', 'twitch']);
   assert.deepEqual(Object.keys(s.kick).sort(), ['sospechoso', 'suscripcion', 'ultima', 'vinculado', 'vivo']);
-  assert.deepEqual(Object.keys(s.twitch).sort(), ['estado', 'modo', 'ultima', 'vinculado']);
+  /* `tope` es de la Fase 3: dice que la conexion no se abrio por el
+     tope de conexiones de ESTE proceso y no por un problema de
+     Twitch. Sin ese campo el panel muestra "cortado" y no hay forma
+     de distinguir las dos cosas. */
+  assert.deepEqual(Object.keys(s.twitch).sort(), ['estado', 'modo', 'tope', 'ultima', 'vinculado']);
   assert.equal(s.kick.suscripcion, 'desconocida');
   assert.equal(s.twitch.modo, 'ninguno');
   assert.ok(Date.parse(s.ahora));
@@ -155,11 +158,11 @@ test('la salud tiene la forma que espera la pagina', () => {
 /* ---------------------------------------------------------- enviar */
 
 test('no se manda un mensaje vacio ni uno que la plataforma va a rechazar', async () => {
-  assert.match((await chat.enviar({ texto: '   ', destino: 'kick' })).error, /vacio/);
+  assert.match((await chat.enviar(CANAL, { texto: '   ', destino: 'kick' })).error, /vacio/);
 
   const largo = 'a'.repeat(501);
-  assert.match((await chat.enviar({ texto: largo, destino: 'kick' })).error, /500/);
-  assert.match((await chat.enviar({ texto: largo, destino: 'twitch' })).error, /Twitch/);
+  assert.match((await chat.enviar(CANAL, { texto: largo, destino: 'kick' })).error, /500/);
+  assert.match((await chat.enviar(CANAL, { texto: largo, destino: 'twitch' })).error, /Twitch/);
 });
 
 test('con destino "ambos" el tope de Twitch se mira ANTES de mandar, no despues', async () => {
@@ -178,13 +181,13 @@ test('con destino "ambos" el tope de Twitch se mira ANTES de mandar, no despues'
   assert.equal([...texto].length, 565, 'para Twitch son 565 puntos de codigo');
   assert.equal(kick.porQueNoSePuedeMandar(texto), '', 'para Kick el mensaje es perfectamente valido');
 
-  const r = await chat.enviar({ texto, destino: 'ambos' });
+  const r = await chat.enviar(CANAL, { texto, destino: 'ambos' });
   assert.match(r.error ?? '', /Twitch/, 'se rechaza entero antes de tocar ninguna API');
   assert.equal(r.kick, undefined, 'y sobre todo: a Kick no se le mando nada');
 });
 
 test('sin vinculo, cada red dice que no pudo y no se pierde el resultado de la otra', async () => {
-  const r = await chat.enviar({ texto: 'hola', destino: 'ambos' });
+  const r = await chat.enviar(CANAL, { texto: 'hola', destino: 'ambos' });
   assert.equal(r.kick.ok, false);
   assert.equal(r.twitch.ok, false);
   assert.match(r.kick.motivo, /vinculo/);
@@ -192,7 +195,7 @@ test('sin vinculo, cada red dice que no pudo y no se pierde el resultado de la o
 });
 
 test('un destino desconocido no manda nada a ningun lado', async () => {
-  const r = await chat.enviar({ texto: 'hola', destino: 'discord' });
+  const r = await chat.enviar(CANAL, { texto: 'hola', destino: 'discord' });
   assert.match(r.error, /destino desconocido/);
 });
 
@@ -200,7 +203,7 @@ test('el tope de Kick cuenta emojis como un caracter, no como dos', async () => 
   /* 400 emojis son 400 caracteres para Kick y 800 unidades UTF-16
      para `.length`. Contar mal rechazaria un mensaje que Kick acepta
      sin problema. */
-  const r = await chat.enviar({ texto: '💀'.repeat(400), destino: 'kick' });
+  const r = await chat.enviar(CANAL, { texto: '💀'.repeat(400), destino: 'kick' });
   assert.equal(r.error, undefined, 'no lo puede rechazar por largo');
   assert.equal(r.kick.ok, false, 'falla por no haber vinculo, que es otra cosa');
 });

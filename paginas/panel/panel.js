@@ -58,6 +58,23 @@
   const tarjetaWebhook = el('tarjeta-webhook');
   const urlWebhook = el('url-webhook');
 
+  const tarjetaPlan = el('tarjeta-plan');
+  const puntitoPlan = el('puntito-plan');
+  const textoPlan = el('texto-plan');
+  const explicaPlan = el('explica-plan');
+  const lineaUso = el('linea-uso');
+  const botonSuscribirse = el('boton-suscribirse');
+  const linkAdmin = el('link-admin');
+  const botonDesvincularTwitch = el('boton-desvincular-twitch');
+
+  /* Los controles que un plan sin reproducción no puede tocar. Está
+     escrita una sola vez y la usa `pintarPlan`: dos listas distintas
+     de "qué se apaga" terminan siendo dos comportamientos. */
+  const CONTROLES_DE_LA_PELI = [
+    'boton-reproducir', 'boton-pausar', 'boton-reanudar', 'boton-detener',
+    'boton-atras-60', 'boton-atras-10', 'boton-adelante-10', 'boton-adelante-60',
+  ];
+
   // ---------- avisos ----------
 
   function avisar(texto) {
@@ -142,9 +159,10 @@
        quién asociar el vínculo. */
     linkTwitch.classList.add('apagado');
     linkTwitch.setAttribute('aria-disabled', 'true');
-    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave, tarjetaWebhook]) {
+    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave, tarjetaWebhook, tarjetaPlan]) {
       t.hidden = true;
     }
+    botonDesvincularTwitch.hidden = true;
   }
 
   function pintarSalud(salud) {
@@ -184,10 +202,21 @@
       tarjetaEstado.appendChild(boton);
     }
 
+    /* Que la conexión no se abrió por el tope de conexiones del
+       proceso, no por un problema de este creador. Sin decirlo, su
+       panel diría "cortado" y no habría forma de distinguirlo de
+       Twitch caído. */
+    if (twitch.tope) {
+      tarjetaEstado.appendChild(filaRed('regular',
+        'Twitch quedó sin conectar: este servidor llegó a su tope de conexiones. ' +
+        'Kick sigue andando igual, que es lo que la Sala necesita.'));
+    }
+
     linkTwitch.classList.remove('apagado');
     linkTwitch.removeAttribute('aria-disabled');
     linkKick.textContent = 'Volver a entrar con Kick';
     if (twitch.vinculado) linkTwitch.textContent = 'Volver a vincular Twitch';
+    botonDesvincularTwitch.hidden = !twitch.vinculado;
   }
 
   function pintarReloj(reloj) {
@@ -281,9 +310,74 @@
       : 'no hay ninguna: el script de subida no va a poder avisarle al servidor';
   }
 
+  // ---------- el plan ----------
+
+  const COLOR_PLAN = { dueno: 'bien', amigo: 'bien', pago: 'bien', pendiente: 'regular', vencido: 'mal' };
+
+  const EXPLICA_PLAN = {
+    dueno: 'Sos el dueño del servicio: tu sala no tiene plan ni tope.',
+    amigo: 'Te lo dio el dueño. Podés reproducir sin pagar nada.',
+    pago: 'Suscripción al día.',
+    pendiente: 'Tu sala se puede abrir y leer el chat, pero todavía no puede reproducir. ' +
+               'Suscribite o pedile al dueño que te ponga como amigo.',
+    vencido: 'Tu suscripción venció y la sala dejó de reproducir. Tus videos siguen donde estaban.',
+  };
+
+  /**
+   * Pinta el plan y, sobre todo, APAGA lo que el plan no deja hacer.
+   *
+   * Apagar los botones acá es comodidad, no seguridad: el servidor
+   * contesta 402 a cualquier acción del reloj sin plan activo, tenga o
+   * no la página los botones apagados. Lo que esto evita es que
+   * alguien toque play y no pase nada sin explicación.
+   */
+  function pintarPlan(datos) {
+    const plan = datos.plan ?? '';
+    puntitoPlan.className = 'puntito ' + (COLOR_PLAN[plan] ?? 'regular');
+    textoPlan.textContent = plan || 'sin plan';
+    explicaPlan.textContent = EXPLICA_PLAN[plan] ?? '';
+
+    const uso = datos.uso ?? {};
+    if (uso.topeGb === null || uso.topeGb === undefined) {
+      lineaUso.textContent = `Usás ${uso.gb ?? 0} GB en el bucket.`;
+    } else {
+      lineaUso.textContent = `Usás ${uso.gb ?? 0} GB de ${uso.topeGb} GB.`;
+    }
+    if (uso.real === false) {
+      /* El número es la última foto y no lo que hay en R2 ahora. Se
+         dice, en vez de mostrarlo como si fuera de ahora. */
+      lineaUso.textContent += uso.medido
+        ? ` (medido el ${comoFecha(uso.medido)})`
+        : ' (todavía sin medir contra R2)';
+    }
+
+    const puedeSuscribirse = Boolean(datos.soloLectura) && !datos.esDueno;
+    botonSuscribirse.hidden = !puedeSuscribirse;
+    if (puedeSuscribirse && datos.cobro && !datos.cobro.listo) {
+      botonSuscribirse.disabled = true;
+      botonSuscribirse.textContent = 'Suscribirme (el cobro todavía no está configurado)';
+    } else {
+      botonSuscribirse.disabled = false;
+      botonSuscribirse.textContent = datos.cobro?.monto
+        ? `Suscribirme por ${datos.cobro.monto} ${datos.cobro.moneda} al mes`
+        : 'Suscribirme';
+    }
+
+    linkAdmin.hidden = !datos.esDueno;
+
+    for (const id of CONTROLES_DE_LA_PELI) {
+      const boton = el(id);
+      if (boton) boton.disabled = Boolean(datos.soloLectura);
+    }
+    selectVideo.disabled = Boolean(datos.soloLectura);
+
+    tarjetaPlan.hidden = false;
+  }
+
   function pintar(datos) {
     ultimoPanel = datos;
     pintarSalud(datos.salud);
+    pintarPlan(datos);
     pintarReloj(datos.reloj);
     pintarVideos(datos.videos ?? [], datos.reloj);
     pintarMetricas(datos.metricas);
@@ -294,15 +388,23 @@
     linkSala.href = '/sala/' + encodeURIComponent(datos.slug ?? '');
     urlWebhook.textContent = datos.urlWebhook ?? '';
 
+    /* El ejemplo del comando de subida lleva el slug de quien mira: es
+       el argumento que de verdad tiene que escribir. */
+    const ejemplo = el('ejemplo-slug');
+    if (ejemplo) ejemplo.textContent = datos.slug ?? 'tu-canal';
+
     /* El desfase con el servidor sale del mismo pedido: `hora` es la
        del servidor en el momento de contestar. Alcanza para que el
        contador de posición no se corra en una máquina con el reloj
        torcido. */
     if (Number.isFinite(Number(datos.hora))) desfase = Number(datos.hora) - Date.now();
 
-    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave, tarjetaWebhook]) {
+    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave]) {
       t.hidden = false;
     }
+    /* La del webhook sólo si hay algo que mostrar: el servidor le manda
+       la URL vacía a quien no es el dueño del servicio. */
+    tarjetaWebhook.hidden = !datos.urlWebhook;
   }
 
   // ---------- acciones ----------
@@ -385,6 +487,35 @@
     valorClave.hidden = false;
   });
 
+  // ---------- el plan y Twitch ----------
+
+  botonSuscribirse.addEventListener('click', () => {
+    botonSuscribirse.disabled = true;
+    fetch('/api/panel/suscribirse', { method: 'POST', credentials: 'same-origin' })
+      .then(async r => {
+        const datos = await r.json().catch(() => null);
+        if (!r.ok || !datos?.url) {
+          avisar(datos?.error || `no se pudo (http ${r.status})`);
+          return;
+        }
+        /* El checkout es del proveedor de cobro: se abre en otra
+           pestaña para no perder el panel, y con rel="noopener" por la
+           misma razón que el botón de suscribirse de la Sala. */
+        const ventana = window.open(datos.url, '_blank', 'noopener,noreferrer');
+        if (!ventana) avisar('el navegador bloqueó la ventana del pago: permitila y probá de nuevo');
+      })
+      .catch(() => avisar('no se pudo hablar con el servidor'))
+      .finally(() => { botonSuscribirse.disabled = false; });
+  });
+
+  botonDesvincularTwitch.addEventListener('click', () => {
+    botonDesvincularTwitch.disabled = true;
+    fetch('/api/panel/twitch', { method: 'DELETE', credentials: 'same-origin' })
+      .then(() => consultar())
+      .catch(() => avisar('no se pudo desvincular'))
+      .finally(() => { botonDesvincularTwitch.disabled = false; });
+  });
+
   // ---------- consultar ----------
 
   function consultar() {
@@ -410,5 +541,5 @@
   consultar();
   setInterval(consultar, CADA_CONSULTA);
 
-  window.SalaPanel = { posicionAhora, comoTiempo, consultar, pintar };
+  window.SalaPanel = { posicionAhora, comoTiempo, consultar, pintar, pintarPlan };
 })();

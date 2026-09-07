@@ -10,6 +10,38 @@
    display propio, y acá hay varias filas flex que se esconden. */
 [hidden]{ display: none !important; }
 
+/* ---------- el plan (Fase 3) ---------- */
+
+.linea-plan{
+  display: flex;
+  align-items: center;
+  gap: var(--espacio-2);
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 var(--espacio-2);
+  text-transform: capitalize;
+}
+
+.boton-suscribirse{
+  background: var(--acento);
+  color: #06210a;
+  font-weight: 700;
+  border-color: transparent;
+}
+
+.boton-suscribirse:disabled{
+  background: var(--borde);
+  color: var(--texto-tenue);
+}
+
+/* Un control apagado por el plan tiene que verse apagado, no sólo
+   estar disabled: si no, tocarlo "no hace nada" sin explicación. */
+.boton-panel:disabled,
+.select-panel:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .contenedor-panel{
   max-width: 48rem;
   padding-block: var(--espacio-4);

@@ -1,0 +1,79 @@
+/* ============================================================
+   /crear. Página de una sola decisión: aceptar y entrar.
+   ============================================================ */
+
+.contenedor-crear{
+  max-width: 44rem;
+  padding-block: var(--espacio-5);
+}
+
+.contenedor-crear .tarjeta{
+  margin-block: var(--espacio-4);
+}
+
+.entrada{
+  font-size: 1.1rem;
+}
+
+.pasos,
+.permisos{
+  margin: 0;
+  padding-left: var(--espacio-4);
+}
+
+.pasos li,
+.permisos li{
+  margin-bottom: var(--espacio-2);
+}
+
+.linea-tenue{
+  color: var(--texto-tenue);
+  font-size: 0.92rem;
+}
+
+/* La casilla y su texto: el texto es largo y tiene que quedar alineado
+   con la casilla, no debajo. */
+.acepto{
+  display: flex;
+  gap: var(--espacio-2);
+  align-items: flex-start;
+  cursor: pointer;
+  margin-bottom: var(--espacio-4);
+}
+
+.acepto input{
+  margin-top: 0.3em;
+  flex: none;
+  width: 1.1em;
+  height: 1.1em;
+  accent-color: var(--acento);
+}
+
+.boton-crear{
+  display: inline-block;
+  background: var(--kick);
+  color: #06210a;
+  font-weight: 700;
+  text-decoration: none;
+  padding: var(--espacio-3) var(--espacio-4);
+  border-radius: var(--radio);
+  border: 1px solid transparent;
+}
+
+.boton-crear:hover{
+  filter: brightness(1.08);
+}
+
+/* Apagado de verdad: además de verse gris, `pointer-events: none` hace
+   que el click del mouse no llegue a ningún lado. El teclado sí llega
+   (Enter sobre un link enfocado activa igual), y para eso está el
+   listener de crear.js. Hacen falta los dos. */
+.boton-crear.apagado{
+  background: var(--borde);
+  color: var(--texto-tenue);
+  cursor: not-allowed;
+  filter: none;
+  pointer-events: none;
+}
+
+[hidden]{ display: none !important; }

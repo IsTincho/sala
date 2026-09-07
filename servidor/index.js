@@ -13,7 +13,11 @@
      /oauth/twitch/entrar     vinculacion de Twitch (code flow)
      /oauth/twitch/volver     callback
      /kick/webhook            eventos de Kick, firmados con RSA
-     /panel                   el panel del dueño
+     /cobro/webhook           avisos del proveedor de cobro, firmados
+     /crear                   alta de un creador nuevo
+     /terminos                el texto que se acepta al crear la sala
+     /panel                   el panel del creador (el dueño incluido)
+     /admin                   la lista de creadores, solo para el dueño
      /chat                    el Chat Global (Kick + Twitch)
      /sala/:slug              la Sala: camara, peli y chat
      /api/chat/*              salud, envio y resuscripcion del chat
@@ -21,7 +25,28 @@
      /api/hora                la hora del servidor, para sincronizar
      /api/videos              el catalogo (lo escribe herramientas/subir.py)
      /api/sala/:slug/*        reloj, chat del espectador y salir
-     /api/panel/*             lo que solo mira y toca el dueño
+     /api/panel/*             lo que mira y toca cada creador de SU sala
+     /api/subida              las URL prefirmadas de R2 (clave o cookie)
+     /api/admin/*             lo que solo puede el dueño del servicio
+
+   ---------------------------------------------------------------
+   DOS SENTIDOS DE "DUEÑO", Y NO SE MEZCLAN
+
+   Desde la Fase 3 la palabra aparece en dos lugares y significa cosas
+   distintas. Vale la pena leer esto una vez:
+
+     dueño de una SALA      cualquier creador, en la suya. Es lo que
+                            identifica la cookie `sala_dueno` y lo que
+                            comprueba `conDuenoDeLaSala`.
+     dueño del SERVICIO     el que tiene el slug de KICK_SLUG. Es el
+                            unico que entra a /admin y el unico que
+                            puede regalar el plan "amigo". Se pregunta
+                            con `creadores.esDueno()`, nunca con un
+                            campo de la base.
+
+   La cookie no cambio de nombre a proposito: sigue queriendo decir lo
+   mismo que decia, "el dueño de esta sala". Lo que cambio es que ahora
+   hay mas de una sala.
 
    LO QUE ESTE SERVIDOR NO HACE NUNCA: servir video. El navegador le
    pide los segmentos directo a R2. Si algun dia una ruta de aca
@@ -40,9 +65,12 @@ import * as almacen from './almacen.js';
 import * as canales from './canales.js';
 import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
+import * as cobro from './cobro.js';
+import * as creadores from './creadores.js';
 import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
 import * as metricas from './metricas.js';
+import * as r2 from './r2.js';
 import * as reloj from './reloj.js';
 import * as sesion from './sesion.js';
 import * as twitch from './twitch.js';
@@ -293,16 +321,27 @@ function nuevoEstadoTwitch(destino = '') {
   return estado;
 }
 
+/* Los tres roles con los que se puede empezar un login de Kick.
+   Cualquier otra cosa cae en 'espectador', que es el que menos puede:
+   un rol que llega de la query no puede convertirse en permisos por
+   escribirse distinto. */
+const ROLES = ['dueno', 'creador', 'espectador'];
+
 async function kickEntrar(url, req, res) {
   if (!kick.hayCredenciales()) {
     return pagina(res, 'Falta configurar Kick',
       'Todavia no estan cargadas KICK_CLIENT_ID y KICK_CLIENT_SECRET en Railway.');
   }
-  const rol = url.searchParams.get('rol') === 'dueno' ? 'dueno' : 'espectador';
+  const pedido = url.searchParams.get('rol') ?? '';
+  const rol = ROLES.includes(pedido) ? pedido : 'espectador';
   const { url: destino } = kick.urlLogin({
     redirect: `${baseDe(req)}/oauth/kick/volver`,
     rol,
     destino: url.searchParams.get('destino') ?? '',
+    /* Solo el alta acepta terminos. Que un login de espectador pueda
+       mandar `terminos=1` no rompe nada (nadie lo lee por ese camino),
+       pero pasarlo solo donde se usa deja el rastro mas corto. */
+    terminos: rol === 'creador' ? (url.searchParams.get('terminos') ?? '') : '',
   });
   return redirigir(res, destino);
 }
@@ -349,7 +388,7 @@ async function kickVolver(url, req, res) {
    * ningun permiso sobre el canal, solo la identifica para que Kick
    * publique su mensaje con su nombre.
    */
-  if (t.rol !== 'dueno') {
+  if (t.rol === 'espectador') {
     try {
       await espectadores.guardar({
         usuarioId: yo.id,
@@ -376,18 +415,57 @@ async function kickVolver(url, req, res) {
     });
   }
 
-  if (!SLUG_DUENO) {
-    return pagina(res, 'Falta KICK_SLUG',
-      'El servidor no sabe cual es el canal del dueño, asi que no puede reconocerte como tal.');
-  }
-  if (yo.slug.toLowerCase() !== SLUG_DUENO) {
+  /*
+   * De aca para abajo: el creador. Puede ser el dueño del servicio
+   * (su slug es KICK_SLUG) o cualquier streamer de Kick que se este
+   * dando de alta; el camino es el mismo y la unica diferencia esta en
+   * el plan, que para el dueño no sale de la base.
+   */
+  const slug = String(yo.slug ?? '').toLowerCase();
+
+  /* Sin canal en Kick no hay sala: la sala ES un canal de Kick. Pasa
+     con una cuenta recien hecha, o si el permiso no trajo
+     channel:read. */
+  if (!slug || !creadores.slugValido(slug)) {
     return pagina(res, `Hola, ${yo.nombre}`,
-      `Esta cuenta es del canal ${yo.slug || '(sin canal)'} y el dueño de esta Sala es ` +
-      `${SLUG_DUENO}. No se guardo nada.`);
+      'Tu cuenta de Kick no tiene un canal con nombre, y la Sala se arma sobre un canal. ' +
+      'Crea tu canal en kick.com y volve a intentarlo.');
+  }
+
+  const yaEsta = await creadores.obtener(slug);
+
+  /* El alta de uno nuevo pide dos cosas que el que ya esta no necesita
+     volver a pasar: haber aceptado los terminos en ESTE flujo, y que
+     haya lugar bajo el tope de canales de la app de Kick. */
+  if (!yaEsta && !creadores.esDueno(slug)) {
+    if (t.terminos !== creadores.TERMINOS_VERSION) {
+      return pagina(res, 'Falta aceptar los terminos',
+        'Para crear tu Sala hay que aceptar los terminos primero. Entra por /crear.');
+    }
+    if (!await creadores.hayLugar()) {
+      /* El tope existe porque la app de Kick sin verificar admite 1.000
+         canales suscriptos. Pasado eso las suscripciones fallan y el
+         chat del que entre queda mudo sin que nada lo explique. */
+      console.warn(`[crear] no se creo ${slug}: se llego al tope de ${creadores.TOPE_CANALES} canales`);
+      return pagina(res, 'Por ahora no entran mas salas',
+        'Se llego al tope de canales que puede atender esta app de Kick. ' +
+        'Escribile al dueño para que pida la verificacion de la app.');
+    }
   }
 
   try {
-    await vinculos.guardar('kick', {
+    await creadores.crear({
+      slug,
+      usuarioId: yo.id,
+      nombre: yo.nombre,
+      terminos: yaEsta ? '' : t.terminos,
+    });
+  } catch (e) {
+    return pagina(res, 'No se pudo crear la sala', e.message);
+  }
+
+  try {
+    await vinculos.guardar(slug, 'kick', {
       usuarioId: yo.id,
       nombre: yo.nombre,
       login: yo.slug,
@@ -405,15 +483,22 @@ async function kickVolver(url, req, res) {
     tipo: 'dueno',
     usuario: yo.id,
     nombre: yo.nombre,
-    slug: yo.slug,
+    slug,
     agente: req.headers['user-agent'] ?? '',
   });
 
   /* La suscripcion se intenta ahora pero NO decide el resultado del
      login: si Kick esta caido, la sesion ya vale y el verificador de
      cada cinco minutos la va a crear despues. Fallar aca dejaria al
-     dueño sin poder entrar por algo que se arregla solo. */
-  chat.verificarKick().catch(e => console.warn('[chat] no se pudo suscribir a Kick:', e.message));
+     creador sin poder entrar por algo que se arregla solo. Lo que si
+     queda anotado es si salio, para poder decirlo en su panel. */
+  chat.verificarKick(slug)
+    .then(() => creadores.marcarSuscrito(slug, true))
+    .catch(e => {
+      console.warn(`[chat] ${slug}: no se pudo suscribir a Kick:`, e.message);
+      return creadores.marcarSuscrito(slug, false);
+    })
+    .catch(() => {});
 
   return redirigir(res, destinoSeguro(t.destino) || '/panel', {
     'Set-Cookie': sesion.cabeceraCookie('dueno', cookie),
@@ -449,20 +534,29 @@ async function twitchVolver(url, req, res) {
     return pagina(res, 'Ese login ya no vale', 'El state no coincide o se vencio. Proba de nuevo.');
   }
 
-  /* Twitch se VINCULA, no se loguea: la identidad de esta Sala la da
-     Kick. Sin sesion de dueño abierta, un token de Twitch de
-     cualquiera terminaria guardado como si fuera el del dueño, y el
-     servidor mandaria sus mensajes al chat de esa persona. */
+  /* Twitch se VINCULA, no se loguea: la identidad de una Sala la da
+     Kick. Sin sesion de creador abierta, un token de Twitch de
+     cualquiera terminaria guardado como el de alguna sala, y el
+     servidor mandaria sus mensajes al chat de esa persona.
+
+     Y el vinculo va a la sala de QUIEN PIDIO, sacada de su cookie:
+     nunca de un parametro. Si el slug viniera de la query, cualquiera
+     con una sesion podria colgarle su Twitch a la sala de otro. */
   const suyo = await sesion.leer(req, 'dueno');
   if (!suyo) {
     return pagina(res, 'Primero entra con Kick',
-      'Vincular Twitch necesita la sesion del dueño: entra con Kick desde /panel y volve a intentarlo.');
+      'Vincular Twitch necesita tu sesion: entra con Kick desde /panel y volve a intentarlo.');
+  }
+  const sala = String(suyo.slug ?? '').toLowerCase();
+  if (!await creadores.existe(sala)) {
+    return pagina(res, 'Tu sala no existe',
+      'La sesion no corresponde a ninguna sala. Entra por /crear.');
   }
 
   try {
     const t = await twitch.canjearCodigo({ code, redirect: `${baseDe(req)}/oauth/twitch/volver` });
     const yo = await twitch.usuarioActual(t.accessToken);
-    await vinculos.guardar('twitch', {
+    await vinculos.guardar(sala, 'twitch', {
       usuarioId: yo.id,
       nombre: yo.nombre,
       login: yo.login,
@@ -474,7 +568,8 @@ async function twitchVolver(url, req, res) {
     });
     /* Se conecta en segundo plano: el navegador no tiene por que
        esperar a que el WebSocket de Twitch haga su handshake. */
-    chat.conectarTwitch().catch(e => console.warn('[chat] no se pudo conectar Twitch:', e.message));
+    chat.conectarTwitch(sala)
+      .catch(e => console.warn(`[chat] ${sala}: no se pudo conectar Twitch:`, e.message));
   } catch (e) {
     return pagina(res, 'No se pudo vincular Twitch', e.message);
   }
@@ -541,20 +636,23 @@ async function kickWebhook(url, req, res) {
  * Que hacer con un evento de Kick ya verificado.
  *
  * La traduccion al formato unico y el reparto por el bus viven en
- * chat.js: aca solo queda el ruteo y el log. Asi la Sala de la Fase 2
- * puede usar el mismo camino sin copiar nada.
+ * chat.js; a que SALA corresponde el evento lo resuelve
+ * `creadores.salaDelEvento`. Aca solo queda pegar las dos cosas y
+ * loguear.
  *
- * OJO EN LA FASE 3: el slug sale de `broadcaster.channel_slug` con el
- * del dueño como respaldo. Esta bien mientras haya un solo canal, pero
- * el dia que haya varios creadores un evento sin channel_slug se
- * difundiria en el canal del DUEÑO, o sea el chat de un creador
- * cayendo en la sala de otro. Cuando entre el segundo creador hay que
- * resolver el slug contra la suscripcion (Kick-Event-Subscription-Id)
- * y descartar lo que no se pueda atribuir, en vez de adivinar.
+ * Lo que la Fase 2 dejo anotado como el agujero de esta fase: el slug
+ * salia del payload con el del dueño como respaldo, asi que un evento
+ * sin `channel_slug` se difundia en el canal del DUEÑO. Ahora un
+ * evento que no se puede atribuir a una sala que existe se DESCARTA.
+ * No se difunde en ningun lado y no crea ningun canal del bus.
  */
 async function procesarEvento(evento, cuerpo) {
-  const r = chat.recibirDeKick(evento, cuerpo);
-  const slug = cuerpo?.broadcaster?.channel_slug ?? SLUG_DUENO;
+  const slug = await creadores.salaDelEvento(cuerpo);
+  if (!slug) {
+    console.warn(`[webhook] ${evento.tipo} descartado: no es de ninguna sala`);
+    return;
+  }
+  const r = chat.recibirDeKick(slug, evento, cuerpo);
   /* Las metricas cuentan los mensajes de KICK, que son los del chat de
      la Sala. Los de Twitch viajan por el mismo bus pero no entran por
      aca y tampoco llegan a la sala: ver el filtro por red de
@@ -600,11 +698,19 @@ async function pruebaWebhook(url, req, res) {
     };
     /* `?canal=` gana sobre lo que diga el payload: el fixture trae el
        slug del dueño escrito adentro y sin esto no habria forma de
-       probar otro canal. */
+       probar otro canal.
+
+       Pasa por el MISMO `canalPermitido` que todo lo demas. Es una
+       ruta que solo existe con MODO=local, pero una puerta de prueba
+       que se saltea la validacion del ruteo real prueba otra cosa que
+       la que hay en produccion. */
+    if (!await canalPermitido(slug)) {
+      return json(res, 404, { error: 'ese canal no existe' });
+    }
     const conCanal = url.searchParams.get('canal')
       ? { ...cuerpo, broadcaster: { ...(cuerpo?.broadcaster ?? {}), channel_slug: slug } }
       : cuerpo;
-    const r = chat.recibirDeKick(evento, conCanal);
+    const r = chat.recibirDeKick(slug, evento, conCanal);
     if (r.hecho === 'chat') metricas.registrarMensaje(slug);
     return json(res, 200, { ok: true, canal: slug, tipo, hecho: r.hecho });
   }
@@ -630,21 +736,53 @@ async function leerJson(req, tope = 64 * 1024) {
 }
 
 /**
- * Corre `fn` solo si el pedido trae la sesion del dueño.
+ * Corre `fn(slug, plan, sesion)` solo si el pedido trae la sesion de
+ * un creador cuya sala existe.
  *
- * Es la unica puerta del Chat Global. La pagina /chat se sirve a
- * cualquiera (es HTML sin datos), pero todo lo que trae o manda chat
+ * Es la puerta de /panel y del Chat Global. Las paginas se sirven a
+ * cualquiera (son HTML sin datos), pero todo lo que trae o manda datos
  * de verdad pasa por aca.
+ *
+ * EL SLUG SALE DE LA COOKIE Y DE NINGUN OTRO LADO. Es la regla de
+ * aislamiento entera en una linea: no hay ninguna ruta de /api/panel
+ * que acepte un slug por query o por cuerpo, asi que no hay ninguna
+ * forma de pedir los datos de otra sala. La fuga de inquilino que la
+ * verificacion de la Fase 2 encontro (`videos.listar` volviendose
+ * elegible por query) no puede volver por este camino.
+ *
+ * La sala se comprueba ademas de la sesion: una cookie puede
+ * sobrevivir a la sala (el dueño del servicio borro al creador) y
+ * seguir dando acceso a un panel de algo que ya no esta.
  */
-async function conDueno(req, res, fn) {
+async function conCreador(req, res, fn) {
   const suyo = await sesion.leer(req, 'dueno');
-  if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
+  if (!suyo) return json(res, 401, { error: 'no hay sesion de creador' });
+
+  const slug = String(suyo.slug ?? '').toLowerCase();
+  if (!slug || !await creadores.existe(slug)) {
+    return json(res, 403, { error: 'tu sesion no corresponde a ninguna sala' });
+  }
+  return fn(slug, await creadores.planDe(slug), suyo);
+}
+
+/**
+ * Corre `fn` solo si el que pide es el dueño del SERVICIO.
+ *
+ * No mira ningun campo de la base: compara el slug de la sesion contra
+ * KICK_SLUG. Login identifica, no autoriza, y quien es el dueño lo
+ * decide una variable de entorno que no se puede escribir desde
+ * adentro del programa.
+ */
+async function conDuenoDelServicio(req, res, fn) {
+  const suyo = await sesion.leer(req, 'dueno');
+  if (!suyo) return json(res, 401, { error: 'no hay sesion de creador' });
+  if (!creadores.esDueno(suyo.slug)) return json(res, 403, { error: 'esto es solo del dueño' });
   return fn(suyo);
 }
 
-/** Como estan las dos vias del chat. */
+/** Como estan las dos vias del chat de la sala de quien pregunta. */
 async function apiChatSalud(url, req, res) {
-  return conDueno(req, res, () => json(res, 200, chat.salud()));
+  return conCreador(req, res, slug => json(res, 200, chat.salud(slug)));
 }
 
 /**
@@ -656,13 +794,13 @@ async function apiChatSalud(url, req, res) {
  * repetido en la red donde si habia salido.
  */
 async function apiChatEnviar(url, req, res) {
-  return conDueno(req, res, async () => {
+  return conCreador(req, res, async (slug) => {
     let pedido;
     try { pedido = await leerJson(req); }
     catch { return json(res, 400, { error: 'json invalido' }); }
 
     const destino = ['kick', 'twitch', 'ambos'].includes(pedido?.destino) ? pedido.destino : 'kick';
-    const r = await chat.enviar({
+    const r = await chat.enviar(slug, {
       texto: pedido?.texto,
       destino,
       respondeA: typeof pedido?.respondeA === 'string' ? pedido.respondeA : undefined,
@@ -688,11 +826,17 @@ async function apiChatEnviar(url, req, res) {
   });
 }
 
-/** Vuelve a crear las suscripciones de Kick, a mano. */
+/** Vuelve a crear las suscripciones de Kick de esta sala, a mano. */
 async function apiChatResuscribir(url, req, res) {
-  return conDueno(req, res, async () => {
-    try { return json(res, 200, await chat.resuscribirKick()); }
-    catch (e) { return json(res, 502, { error: e.message }); }
+  return conCreador(req, res, async (slug) => {
+    try {
+      const r = await chat.resuscribirKick(slug);
+      await creadores.marcarSuscrito(slug, true);
+      return json(res, 200, r);
+    } catch (e) {
+      await creadores.marcarSuscrito(slug, false).catch(() => {});
+      return json(res, 502, { error: e.message });
+    }
   });
 }
 
@@ -715,18 +859,45 @@ async function apiHora(url, req, res) {
 }
 
 /**
- * Corre `fn(slug)` si el pedido trae la sesion del dueño Y el slug es
- * una sala que existe.
+ * Corre `fn(slug, sesion)` si el slug es una sala que existe Y el
+ * pedido trae la sesion de SU dueño.
+ *
+ * ---------------------------------------------------------------
+ * EL ORDEN: PRIMERO LA SALA, DESPUES LA COOKIE
+ *
+ * La Fase 2 dejo esto anotado como una decision pendiente: el guard
+ * del chat contestaba antes de leer la cookie y este despues, asi que
+ * dos rutas hermanas contestaban distinto al mismo pedido sin cookie
+ * (503 en una, 401 en la otra). Queda al reves de como estaba: la sala
+ * primero, en las dos.
+ *
+ * El argumento es que "¿existe esta sala?" es un hecho sobre la sala y
+ * no sobre quien pregunta, y ya se puede averiguar sin ninguna cookie
+ * pidiendo `GET /sala/<slug>`, que contesta 404 si no existe. O sea
+ * que contestarlo primero no cuenta nada que no se sepa, y evita el
+ * caso raro de contestar 401 sobre una sala inexistente, que manda a
+ * buscar una cookie para una puerta que no esta.
+ *
+ * El precio, y queda escrito: un POST sin cookie a una sala que no
+ * existe ahora contesta 404 y antes contestaba 401.
+ *
+ * ---------------------------------------------------------------
+ * "SUYA" SE COMPRUEBA CONTRA LA COOKIE, NO CONTRA KICK_SLUG
+ *
+ * La version vieja decia `slug !== SLUG_DUENO`, que con un solo
+ * creador daba el resultado correcto por casualidad. Lo que hay que
+ * comparar es el slug de la sesion contra el de la sala: el dueño del
+ * servicio NO es dueño de las salas de los demas, y su cookie no le
+ * abre el panel de nadie.
  */
 async function conDuenoDeLaSala(url, req, res, p, fn) {
-  const suyo = await sesion.leer(req, 'dueno');
-  if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
   const slug = String(p.slug ?? '').toLowerCase();
   if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
-  /* Hoy el unico que pasa el `canalPermitido` con sesion de dueño es
-     el dueño mismo. En la Fase 3 hay que comprobar ademas que la sala
-     sea SUYA: la sesion dice quien es, no de que canal es dueño. */
-  if (SLUG_DUENO && slug !== SLUG_DUENO) {
+
+  const suyo = await sesion.leer(req, 'dueno');
+  if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
+
+  if (String(suyo.slug ?? '').toLowerCase() !== slug) {
     return json(res, 403, { error: 'esa sala no es tuya' });
   }
   return fn(slug, suyo);
@@ -741,6 +912,30 @@ async function conDuenoDeLaSala(url, req, res, p, fn) {
  */
 async function apiRelojAccion(url, req, res, p) {
   return conDuenoDeLaSala(url, req, res, p, async (slug) => {
+    /*
+     * EL PLAN SE MIRA ACA, y esto es lo que quiere decir "un creador
+     * pendiente no puede reproducir".
+     *
+     * Se mira en el servidor y no escondiendo botones: la pagina puede
+     * mentir, este pedido no. Y se mira sobre TODAS las acciones y no
+     * solo sobre "reproducir": si se dejara pausar y saltar, un plan
+     * vencido podria seguir manejando una pelicula que ya estaba
+     * andando, que es la misma funcion por otro nombre.
+     *
+     * El chat NO pasa por aca a proposito: es un proxy al chat de Kick
+     * del propio creador, no cuesta ancho de banda y el creador lo
+     * podria hacer sin nosotros. Lo que se cobra es pasar la pelicula.
+     */
+    const plan = await creadores.planDe(slug);
+    if (!creadores.planActivo(plan)) {
+      return json(res, 402, {
+        error: plan === 'vencido'
+          ? 'tu suscripcion vencio: la sala no puede reproducir hasta que se renueve'
+          : 'tu sala todavia no esta habilitada para reproducir',
+        plan,
+      });
+    }
+
     let pedido;
     try { pedido = await leerJson(req); }
     catch { return json(res, 400, { error: 'json invalido' }); }
@@ -824,21 +1019,6 @@ async function apiSalaChat(url, req, res, p) {
   const slug = String(p.slug ?? '').toLowerCase();
   if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
 
-  /* El mismo guard que tiene el reloj en `conDuenoDeLaSala`, y por un
-     motivo mas fuerte: mas abajo el mensaje se manda al canal que dice
-     `vinculos.identidad('kick')`, que es el del DUEÑO. Sin esto, un
-     espectador que escribe en /api/sala/otrocreador/chat le termina
-     publicando en el chat de Kick del dueño.
-     Hoy no es alcanzable porque `creadores` esta vacia y el unico slug
-     que pasa `canalPermitido` es el del dueño. La Fase 3 llena esa
-     coleccion, y ese dia esto tiene que ser un vinculo POR SALA, no un
-     503. Hasta entonces, la respuesta honesta es que esa sala todavia
-     no tiene a donde mandar: es el mismo 503 de mas abajo, detectado
-     antes de gastar un pedido. */
-  if (SLUG_DUENO && slug !== SLUG_DUENO) {
-    return json(res, 503, { error: 'esa sala todavia no puede recibir mensajes' });
-  }
-
   const suyo = await sesion.leer(req, 'espectador');
   if (!suyo) return json(res, 401, { error: 'entra con Kick para poder escribir' });
 
@@ -864,10 +1044,27 @@ async function apiSalaChat(url, req, res, p) {
       { 'Retry-After': String(segundos) });
   }
 
-  /* El mensaje cae en el canal del dueño, no en el de quien escribe.
-     `identidad` y no `acceso`: hace falta su numero, no su token. */
-  const dueno = await vinculos.identidad('kick');
-  if (!dueno?.usuarioId) {
+  /*
+   * EL MENSAJE CAE EN EL CANAL DE ESTA SALA, y aca es donde esta la
+   * mina que la Fase 2 dejo marcada con un cartel de obra.
+   *
+   * Antes esta linea decia `vinculos.identidad('kick')`, sin slug: o
+   * sea, el canal del DUEÑO del servicio, escribiera el espectador en
+   * la sala que escribiera. Se tapo con un 503 para las salas ajenas
+   * porque no habia a donde rutear, y su propio autor lo llamo "un
+   * cartel de obra, no la solucion".
+   *
+   * Ahora se rutea de verdad: el vinculo es el de `slug`, que sale del
+   * camino de la URL y ya paso por `canalPermitido`. El 503 de abajo
+   * es el de siempre —esta sala no vinculo Kick todavia— y no un
+   * disfraz de "no se a donde mandar esto".
+   *
+   * `identidad` y no `acceso`: hace falta el numero del canal, no el
+   * token del creador. El refresh token del creador no tiene por que
+   * pasar por el camino de un mensaje de un espectador.
+   */
+  const anfitrion = await vinculos.identidad(slug, 'kick');
+  if (!anfitrion?.usuarioId) {
     return json(res, 503, { error: 'el canal todavia no esta vinculado con Kick' });
   }
 
@@ -884,7 +1081,7 @@ async function apiSalaChat(url, req, res, p) {
   espectadores.anotarEnvio(suyo.usuario);
 
   try {
-    const r = await kick.enviarMensaje(token, dueno.usuarioId, cuerpo);
+    const r = await kick.enviarMensaje(token, anfitrion.usuarioId, cuerpo);
     metricas.registrarEnvio(slug, { ok: r.enviado });
     if (!r.enviado) return json(res, 502, { error: 'Kick lo recibio pero no lo publico' });
     /* No se difunde nada por el bus: el mensaje vuelve por el webhook
@@ -926,6 +1123,36 @@ async function conClaveDeSubida(req, res, fn) {
      esta probando claves no tiene por que enterarse de cual fallo. */
   if (!slug) return json(res, 401, { error: 'clave de subida invalida' });
   return fn(slug);
+}
+
+/**
+ * Corre `fn(slug, plan)` para el dueño de una sala, identificado por
+ * la clave de subida O por la cookie de creador.
+ *
+ * LAS DOS, y no una, porque las dos existen de verdad: el catalogo y
+ * las URL de subida los pide `herramientas/subir.py` desde una
+ * terminal (donde no hay cookie que mandar ni OAuth que completar sin
+ * abrir un navegador) y tambien el panel desde el navegador (donde no
+ * hay clave, y meterla en el JavaScript de la pagina seria regalarla).
+ *
+ * La clave se mira PRIMERO: si viene, es lo que quiso usar quien
+ * llama, y caer en la cookie cuando la clave es invalida haria que un
+ * script con la clave equivocada "funcione" desde el navegador de al
+ * lado, que es la clase de cosa que se descubre tarde.
+ */
+async function conCreadorOClave(req, res, fn) {
+  const presentada = req.headers['x-clave-subida'];
+  if (presentada) {
+    const slug = await videos.salaDeLaClave(presentada);
+    if (!slug) return json(res, 401, { error: 'clave de subida invalida' });
+    /* La clave puede sobrevivir a la sala: se comprueba igual que en
+       `conCreador`. */
+    if (!await creadores.existe(slug)) {
+      return json(res, 403, { error: 'esa clave no corresponde a ninguna sala' });
+    }
+    return fn(slug, await creadores.planDe(slug));
+  }
+  return conCreador(req, res, fn);
 }
 
 async function apiVideosGuardar(url, req, res) {
@@ -972,62 +1199,383 @@ async function apiVideosBorrar(url, req, res, p) {
   });
 }
 
-/** El catalogo, para el panel. Con cookie de dueño, no con la clave. */
+/**
+ * El catalogo de SU sala.
+ *
+ * Con la cookie del panel o con la clave de subida: `subir.py --listar`
+ * quiere saber que hay del lado del servidor y corre en una terminal.
+ */
 async function apiVideosListar(url, req, res) {
-  return conDueno(req, res, async () => json(res, 200, { videos: await videos.listar(SLUG_DUENO) }));
+  return conCreadorOClave(req, res, async (slug) => json(res, 200, { videos: await videos.listar(slug) }));
 }
 
 /* -------------------------------------------------------- panel */
+
+const GIGA = 1024 ** 3;
+
+/**
+ * Cuanto ocupa una sala en R2, saliendo a preguntarselo a R2 pero no
+ * mas seguido que cada tanto.
+ *
+ * La cifra que se guarda en `creadores` es una FOTO. La verdad es lo
+ * que hay en el bucket, y es la unica que sirve para un tope: los
+ * bytes que declara el que sube los elige el que sube.
+ *
+ * Sin credenciales de R2 devuelve la ultima foto que haya (cero, al
+ * principio) y lo dice. Que la subida no ande porque falta una
+ * variable es una cosa; que el panel no se pueda abrir es otra.
+ */
+const REFRESCAR_USO = 5 * 60 * 1000;
+
+async function usoDeLaSala(slug, { forzar = false } = {}) {
+  const doc = await creadores.obtener(slug);
+  const foto = { bytes: Number(doc?.bytes ?? 0), medido: Number(doc?.bytesAl ?? 0), real: false };
+  if (!r2.hayCredenciales()) return foto;
+  if (!forzar && foto.medido && Date.now() - foto.medido < REFRESCAR_USO) {
+    return { ...foto, real: true };
+  }
+  try {
+    const bytes = await r2.bytesDeLaSala(slug);
+    await creadores.anotarUso(slug, bytes);
+    return { bytes, medido: Date.now(), real: true };
+  } catch (e) {
+    console.warn(`[r2] ${slug}: no se pudo medir el uso:`, e.message);
+    return foto;
+  }
+}
 
 /**
  * Todo lo que muestra /panel, en un solo pedido.
  *
  * Se junta aca y no se reparte en cinco endpoints porque el panel lo
- * refresca cada pocos segundos mientras el dueño mira: cinco pedidos
+ * refresca cada pocos segundos mientras el creador mira: cinco pedidos
  * en vez de uno es cinco veces el ruido en los logs de Railway por
  * exactamente la misma pantalla.
+ *
+ * Todo lo que sale de aca es de la sala de QUIEN PREGUNTA. No hay
+ * ningun parametro que elija de que sala hablar.
  */
 async function apiPanel(url, req, res) {
-  return conDueno(req, res, async () => {
-    const slug = SLUG_DUENO;
+  return conCreador(req, res, async (slug, plan) => {
+    const uso = await usoDeLaSala(slug);
+    const tope = creadores.topeGb(plan);
     return json(res, 200, {
       slug,
+      plan,
+      /* El panel es de solo lectura cuando el plan no deja reproducir.
+         Va como un booleano ya resuelto y no como "calcula vos con el
+         plan": la pagina no tiene por que conocer la tabla de planes,
+         y si la conociera habria dos copias de la regla. */
+      soloLectura: !creadores.planActivo(plan),
+      esDueno: creadores.esDueno(slug),
       modo: MODO,
       hora: Date.now(),
-      salud: chat.salud(),
-      reloj: slug ? await reloj.actual(slug) : null,
-      videos: slug ? await videos.listar(slug) : [],
+      salud: chat.salud(slug),
+      reloj: await reloj.actual(slug),
+      videos: await videos.listar(slug),
       conectados: canales.conectados(slug),
       metricas: metricas.resumen(slug),
-      claveSubida: slug ? await videos.estadoClave(slug) : { hay: false, creada: 0 },
+      claveSubida: await videos.estadoClave(slug),
       almacen: almacen.dondeGuarda(),
+      uso: {
+        bytes: uso.bytes,
+        gb: Math.round((uso.bytes / GIGA) * 100) / 100,
+        topeGb: Number.isFinite(tope) ? tope : null,
+        medido: uso.medido,
+        /* Si es false, el numero es la ultima foto y no lo que hay en
+           R2 ahora. La pantalla lo dice en vez de mostrar un numero
+           que parece de ahora. */
+        real: uso.real,
+      },
+      cobro: {
+        proveedor: cobro.proveedor(),
+        listo: cobro.listo(),
+        falta: cobro.listo() ? '' : cobro.porQueNoEstaListo(),
+        ...cobro.precio(),
+      },
+      subida: { lista: r2.hayCredenciales(), falta: r2.porQueNoHay() },
       /* La URL que hay que pegar a mano en el portal de Kick. Se
          muestra porque olvidarla es la falla mas cara del proyecto: se
-         crean las suscripciones sin error y no llega ni un webhook. */
-      urlWebhook: `${baseDe(req)}/kick/webhook`,
+         crean las suscripciones sin error y no llega ni un webhook.
+         Solo la ve el dueño del servicio: es el unico que tiene acceso
+         al portal de la app de Kick, y para los demas seria un dato
+         inutil que invita a tocar donde no. */
+      urlWebhook: creadores.esDueno(slug) ? `${baseDe(req)}/kick/webhook` : '',
     });
   });
 }
 
 /**
- * Genera la clave de subida. La devuelve UNA sola vez: lo que queda
- * guardado es su hash.
+ * Genera la clave de subida de SU sala. La devuelve UNA sola vez: lo
+ * que queda guardado es su hash.
  */
 async function apiClaveGenerar(url, req, res) {
-  return conDueno(req, res, async () => {
-    if (!SLUG_DUENO) return json(res, 409, { error: 'falta KICK_SLUG' });
-    const clave = await videos.generarClave(SLUG_DUENO);
-    console.log('[videos] clave de subida nueva para', SLUG_DUENO);
+  return conCreador(req, res, async (slug) => {
+    const clave = await videos.generarClave(slug);
+    console.log('[videos] clave de subida nueva para', slug);
     return json(res, 200, { clave });
   });
 }
 
 async function apiClaveRevocar(url, req, res) {
-  return conDueno(req, res, async () => {
-    if (!SLUG_DUENO) return json(res, 409, { error: 'falta KICK_SLUG' });
-    const habia = await videos.revocarClave(SLUG_DUENO);
+  return conCreador(req, res, async (slug) => {
+    const habia = await videos.revocarClave(slug);
     return json(res, 200, { ok: true, habia });
   });
+}
+
+/** Desvincula Twitch de SU sala: cierra la conexion y borra el token. */
+async function apiTwitchDesvincular(url, req, res) {
+  return conCreador(req, res, async (slug) => {
+    await chat.desvincularTwitch(slug);
+    return json(res, 200, { ok: true });
+  });
+}
+
+/**
+ * Manda al creador al checkout del proveedor de cobro.
+ *
+ * Devuelve la URL en vez de redirigir: el boton esta en una pagina que
+ * ya esta abierta y que tiene que poder mostrar el error si el cobro
+ * no esta configurado, en vez de mandar a la persona a un 500 de un
+ * tercero.
+ */
+async function apiSuscribirse(url, req, res) {
+  return conCreador(req, res, async (slug) => {
+    if (creadores.esDueno(slug)) {
+      return json(res, 400, { error: 'el dueño del servicio no se suscribe a si mismo' });
+    }
+    if (!cobro.listo()) return json(res, 503, { error: cobro.porQueNoEstaListo() });
+    try {
+      const doc = await creadores.obtener(slug);
+      const r = await cobro.crearCheckout({ slug, nombre: doc?.nombre ?? '' });
+      return json(res, 200, { url: r.url });
+    } catch (e) {
+      console.warn(`[cobro] ${slug}: no se pudo crear el checkout:`, e.message);
+      return json(res, 502, { error: 'el proveedor de cobro no contesto' });
+    }
+  });
+}
+
+/* ------------------------------------------------------ subida a R2
+
+   Lo que reemplaza al token de R2 en la PC de cada creador: el
+   servidor firma una URL por archivo, valida solo para ese archivo y
+   por diez minutos. */
+
+/* Cuantos archivos se firman de una. Una pelicula de dos horas en
+   segmentos de 6 segundos son unos 1.200 archivos por calidad, asi que
+   el script pide de a tandas. El tope existe para que un solo pedido
+   no arme cien mil URLs. */
+const TOPE_ARCHIVOS = 500;
+
+async function apiSubidaFirmar(url, req, res) {
+  return conCreadorOClave(req, res, async (slug, plan) => {
+    if (!creadores.planActivo(plan)) {
+      return json(res, 402, { error: 'tu sala todavia no puede subir videos', plan });
+    }
+    if (!r2.hayCredenciales()) return json(res, 503, { error: r2.porQueNoHay() });
+
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const id = String(pedido?.id ?? '');
+    if (!videos.idValido(id)) return json(res, 400, { error: 'id invalido' });
+
+    const lista = Array.isArray(pedido?.archivos) ? pedido.archivos : [];
+    if (!lista.length) return json(res, 400, { error: 'no hay archivos' });
+    if (lista.length > TOPE_ARCHIVOS) {
+      return json(res, 400, { error: `no se pueden firmar mas de ${TOPE_ARCHIVOS} archivos por pedido` });
+    }
+
+    /* El tope de GB se compara contra lo que hay EN R2, no contra lo
+       que dijeron las tandas anteriores. Los bytes declarados en este
+       pedido son lo unico que todavia no se puede medir (no estan
+       subidos), asi que se suman a lo medido. */
+    const tope = creadores.topeGb(plan);
+    if (Number.isFinite(tope)) {
+      const uso = await usoDeLaSala(slug, { forzar: true });
+      const porSubir = lista.reduce((s, a) => s + (Number(a?.bytes) || 0), 0);
+      if (uso.bytes + porSubir > tope * GIGA) {
+        return json(res, 409, {
+          error: `no entra: tu plan tiene ${tope} GB y ya usas ` +
+                 `${(uso.bytes / GIGA).toFixed(2)} GB`,
+          usadoGb: Math.round((uso.bytes / GIGA) * 100) / 100,
+          topeGb: tope,
+        });
+      }
+    }
+
+    const firmadas = [];
+    for (const archivo of lista) {
+      const ruta = String(archivo?.ruta ?? '');
+      /* La clave se arma ACA con el slug de la cookie y el id ya
+         validado. El creador solo elige lo que va despues, y aun eso
+         pasa por `claveValida` y por `esDeLaSala`. Que el prefijo no
+         salga nunca de lo que manda el cliente es lo unico que separa
+         los videos de una sala de los de otra. */
+      const clave = `${slug}/${id}/${ruta}`;
+      if (!ruta || !r2.claveValida(clave) || !r2.esDeLaSala(clave, slug)) {
+        return json(res, 400, { error: `ruta invalida: ${ruta.slice(0, 80)}` });
+      }
+      firmadas.push({ ruta, url: r2.firmar('PUT', clave) });
+    }
+
+    return json(res, 200, {
+      slug,
+      id,
+      /* Lo que el script va a mandar despues en la ficha del video. Se
+         arma aca para que no tenga que saber como se forman las URL
+         publicas del bucket. */
+      urlPublica: `${r2.urlPublicaBase()}/${slug}/${id}/`,
+      archivos: firmadas,
+      venceEn: Date.now() + r2.VENCE_POR_DEFECTO * 1000,
+    });
+  });
+}
+
+/** Firma los borrados de un video de SU sala. */
+async function apiSubidaBorrar(url, req, res) {
+  return conCreadorOClave(req, res, async (slug) => {
+    if (!r2.hayCredenciales()) return json(res, 503, { error: r2.porQueNoHay() });
+
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const id = String(pedido?.id ?? '');
+    if (!videos.idValido(id)) return json(res, 400, { error: 'id invalido' });
+
+    let objetos;
+    try { objetos = await r2.listarPrefijo(`${slug}/${id}/`); }
+    catch (e) { return json(res, 502, { error: `no se pudo listar R2: ${e.message}` }); }
+
+    const firmadas = objetos.objetos
+      /* Cinturon de mas: R2 devolvio lo que hay bajo el prefijo, asi
+         que todo tendria que ser de esta sala. Se comprueba igual
+         porque firmar un DELETE es la operacion mas cara de deshacer
+         de todo el servicio. */
+      .filter(o => r2.esDeLaSala(o.clave, slug) && r2.claveValida(o.clave))
+      .slice(0, TOPE_ARCHIVOS * 8)
+      .map(o => ({ clave: o.clave, url: r2.firmar('DELETE', o.clave) }));
+
+    return json(res, 200, { slug, id, archivos: firmadas });
+  });
+}
+
+/* --------------------------------------------------------- admin */
+
+/** La lista de creadores, con plan, vencimiento y uso. Solo el dueño. */
+async function apiAdminCreadores(url, req, res) {
+  return conDuenoDelServicio(req, res, async () => {
+    const lista = await creadores.listar();
+    return json(res, 200, {
+      tope: creadores.TOPE_CANALES,
+      cuantos: lista.length,
+      cobro: { proveedor: cobro.proveedor(), listo: cobro.listo(), falta: cobro.porQueNoEstaListo() },
+      creadores: lista.map(c => ({
+        slug: c.slug,
+        nombre: c.nombre,
+        /* Los dos: el guardado y el que vale hoy. Sin los dos, un
+           "pago" con la fecha pasada se veria como "pago" y no habria
+           forma de entender por que ese creador no puede reproducir. */
+        plan: c.plan,
+        planEfectivo: creadores.planDelDoc(c.slug, c),
+        vence: c.vence,
+        creado: c.creado,
+        suscrito: c.suscrito,
+        terminos: c.terminos,
+        conectados: canales.conectados(c.slug),
+        gb: Math.round((c.bytes / GIGA) * 100) / 100,
+        medido: c.bytesAl,
+        cobro: { proveedor: c.cobro.proveedor, suscripcion: c.cobro.suscripcionId },
+      })),
+    });
+  });
+}
+
+/**
+ * El dueño pone "amigo" o "pendiente" y nada mas.
+ *
+ * Los otros dos planes los pone el webhook de cobro. La regla la
+ * exige `creadores.ponerPlan` con el parametro `quien`, asi que no
+ * depende de que esta ruta se acuerde.
+ */
+async function apiAdminPlan(url, req, res) {
+  return conDuenoDelServicio(req, res, async () => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const slug = String(pedido?.slug ?? '').toLowerCase();
+    const plan = String(pedido?.plan ?? '');
+    /* El dueño del servicio no se cambia el plan a si mismo: el suyo no
+       sale de la base y escribirlo daria la impresion de que si. */
+    if (creadores.esDueno(slug)) {
+      return json(res, 400, { error: 'el plan del dueño no sale de la base: sale de KICK_SLUG' });
+    }
+    if (!await creadores.obtener(slug)) return json(res, 404, { error: 'ese creador no existe' });
+
+    try {
+      const r = await creadores.ponerPlan(slug, plan, { vence: pedido?.vence, quien: 'dueno' });
+      console.log(`[admin] ${slug} pasa a plan ${plan}`);
+      return json(res, 200, { ok: true, creador: r });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  });
+}
+
+/* --------------------------------------------------- webhook de cobro
+
+   El otro webhook del proyecto. Mismo cuidado que el de Kick: cuerpo
+   crudo, firma verificada, y 200 a lo que no interesa para que el
+   proveedor deje de reintentarlo. */
+
+async function cobroWebhook(url, req, res) {
+  const crudo = await leerCuerpo(req);
+
+  let r;
+  try {
+    r = await cobro.procesarWebhook({ cabeceras: req.headers, crudo });
+  } catch (e) {
+    console.error('[cobro] el webhook exploto:', e.message);
+    return texto(res, 500, 'error');
+  }
+
+  if (!r.ok) {
+    /* 400 y no 401: el proveedor tiene que ver que algo esta mal de
+       este lado (clave sin cargar, evento sin slug) y reintentar. Lo
+       que NO se dice es cual de las cosas fallo. */
+    console.warn('[cobro] webhook rechazado:', r.motivo);
+    return texto(res, 400, 'no se pudo procesar');
+  }
+
+  if (r.ignorado || !r.slug) return texto(res, 200, 'ok');
+
+  /* Que el evento venga firmado prueba que lo mando el proveedor, no
+     que el slug de adentro sea una sala nuestra. */
+  if (!await creadores.obtener(r.slug)) {
+    console.warn(`[cobro] ${r.evento}: la sala "${r.slug}" no existe`);
+    return texto(res, 200, 'ok');
+  }
+
+  try {
+    await creadores.ponerPlan(r.slug, r.plan, { vence: r.vence, quien: 'cobro' });
+    if (r.clienteId || r.suscripcionId) {
+      await creadores.guardarCobro(r.slug, {
+        proveedor: cobro.proveedor(),
+        clienteId: r.clienteId,
+        suscripcionId: r.suscripcionId,
+      });
+    }
+    console.log(`[cobro] ${r.evento}: ${r.slug} pasa a ${r.plan}`);
+  } catch (e) {
+    console.error(`[cobro] no se pudo aplicar el plan a ${r.slug}:`, e.message);
+    return texto(res, 500, 'error');
+  }
+  return texto(res, 200, 'ok');
 }
 
 /* --------------------------------------------------------- paginas
@@ -1054,13 +1602,18 @@ async function apiEstado(url, req, res) {
     almacen: almacen.dondeGuarda(),
     canales: canales.resumen(),
     /* Que falta para que esto funcione de verdad. Sin este bloque, el
-       dia que el login no anda hay que adivinar cual de las cinco
+       dia que el login no anda hay que adivinar cual de las siete
        variables es la que falta. No dice NUNCA el valor de ninguna. */
     listo: {
       kick: kick.hayCredenciales(),
       twitch: twitch.hayCredenciales(),
       cifrado: cifrado.hayClave(),
       mongo: almacen.dondeGuarda().modo === 'mongo',
+      /* Las dos de la Fase 3. `subida` sin esto se descubre recien
+         cuando un creador intenta subir; `cobro`, recien cuando
+         intenta pagar. */
+      subida: r2.hayCredenciales(),
+      cobro: cobro.listo(),
     },
   });
 }
@@ -1090,24 +1643,18 @@ function compilar(patron) {
  * Sin esta guarda, `/eventos/lo-que-sea` creaba una entrada en el Map
  * de canales mientras la conexion viviera: cualquiera podia hacer
  * crecer la memoria del servidor pidiendo slugs inventados, y de paso
- * el contador de canales de /api/estado se llenaba de basura. La Fase
- * 0 lo dejo anotado como trabajo de esta fase.
+ * el contador de canales de /api/estado se llenaba de basura.
  *
- * Pasan el dueño (KICK_SLUG) y cualquier creador dado de alta. Hoy la
- * coleccion `creadores` esta vacia y el unico que pasa es el dueño;
- * la Fase 3 la llena y esto sigue valiendo sin tocarlo.
+ * Pasan el dueño del servicio (KICK_SLUG, sin tocar el almacen) y
+ * cualquier creador dado de alta.
+ *
+ * Corre una vez por pestaña abierta, asi que la lectura pasa por la
+ * cache corta de `creadores.js`, que ademas se acuerda de los que NO
+ * existen: sin eso, `/eventos/<slug inventado distinto cada vez>`
+ * seguiria siendo una consulta a Mongo por pedido, que es exactamente
+ * lo que esta guarda vino a cerrar.
  */
-async function canalPermitido(slug) {
-  const s = String(slug ?? '').toLowerCase();
-  if (!s) return false;
-  if (SLUG_DUENO && s === SLUG_DUENO) return true;
-  try { return Boolean(await almacen.obtener('creadores', s)); }
-  catch (e) {
-    /* Si el almacen no contesta, no se inventa un permiso. */
-    console.warn('[eventos] no se pudo comprobar el creador:', e.name);
-    return false;
-  }
-}
+const canalPermitido = slug => creadores.existe(slug);
 
 /**
  * SSE. Un HEAD no abre stream: la respuesta no lleva cuerpo, asi que
@@ -1234,6 +1781,22 @@ async function paginaSala(url, req, res, p) {
   return servirPagina('sala.html')(url, req, res, p);
 }
 
+/**
+ * /admin. La pagina se sirve SOLO al dueño del servicio.
+ *
+ * Es la unica pagina del proyecto que se protege del lado del
+ * servidor. Las demas son HTML sin datos y se sirven a cualquiera: lo
+ * que se cuida es la API. Aca se cuida tambien la pagina, y no por lo
+ * que dice adentro (no dice nada), sino porque una direccion que
+ * contesta 200 a todo el mundo anuncia que existe un panel de
+ * administracion y con que nombre. Un 404 no anuncia nada.
+ */
+async function paginaAdmin(url, req, res) {
+  const suyo = await sesion.leer(req, 'dueno');
+  if (!suyo || !creadores.esDueno(suyo.slug)) return texto(res, 404, 'no existe');
+  return servirPagina('admin.html')(url, req, res);
+}
+
 const RUTAS = [
   ['GET',    '/api/estado',            apiEstado],
   ['GET',    '/api/hora',              apiHora],
@@ -1243,6 +1806,12 @@ const RUTAS = [
   ['GET',    '/api/panel',             apiPanel],
   ['POST',   '/api/panel/clave',       apiClaveGenerar],
   ['DELETE', '/api/panel/clave',       apiClaveRevocar],
+  ['DELETE', '/api/panel/twitch',      apiTwitchDesvincular],
+  ['POST',   '/api/panel/suscribirse', apiSuscribirse],
+  ['POST',   '/api/subida',            apiSubidaFirmar],
+  ['POST',   '/api/subida/borrar',     apiSubidaBorrar],
+  ['GET',    '/api/admin/creadores',   apiAdminCreadores],
+  ['POST',   '/api/admin/plan',        apiAdminPlan],
   ['GET',    '/api/videos',            apiVideosListar],
   ['POST',   '/api/videos',            apiVideosGuardar],
   ['DELETE', '/api/videos/:id',        apiVideosBorrar],
@@ -1251,6 +1820,9 @@ const RUTAS = [
   ['GET',    '/api/sala/:slug/yo',     apiSalaYo],
   ['POST',   '/api/sala/:slug/salir',  apiSalaSalir],
   ['GET',    '/panel',                 servirPagina('panel.html')],
+  ['GET',    '/crear',                 servirPagina('crear.html')],
+  ['GET',    '/terminos',              servirPagina('terminos.html')],
+  ['GET',    '/admin',                 paginaAdmin],
   ['GET',    '/chat',                  servirPagina('chat.html')],
   ['GET',    '/sala/:slug',            paginaSala],
   ['GET',    '/eventos/:slug',         eventos],
@@ -1259,6 +1831,7 @@ const RUTAS = [
   ['GET',    '/oauth/twitch/entrar',   twitchEntrar],
   ['GET',    '/oauth/twitch/volver',   twitchVolver],
   ['POST',   '/kick/webhook',          kickWebhook],
+  ['POST',   '/cobro/webhook',         cobroWebhook],
   /* la de prueba solo se registra en local; ver pruebaWebhook */
   ...(ES_LOCAL ? [['POST', '/api/prueba/webhook', pruebaWebhook]] : []),
 ].map(([metodo, patron, manejador]) => ({ metodo, patron, manejador, ...compilar(patron) }));
@@ -1390,26 +1963,44 @@ export async function arrancar() {
 
   canales.arrancarPings();
 
-  /* El reloj de la sala vuelve del almacen. Sin esto, un deploy en
-     medio de la peli dejaba la sala en "detenido" hasta que el dueño
+  /* El reloj de cada sala vuelve del almacen. Sin esto, un deploy en
+     medio de la peli dejaba la sala en "detenido" hasta que el creador
      volviera a tocar play, y aca deployar en medio del stream es la
      forma normal de trabajar. Como `empezoEn` es una fecha absoluta, la
-     posicion despues del reinicio sigue dando lo mismo. */
-  if (SLUG_DUENO) {
-    try {
-      const puesto = await reloj.restaurar(SLUG_DUENO);
-      if (puesto) console.log(`[reloj] ${SLUG_DUENO} sigue en ${puesto.videoId} (${Math.round(puesto.posicion)}s, ${puesto.estado})`);
-    } catch (e) {
-      console.warn('[reloj] no se pudo restaurar:', e.name);
+     posicion despues del reinicio sigue dando lo mismo.
+
+     Se restauran TODAS y no solo la del dueño: con varios creadores,
+     restaurar una sola dejaria a los demas parados sin motivo. Se hace
+     al arrancar y no por sala a demanda porque `restaurar` es lo que
+     limpia el reloj de un video que ya no esta, y eso conviene que
+     pase una vez y no en el primer pedido de cada noche. */
+  try {
+    /* El dueño puede no tener fila en `creadores` todavia (la escribe
+       su primer login de Kick), asi que entra a mano. Un Set: si ya
+       esta en la lista, no se restaura dos veces. */
+    const salas = new Set((await creadores.listar()).map(c => c.slug));
+    if (SLUG_DUENO) salas.add(SLUG_DUENO);
+    for (const slug of salas) {
+      try {
+        const puesto = await reloj.restaurar(slug);
+        if (puesto) {
+          console.log(`[reloj] ${slug} sigue en ${puesto.videoId} ` +
+                      `(${Math.round(puesto.posicion)}s, ${puesto.estado})`);
+        }
+      } catch (e) {
+        console.warn(`[reloj] ${slug}: no se pudo restaurar:`, e.name);
+      }
     }
+  } catch (e) {
+    console.warn('[reloj] no se pudo listar las salas para restaurar:', e.name);
   }
 
-  /* El Chat Global se levanta solo con lo que haya guardado: si el
-     dueño ya vinculo Twitch, la conexion EventSub vuelve sin que nadie
-     toque nada; si vinculo Kick, se comprueba que la suscripcion siga
-     estando. No se espera: un deploy no tiene por que quedarse sin
-     atender pedidos mientras Twitch hace su handshake. */
-  chat.arrancar({ slug: SLUG_DUENO, base: process.env.URL_BASE ?? '' })
+  /* El chat se levanta solo con lo que haya guardado, para cada sala:
+     si un creador ya vinculo Twitch, su conexion EventSub vuelve sin
+     que nadie toque nada; si vinculo Kick, se comprueba que la
+     suscripcion siga estando. No se espera: un deploy no tiene por que
+     quedarse sin atender pedidos mientras Twitch hace sus handshakes. */
+  chat.arrancar({ base: process.env.URL_BASE ?? '' })
     .catch(e => console.warn('[chat] no se pudo arrancar:', e.message));
 
   const servidor = crearServidor();

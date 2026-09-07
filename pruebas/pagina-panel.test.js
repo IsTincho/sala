@@ -62,6 +62,15 @@ const panelLleno = (extra = {}) => ({
   claveSubida: { hay: true, creada: Date.now() - 86400_000 },
   almacen: { modo: 'mongo', motivo: '' },
   urlWebhook: 'https://sala.example/kick/webhook',
+  /* Lo que agregó la Fase 3. El panel dejó de ser el del dueño y pasó a
+     ser el de cada creador, así que el plan viaja en el mismo pedido y
+     decide qué se puede tocar. */
+  plan: 'dueno',
+  soloLectura: false,
+  esDueno: true,
+  uso: { bytes: 0, gb: 0, topeGb: null, medido: Date.now(), real: true },
+  cobro: { proveedor: 'paddle', listo: false, falta: 'faltan PADDLE_API_KEY', monto: 5, moneda: 'USD' },
+  subida: { lista: true, falta: '' },
   ...extra,
 });
 
@@ -470,6 +479,202 @@ test('revocar esconde la caja y vuelve a consultar', async () => {
 
   const borrados = p.pedidos.filter(x => x.metodo === 'DELETE' && x.url === '/api/panel/clave');
   assert.equal(borrados.length, 1);
+
+  p.cerrar();
+});
+
+
+/* ================================================== el plan (Fase 3)
+
+   El panel dejó de ser una pantalla de un solo dueño. Lo que se prueba
+   acá es que el plan mande sobre lo que se puede tocar, y que APAGAR
+   los controles no sea la única defensa: el servidor contesta 402 a
+   cualquier acción del reloj sin plan activo, tenga o no la página los
+   botones apagados. Eso está probado en pruebas/multicanal.test.js.
+   Acá se prueba que la pantalla lo explique en vez de quedarse muda. */
+
+const CONTROLES = [
+  'boton-reproducir', 'boton-pausar', 'boton-reanudar', 'boton-detener',
+  'boton-atras-60', 'boton-atras-10', 'boton-adelante-10', 'boton-adelante-60',
+];
+
+test('con plan activo los controles de la película se pueden tocar', async () => {
+  /* El control negativo de los dos que siguen: sin esto, "apagar
+     siempre" pasaría el test de abajo y nadie podría tocar play. */
+  const p = abrir();
+  await asentarse();
+
+  for (const id of CONTROLES) assert.equal(p.el(id).disabled, false, id);
+  assert.equal(p.el('select-video').disabled, false);
+  assert.equal(p.el('boton-suscribirse').hidden, true, 'el dueño no se suscribe a sí mismo');
+  assert.equal(p.el('link-admin').hidden, false, 'y ve el link a /admin');
+
+  p.cerrar();
+});
+
+test('un plan pendiente apaga los controles y dice por qué', async () => {
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      plan: 'pendiente', soloLectura: true, esDueno: false,
+      uso: { bytes: 0, gb: 0, topeGb: 2, medido: 0, real: false },
+      urlWebhook: '',
+    }) }),
+  });
+  await asentarse();
+
+  assert.equal(p.el('tarjeta-plan').hidden, false);
+  assert.match(p.el('texto-plan').textContent, /pendiente/);
+  assert.match(p.el('explica-plan').textContent, /no puede reproducir/i);
+  for (const id of CONTROLES) assert.equal(p.el(id).disabled, true, id);
+  assert.equal(p.el('select-video').disabled, true);
+
+  p.cerrar();
+});
+
+test('un plan vencido ofrece suscribirse, y el dueño del servicio no', async () => {
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      plan: 'vencido', soloLectura: true, esDueno: false,
+      uso: { bytes: 1024 ** 3, gb: 1, topeGb: 2, medido: Date.now(), real: true },
+      cobro: { proveedor: 'paddle', listo: true, falta: '', monto: 5, moneda: 'USD' },
+      urlWebhook: '',
+    }) }),
+  });
+  await asentarse();
+
+  assert.equal(p.el('boton-suscribirse').hidden, false);
+  assert.match(p.el('boton-suscribirse').textContent, /5 USD/);
+  assert.equal(p.el('boton-suscribirse').disabled, false);
+  assert.equal(p.el('link-admin').hidden, true, 'un creador cualquiera no ve /admin');
+
+  p.cerrar();
+});
+
+test('si el cobro no está configurado, el botón lo dice en vez de fallar al tocarlo', async () => {
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      plan: 'pendiente', soloLectura: true, esDueno: false,
+      cobro: { proveedor: 'paddle', listo: false, falta: 'faltan PADDLE_API_KEY', monto: 0, moneda: 'USD' },
+      urlWebhook: '',
+    }) }),
+  });
+  await asentarse();
+
+  assert.equal(p.el('boton-suscribirse').hidden, false);
+  assert.equal(p.el('boton-suscribirse').disabled, true);
+  assert.match(p.el('boton-suscribirse').textContent, /no está configurado/);
+
+  p.cerrar();
+});
+
+test('el uso dice si el número es de ahora o la última foto', async () => {
+  /* Un número medido hace tres días mostrado como si fuera de ahora es
+     peor que no mostrarlo: se toman decisiones con él. */
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      plan: 'amigo', soloLectura: false, esDueno: false,
+      uso: { bytes: 0, gb: 1.5, topeGb: 2, medido: 0, real: false },
+      urlWebhook: '',
+    }) }),
+  });
+  await asentarse();
+
+  assert.match(p.el('linea-uso').textContent, /1\.5 GB de 2 GB/);
+  assert.match(p.el('linea-uso').textContent, /sin medir/i);
+
+  p.cerrar();
+});
+
+test('la tarjeta del webhook sólo aparece si el servidor mandó la URL', async () => {
+  /* A un creador que no es el dueño del servicio no le sirve de nada y
+     lo invita a tocar donde no. El servidor le manda la URL vacía; lo
+     que se prueba acá es que la página no muestre una tarjeta vacía. */
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      plan: 'amigo', soloLectura: false, esDueno: false, urlWebhook: '',
+    }) }),
+  });
+  await asentarse();
+
+  assert.equal(p.el('tarjeta-webhook').hidden, true);
+  assert.equal(p.el('url-webhook').textContent, '');
+
+  p.cerrar();
+});
+
+test('el ejemplo del comando de subida lleva el slug de quien mira', async () => {
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      slug: 'ana', plan: 'amigo', soloLectura: false, esDueno: false, urlWebhook: '',
+    }) }),
+  });
+  await asentarse();
+
+  assert.equal(p.el('ejemplo-slug').textContent, 'ana');
+  /* `.href` y no `getAttribute('href')`: la página lo escribe como
+     propiedad, y el atributo sigue teniendo lo que decía el HTML. En un
+     navegador las dos cosas se ven distinto igual. */
+  assert.equal(p.el('link-sala').href, '/sala/ana');
+
+  p.cerrar();
+});
+
+test('el botón de suscribirse abre el checkout en otra pestaña, sin regalar la ventana', async () => {
+  const abiertas = [];
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      plan: 'pendiente', soloLectura: true, esDueno: false,
+      cobro: { proveedor: 'paddle', listo: true, falta: '', monto: 5, moneda: 'USD' },
+      urlWebhook: '',
+    }) }),
+    respuestas: {
+      'POST /api/panel/suscribirse': () => ({
+        ok: true, status: 200, json: async () => ({ url: 'https://sandbox-pay.paddle.io/hsc_9' }),
+      }),
+    },
+    globales: { open: (url, destino, opciones) => { abiertas.push({ url, destino, opciones }); return {}; } },
+  });
+  await asentarse();
+
+  p.el('boton-suscribirse').disparar('click');
+  await asentarse();
+
+  assert.equal(abiertas.length, 1, 'no se abrió el checkout');
+  assert.equal(abiertas[0].url, 'https://sandbox-pay.paddle.io/hsc_9');
+  assert.equal(abiertas[0].destino, '_blank', 'en la misma pestaña se pierde el panel');
+  assert.match(abiertas[0].opciones, /noopener/,
+    'una pestaña abierta sin noopener puede manejar la que la abrió');
+
+  p.cerrar();
+});
+
+test('desvincular Twitch manda un DELETE y vuelve a consultar', async () => {
+  const p = abrir();
+  await asentarse();
+
+  assert.equal(p.el('boton-desvincular-twitch').hidden, false, 'con Twitch vinculado tiene que estar');
+  p.el('boton-desvincular-twitch').disparar('click');
+  await asentarse();
+
+  const borrados = p.pedidos.filter(x => x.metodo === 'DELETE' && x.url === '/api/panel/twitch');
+  assert.equal(borrados.length, 1);
+
+  p.cerrar();
+});
+
+test('el tope de conexiones de Twitch se explica en vez de decir "cortado"', async () => {
+  const p = abrir({
+    estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({
+      salud: {
+        ...SALUD,
+        twitch: { vinculado: true, ultima: null, estado: 'cortado', modo: 'ninguno', tope: true },
+      },
+    }) }),
+  });
+  await asentarse();
+
+  assert.match(p.el('tarjeta-estado').textContent, /tope de conexiones/i);
+  assert.match(p.el('tarjeta-estado').textContent, /Kick sigue andando/i);
 
   p.cerrar();
 });

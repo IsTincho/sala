@@ -160,3 +160,41 @@ test('reiniciar deja todo en cero', () => {
   assert.equal(r.errores429, 0);
   assert.equal(r.espectadoresPico, 0);
 });
+
+
+/* ------------------------------------------------------------- tope
+
+   Hasta la Fase 2 este Map no tenía tope, y estaba a salvo por
+   casualidad: todos los que llamaban acá pasaban un slug ya validado,
+   así que sólo podía haber una entrada. Con creadores de verdad los
+   slugs entran por el webhook y por cada /eventos/:slug, y "está
+   validado río arriba" es la clase de garantía que se rompe cuando
+   alguien agrega el call site número cuatro. */
+
+test('el mapa de canales no crece para siempre', () => {
+  metricas.reiniciar();
+  const tope = Number(process.env.TOPE_METRICAS ?? 2000);
+
+  for (let i = 0; i < tope + 50; i++) metricas.registrarMensaje('canal-' + i, T0);
+
+  assert.equal(metricas.cuantosCanales(), tope,
+    'sin tope, cualquiera que mande slugs distintos hace crecer la memoria del servidor');
+});
+
+test('el tope suelta los más viejos y deja vivo al último', () => {
+  /* Que se suelte el más viejo y no el que se acaba de crear no es un
+     detalle: soltar el nuevo dejaría el contador de la sala que está
+     hablando AHORA siempre en cero. */
+  metricas.reiniciar();
+  const tope = Number(process.env.TOPE_METRICAS ?? 2000);
+
+  metricas.registrarMensaje('el-primero', T0);
+  for (let i = 0; i < tope; i++) metricas.registrarMensaje('relleno-' + i, T0);
+  metricas.registrarMensaje('el-ultimo', T0);
+
+  assert.equal(metricas.resumen('el-ultimo', T0).mensajesTotales, 1,
+    'el último tiene que seguir contando');
+  /* Y el primero ya no está: preguntar por él lo vuelve a crear en
+     cero, que es exactamente lo que quiere decir "se soltó". */
+  assert.equal(metricas.resumen('el-primero', T0).mensajesTotales, 0);
+});

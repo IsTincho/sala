@@ -204,7 +204,7 @@ test('sin sesion de dueño no se lee ni se manda nada', async () => {
     });
     const cuerpo = await r.json();
     assert.equal(r.status, 401, `${metodo} ${ruta} sin cookie tiene que dar 401`);
-    assert.match(cuerpo.error, /dueño/);
+    assert.match(cuerpo.error, /no hay sesion de creador/);
   }
 });
 
@@ -285,7 +285,7 @@ test('cuando la plataforma frena, la respuesta es 429 con Retry-After y no un 50
      status). Los pedidos que no van a Kick pasan derecho, porque el
      cliente de este test tambien usa fetch. */
   const fetchDeVerdad = globalThis.fetch;
-  await vinculos.guardar('kick', {
+  await vinculos.guardar('istincho', 'kick', {
     usuarioId: '4242',
     nombre: 'IsTincho',
     slug: 'istincho',
@@ -314,7 +314,7 @@ test('cuando la plataforma frena, la respuesta es 429 con Retry-After y no un 50
     assert.equal(cuerpo.kick.estado, 429, 'el status de la plataforma llega hasta arriba');
   } finally {
     globalThis.fetch = fetchDeVerdad;
-    await vinculos.olvidar('kick');
+    await vinculos.olvidar('istincho', 'kick');
   }
 });
 
@@ -323,7 +323,7 @@ test('un error que no es 429 sigue siendo 502', async () => {
      se pondria a esperar cinco segundos por cosas que no se arreglan
      esperando. */
   const fetchDeVerdad = globalThis.fetch;
-  await vinculos.guardar('kick', {
+  await vinculos.guardar('istincho', 'kick', {
     usuarioId: '4242', nombre: 'IsTincho', slug: 'istincho',
     accessToken: 'token-de-prueba', refreshToken: 'refresco-de-prueba',
     venceEn: Date.now() + 3600_000, scopes: 'user:read chat:write',
@@ -344,7 +344,7 @@ test('un error que no es 429 sigue siendo 502', async () => {
     assert.equal(r.headers.get('retry-after'), null);
   } finally {
     globalThis.fetch = fetchDeVerdad;
-    await vinculos.olvidar('kick');
+    await vinculos.olvidar('istincho', 'kick');
   }
 });
 

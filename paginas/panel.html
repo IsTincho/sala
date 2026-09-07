@@ -22,9 +22,30 @@
   </section>
 
   <div class="fila-botones">
-    <a id="link-kick" class="boton-grande" href="/oauth/kick/entrar?rol=dueno&destino=/panel">Entrar con Kick</a>
+    <!-- rol=creador y no rol=dueno: es la misma puerta para el dueño
+         del servicio y para cualquier creador que ya tenga sala. Al que
+         no tenga ninguna y no haya aceptado los términos, el servidor
+         lo manda a /crear en vez de darle una sala de regalo. -->
+    <a id="link-kick" class="boton-grande" href="/oauth/kick/entrar?rol=creador&destino=/panel">Entrar con Kick</a>
     <a id="link-twitch" class="boton-grande apagado" href="/oauth/twitch/entrar?destino=/panel" aria-disabled="true">Vincular Twitch</a>
+    <button type="button" id="boton-desvincular-twitch" class="boton-panel" hidden>Desvincular Twitch</button>
   </div>
+
+  <!-- ---------- el plan ---------- -->
+  <section class="tarjeta" id="tarjeta-plan" hidden>
+    <h2>Tu plan</h2>
+    <p class="linea-plan">
+      <span class="puntito" id="puntito-plan"></span>
+      <span id="texto-plan">–</span>
+    </p>
+    <p class="linea-tenue" id="explica-plan"></p>
+    <p id="linea-uso" class="linea-tenue"></p>
+
+    <div class="fila-controles">
+      <button type="button" id="boton-suscribirse" class="boton-panel boton-suscribirse" hidden>Suscribirme</button>
+      <a id="link-admin" class="boton-panel" href="/admin" hidden>Ver todos los creadores</a>
+    </div>
+  </section>
 
   <!-- ---------- la sala ---------- -->
   <section class="tarjeta" id="tarjeta-sala" hidden>
@@ -66,7 +87,7 @@
     <ul class="lista-videos" id="lista-videos"></ul>
     <p class="linea-tenue" id="sin-videos" hidden>
       Todavía no hay ninguno. Se suben desde tu PC con
-      <code>python herramientas/subir.py "archivo.mkv"</code>.
+      <code>python herramientas/subir.py --sala <span id="ejemplo-slug">tu-canal</span> "archivo.mkv"</code>.
     </p>
   </section>
 
@@ -113,7 +134,11 @@
     </div>
   </section>
 
-  <!-- ---------- lo que hay que hacer a mano ---------- -->
+  <!-- ---------- lo que hay que hacer a mano ----------
+       Sólo la ve el dueño del servicio: es el único con acceso al
+       portal de la app de Kick. El servidor le manda `urlWebhook`
+       vacía a los demás, así que no es una tarjeta escondida con el
+       dato adentro: el dato no viaja. -->
   <section class="tarjeta" id="tarjeta-webhook" hidden>
     <h2>Webhook de Kick</h2>
     <p class="linea-tenue">

@@ -26,6 +26,25 @@
 const HORA = 60 * 60 * 1000;
 const CASILLEROS = 24;
 
+/* Tope del Map.
+
+   Hasta la Fase 2 no habia, y estaba a salvo por casualidad: todos los
+   que llamaban aca pasaban el slug del dueño o uno ya validado por
+   `canalPermitido`, o sea que solo podia haber una entrada. Desde la
+   Fase 3 los slugs son de creadores de verdad, entran por el webhook y
+   por cada `/eventos/:slug`, y "esta validado rio arriba" es
+   exactamente la clase de garantia que se rompe cuando alguien agrega
+   el call site numero cuatro.
+
+   Cada entrada son 24 casilleros y cuatro contadores: unos cientos de
+   bytes. 2.000 canales distintos es mas de lo que el tope de Kick
+   (900 canales) permite tener, asi que en la practica no se llega; el
+   tope esta para que no se pueda llegar por otro camino. Se sueltan
+   los mas viejos, que es lo correcto para una medida "desde que
+   arranco el servidor": el que dejo de hablar hace horas es el que
+   menos se va a mirar. */
+const TOPE_CANALES = Number(process.env.TOPE_METRICAS ?? 2000);
+
 const porCanal = new Map();   // slug -> medidas
 
 function medidasDe(slug) {
@@ -41,9 +60,19 @@ function medidasDe(slug) {
       errores429: 0,
       espectadoresPico: 0,
     });
+    while (porCanal.size > TOPE_CANALES) {
+      /* Map conserva el orden de insercion, asi que el primero es el
+         que se creo hace mas tiempo. Nunca se suelta el que se acaba
+         de crear: el `while` corre despues del `set`, pero como el
+         nuevo esta al final, el que sale es otro. */
+      porCanal.delete(porCanal.keys().next().value);
+    }
   }
   return porCanal.get(clave);
 }
+
+/** Cuantos canales tiene medidas ahora. Para /api/estado y las pruebas. */
+export const cuantosCanales = () => porCanal.size;
 
 const inicioDeHora = ahora => Math.floor(ahora / HORA) * HORA;
 

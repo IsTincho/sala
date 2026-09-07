@@ -194,6 +194,21 @@ class Elemento {
     this.escuchas.get(tipo).push(fn);
   }
 
+  /* Mover el foco es lo que hace una pagina cuando frena una accion y
+     tiene que decir donde esta el problema. Aca no hay foco de verdad,
+     asi que se anota quien lo pidio: alcanza para que la pagina no
+     explote y para que un test pueda comprobar que se movio al lugar
+     que corresponde. */
+  focus() {
+    if (this.raiz) this.raiz.activeElement = this;
+    this.enfocado = true;
+  }
+
+  blur() {
+    if (this.raiz?.activeElement === this) this.raiz.activeElement = null;
+    this.enfocado = false;
+  }
+
   /** Lo que usa el test para simular a la persona. */
   disparar(tipo, evento = {}) {
     const ev = { type: tipo, preventDefault() {}, target: this, ...evento };
@@ -223,13 +238,24 @@ class Estilo {
 
 const VACIOS = new Set(['meta', 'link', 'br', 'img', 'input', 'hr', 'source']);
 
+/* Las cinco entidades que aparecen en un atributo escrito a mano. Un
+   navegador las decodifica al parsear, asi que un `href` con
+   `&amp;destino=/panel` LLEGA al DOM como `&destino=/panel` y
+   `new URL(...).searchParams` ve dos parametros.
+
+   Sin esto, un test que mire una URL con dos parametros escrita como
+   corresponde ve un solo parametro con un `&amp;` adentro y falla por
+   algo que en un navegador anda perfecto. */
+const ENTIDADES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&apos;': "'" };
+const desescapar = s => String(s).replace(/&(?:amp|lt|gt|quot|apos|#39);/g, e => ENTIDADES[e]);
+
 function parsearAtributos(crudo) {
   const salida = new Map();
   const re = /([a-zA-Z_:@][-a-zA-Z0-9_:.]*)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g;
   let m;
   while ((m = re.exec(crudo))) {
     const valor = m[2] === undefined ? '' : m[2].replace(/^["']|["']$/g, '');
-    salida.set(m[1], valor);
+    salida.set(m[1], desescapar(valor));
   }
   return salida;
 }

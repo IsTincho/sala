@@ -527,6 +527,44 @@ ya no sale en ninguna de las dos. Si molesta, se cambia.
 
 ---
 
+## 2026-09-06 — Dónde quedó todo (corte para dormir)
+
+Escrito por el director al frenar la sesión. **`herramientas/` tiene trabajo a
+medio hacer, sin commitear.** El agente que estaba arreglando el script de
+subida se frenó por la mitad, a pedido del dueño. Los archivos modificados
+(`subir.py`, `pruebas_subir.py`, `requirements.txt`, `LEEME.md`) están en el
+disco pero **no se sabe cuánto de las cinco fallas quedó realmente arreglado ni
+probado**: no hay que darles ninguna confianza. Lo primero de la próxima sesión
+es mirar ese diff y decidir si se termina o se descarta con
+`git checkout -- herramientas/`.
+
+También quedó un `init.mp4` suelto en la raíz del repo: es basura de una prueba
+con ffmpeg, no va al repo.
+
+### Estado por fase
+
+- **Fase 0: cerrada y pusheada.** Tres rondas de verificación adversarial.
+- **Fase 1: cerrada.** Segunda verificación sin fallas, y los siete cabos
+  sueltos cerrados después. Sin pushear.
+- **Fase 2: construida, sin verificación independiente todavía.** 411 pruebas
+  en verde. El script de subida (entregable 1) **fue rechazado** por su
+  verificador: ver la entrada de esa verificación, con las cinco fallas. El
+  resto de la fase (reloj, `/sala/:slug`, `/panel`, métricas, rutas de videos)
+  está commiteado y todavía **nadie de afuera lo revisó**.
+- **Fase 3: no arrancó.**
+
+### Lo primero de la próxima sesión
+
+1. Decidir qué hacer con el diff sin commitear de `herramientas/`.
+2. Terminar los arreglos de las cinco fallas del script de subida.
+3. Verificación independiente de la Fase 2 (falta por completo).
+4. Recién ahí, Fase 3.
+
+Nada de la Fase 1 ni de la Fase 2 está pusheado: los commits están sólo en la
+máquina del dueño.
+
+---
+
 ## 2026-09-06 — Fase 1: CERRADA
 
 Escrito por el director. La segunda verificación adversarial **no encontró

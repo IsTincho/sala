@@ -304,6 +304,86 @@ test('detener deja el estado detenido y borra el documento del almacen', async (
   assert.equal(await almacen.obtener('reloj', slug), null, 'detener borra el documento');
 });
 
+test('detener libera el canal de la memoria si no quedo nadie mirando', async () => {
+  /*
+   * LAS DOS MITADES QUE NO COINCIDIAN.
+   *
+   * `canales.js` no borra un canal que tenga `reloj` puesto, porque un
+   * reloj es estado real. Pero `aplicarYDifundir` dejaba puesto TAMBIEN
+   * el de "detenido", que es un objeto igual de truthy que el de
+   * "reproduciendo" y sin embargo es la AUSENCIA de estado. Resultado:
+   * un canal que se detuvo y del que se fue todo el mundo se quedaba en
+   * el Map para siempre.
+   *
+   * `restaurar()` ya trataba la ausencia como corresponde del otro lado
+   * (si no hay nada guardado no pone reloj ni crea el canal), asi que
+   * las dos mitades decian cosas distintas sobre lo mismo.
+   *
+   * Con un creador da igual. Con mil, el Map no respira nunca.
+   */
+  const slug = 'canal-reloj-liberado';
+  await guardarVideo(slug);
+
+  /* Alguien mirando, para que el canal exista de verdad y el evento de
+     detener tenga a quien llegarle. */
+  const { req, res } = conectar(slug);
+  await reloj.aplicar(slug, 'reproducir', { videoId: 'ep1' });
+  assert.equal(canales.hayCanal(slug), true, 'con la peli puesta el canal existe');
+
+  await reloj.aplicar(slug, 'detener', {});
+
+  /* El que estaba mirando SI se tiene que haber enterado: liberar no
+     puede significar no avisar. */
+  const detenido = res.datos.filter(d => d.tipo === 'reloj' && d.estado === 'detenido');
+  assert.equal(detenido.length, 1, 'el evento de detenido tiene que salir igual por el bus');
+
+  /* Todavia hay alguien conectado: el canal no se puede borrar. */
+  assert.equal(canales.hayCanal(slug), true, 'con gente mirando el canal se queda');
+
+  /* Y cuando se va el ultimo, ahi si. */
+  req.emit('close');
+  assert.equal(canales.conectados(slug), 0);
+  assert.equal(canales.hayCanal(slug), false,
+    'un canal detenido y sin nadie mirando no tiene por que seguir en memoria');
+});
+
+test('detener no se lleva puesto el canal que todavia tiene mensajes', async () => {
+  /* El buffer de los ultimos 200 mensajes tambien es estado que hay que
+     recordar: el que se conecta despues se los tiene que llevar. */
+  const slug = 'canal-reloj-con-mensajes';
+  await guardarVideo(slug);
+  const { req } = conectar(slug);
+  canales.recordar(slug, { tipo: 'chat', red: 'kick', id: 'm1', texto: 'hola' });
+
+  await reloj.aplicar(slug, 'reproducir', { videoId: 'ep1' });
+  await reloj.aplicar(slug, 'detener', {});
+  req.emit('close');
+
+  assert.equal(canales.hayCanal(slug), true, 'el canal con mensajes guardados se queda');
+  assert.equal(canales.ultimos(slug).length, 1);
+});
+
+test('leer despues de detener sigue diciendo detenido, no null', async () => {
+  /* Al soltar el reloj de la memoria, `leer` cae al almacen. Ahi
+     tampoco hay nada (detener borra el documento), y eso tiene que
+     seguir leyendose como "detenido" y no como un error. */
+  const slug = 'canal-reloj-leer-detenido';
+  await guardarVideo(slug);
+  conectar(slug);
+
+  await reloj.aplicar(slug, 'reproducir', { videoId: 'ep1' });
+  await reloj.aplicar(slug, 'detener', {});
+
+  const despues = await reloj.leer(slug);
+  assert.equal(despues.estado, 'detenido');
+  assert.equal(despues.videoId, '');
+
+  /* Y lo que sale por HTTP para el panel, igual. */
+  const cable = await reloj.actual(slug);
+  assert.equal(cable.estado, 'detenido');
+  assert.equal(cable.posicion, 0);
+});
+
 /* ------------------------------------------------------------- difusion */
 
 test('cada cambio se difunde por SSE sin nombre, con el tipo adentro del data', async () => {

@@ -763,6 +763,15 @@ async function apiRelojAccion(url, req, res, p) {
  * lista de asistencia que nadie pidio.
  */
 async function apiSalaYo(url, req, res, p) {
+  /* Igual que las otras dos de /api/sala/: una sala que no existe se
+     contesta 404 y no con un cuerpo util. No filtra nada (la respuesta
+     habla del que pregunta, no de la sala), pero eran las dos unicas
+     rutas de /api/sala/ que no pasaban por aca, y una excepcion sin
+     motivo es una excepcion que alguien copia. */
+  if (!await canalPermitido(String(p.slug ?? '').toLowerCase())) {
+    return json(res, 404, { error: 'esa sala no existe' });
+  }
+
   const suyo = await sesion.leer(req, 'espectador');
   if (!suyo) return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false });
 
@@ -786,7 +795,11 @@ async function apiSalaYo(url, req, res, p) {
 }
 
 /** Cierra la sesion del espectador y OLVIDA su token. */
-async function apiSalaSalir(url, req, res) {
+async function apiSalaSalir(url, req, res, p) {
+  if (!await canalPermitido(String(p.slug ?? '').toLowerCase())) {
+    return json(res, 404, { error: 'esa sala no existe' });
+  }
+
   const suyo = await sesion.leer(req, 'espectador');
   if (suyo) {
     await sesion.cerrar(req, 'espectador');
@@ -810,6 +823,21 @@ async function apiSalaSalir(url, req, res) {
 async function apiSalaChat(url, req, res, p) {
   const slug = String(p.slug ?? '').toLowerCase();
   if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+
+  /* El mismo guard que tiene el reloj en `conDuenoDeLaSala`, y por un
+     motivo mas fuerte: mas abajo el mensaje se manda al canal que dice
+     `vinculos.identidad('kick')`, que es el del DUEÑO. Sin esto, un
+     espectador que escribe en /api/sala/otrocreador/chat le termina
+     publicando en el chat de Kick del dueño.
+     Hoy no es alcanzable porque `creadores` esta vacia y el unico slug
+     que pasa `canalPermitido` es el del dueño. La Fase 3 llena esa
+     coleccion, y ese dia esto tiene que ser un vinculo POR SALA, no un
+     503. Hasta entonces, la respuesta honesta es que esa sala todavia
+     no tiene a donde mandar: es el mismo 503 de mas abajo, detectado
+     antes de gastar un pedido. */
+  if (SLUG_DUENO && slug !== SLUG_DUENO) {
+    return json(res, 503, { error: 'esa sala todavia no puede recibir mensajes' });
+  }
 
   const suyo = await sesion.leer(req, 'espectador');
   if (!suyo) return json(res, 401, { error: 'entra con Kick para poder escribir' });
@@ -1089,6 +1117,32 @@ async function canalPermitido(slug) {
  * contando en el canal. Se contesta con las cabeceras y nada mas.
  */
 async function eventos(url, req, res, p) {
+  /*
+   * LA CARRERA DEL CIERRE, y por que la bandera va ACA arriba.
+   *
+   * `canales.suscribir` mete la respuesta en la lista de clientes y
+   * engancha su propia limpieza en el 'close' del pedido. Pero recien
+   * llega ahi despues de los dos `await` de mas abajo. Si el socket
+   * muere mientras tanto, el 'close' YA se emitio: el listener que se
+   * engancha tarde no dispara nunca, y `res.write()` sobre una
+   * respuesta muerta no tira, asi que ni `difundir` ni el ping de 25 s
+   * la sacan de la lista. Queda un cliente fantasma para siempre: el
+   * contador de espectadores inflado, el pico mentiroso y el canal que
+   * no se libera nunca.
+   *
+   * Hoy los dos `await` cortocircuitan sin tocar disco ni red en el
+   * camino normal, asi que la ventana es de cero. Con Mongo del otro
+   * lado y slugs de creador (Fase 3) los dos hacen I/O de verdad y la
+   * ventana es real.
+   *
+   * Se anota antes de todo y no se suscribe un pedido que ya murio.
+   * Entre el `if` y el `suscribir` no queda un solo `await`, asi que no
+   * hay ventana nueva: cualquier cierre posterior lo agarra el listener
+   * que engancha `suscribir`.
+   */
+  let cerrado = false;
+  req.on('close', () => { cerrado = true; });
+
   if (!await canalPermitido(p.slug)) return texto(res, 404, 'ese canal no existe');
   if (req.method === 'HEAD') {
     res.writeHead(200, {
@@ -1121,6 +1175,11 @@ async function eventos(url, req, res, p) {
    * pregunta que este codigo se hace.
    */
   const esDueno = Boolean(await sesion.leer(req, 'dueno'));
+
+  /* El pedido se murio mientras se resolvia todo lo de arriba: no hay a
+     quien suscribir. Ver el comentario del principio. */
+  if (cerrado || res.writableEnded) return res;
+
   canales.suscribir(p.slug, req, res, { redes: esDueno ? null : ['kick'] });
 
   anotarPresencia(p.slug);

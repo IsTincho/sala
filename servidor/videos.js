@@ -52,12 +52,65 @@ const TOPE_URL = 500;
 const TOPE_SUBTITULOS = 20;
 const TOPE_CALIDADES = 8;
 
+/* Caracteres de control: C0, DEL, C1, y los dos separadores de linea de
+   Unicode. Ninguno de estos se puede escribir en el nombre de un
+   archivo por accidente, y cualquiera de ellos partido en el medio de
+   un titulo es una linea de log inventada. Ver `limpiar`. */
+const CONTROLES = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g;
+
+/* Hostnames que son SIEMPRE esta misma maquina. Ver el chequeo de la
+   URL en `revisarFicha`. */
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0)$/i;
+
 /* Un video de 24 horas ya es absurdo; mas que eso es un dato roto que
    dejaria el reloj calculando posiciones sin sentido. */
 const TOPE_DURACION = 24 * 60 * 60;
 
 export const idValido = id => ID_VALIDO.test(String(id ?? ''));
 export const slugValido = s => SLUG_VALIDO.test(String(s ?? ''));
+
+/**
+ * Un texto que vino del nombre de un archivo, listo para meter en una
+ * linea de log, en el HTML del panel o en un evento del bus.
+ *
+ * POR QUE, con nombre y apellido: el titulo sale del nombre del archivo
+ * que el dueño le pasa a `herramientas/subir.py`, y despues aterriza en
+ * un `console.log` de index.js. Un titulo con un \n adentro parte esa
+ * linea en dos y la segunda mitad la escribe quien subio el video:
+ * `[http] POST /api/panel 200 clave=FALSA` entra perfecto. Los logs de
+ * Railway no se borran y son la unica evidencia cuando algo falla, asi
+ * que una linea inventada ahi no es un detalle estetico.
+ *
+ * Los controles se reemplazan por un espacio y no se borran: "hola\nchau"
+ * tiene que quedar "hola chau" y no "holachau". Despues se colapsan los
+ * espacios seguidos, que es lo que deja un titulo legible.
+ */
+export const limpiar = s => String(s ?? '').replace(CONTROLES, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * Un hostname comparable.
+ *
+ * El parser de URL de Node ya normaliza lo dificil solo: `127.1`,
+ * `0x7f.0.0.1` y `2130706433` los devuelve los tres como `127.0.0.1`, y
+ * `[0:0:0:0:0:0:0:1]` como `[::1]`. Lo que NO saca es el punto final de
+ * la forma absoluta (`localhost.`, `sala.example.`), que resuelve al
+ * mismo lugar y se escapaba de la comparacion por un caracter.
+ */
+const hostnameDe = h => String(h ?? '').toLowerCase().replace(/\.$/, '');
+
+/**
+ * El host de este mismo servidor, o '' si no se sabe.
+ *
+ * Sale de URL_BASE y NO del header Host del pedido: el Host lo elige
+ * quien llama, asi que usarlo aca seria dejar que el que sube la ficha
+ * decida contra que se la compara.
+ */
+export function hostPropio() {
+  const base = String(process.env.URL_BASE ?? '').trim();
+  if (!base) return '';
+  try { return hostnameDe(new URL(base).hostname); }
+  catch { return ''; }
+}
 
 const claveDoc = (slug, id) => `${slug}:${id}`;
 
@@ -124,7 +177,7 @@ export async function salaDeLaClave(clave) {
  * bien y el servidor estaba caido) manda solo id, slug, titulo,
  * duracion y url.
  */
-export function revisarFicha(datos) {
+export function revisarFicha(datos, opciones = {}) {
   const d = datos ?? {};
 
   const id = String(d.id ?? '');
@@ -133,7 +186,9 @@ export function revisarFicha(datos) {
   const slug = String(d.slug ?? '').toLowerCase();
   if (!slugValido(slug)) return { error: 'slug invalido' };
 
-  const titulo = String(d.titulo ?? id).trim().slice(0, TOPE_TITULO);
+  /* `limpiar` ANTES del corte: si se recortara primero, el tope de 200
+     podria dejar afuera el ultimo caracter util y adentro el control. */
+  const titulo = limpiar(d.titulo ?? id).slice(0, TOPE_TITULO);
   if (!titulo) return { error: 'falta el titulo' };
 
   const duracion = Number(d.duracion);
@@ -153,14 +208,40 @@ export function revisarFicha(datos) {
   if (parseada.protocol !== 'https:') return { error: 'la url tiene que ser https' };
   if (!/\.m3u8$/i.test(parseada.pathname)) return { error: 'la url tiene que apuntar a una playlist .m3u8' };
 
+  /* Y ahora el "de otro host", que es la mitad cara de la invariante.
+     Van dos chequeos y no uno porque cada uno tapa lo que el otro deja:
+
+     1. Contra el host de URL_BASE. Es la respuesta autoritativa en
+        produccion, donde URL_BASE no es opcional. Se compara `hostname`
+        y no `host`: una ficha en sala.example:8443 es igual de nuestra,
+        y la URL legitima vive en r2.dev, asi que no hay falso positivo
+        posible por ignorar el puerto.
+
+     2. Contra los nombres de esta misma maquina. Vale AUNQUE URL_BASE no
+        este cargada, que es el caso de local y el que hizo que el
+        chequeo 1 solo no alcance. Ademas es cierto por si mismo: un
+        playlist en 127.0.0.1 apunta a la maquina del que mira, no a la
+        nuestra, asi que no le puede servir a nadie. */
+  const propio = hostnameDe(opciones.hostPropio ?? hostPropio());
+  const suyo = hostnameDe(parseada.hostname);
+  if (propio && suyo === propio) {
+    return { error: 'la url no puede apuntar a este mismo servidor: el video se sirve desde R2' };
+  }
+  if (LOOPBACK.test(suyo)) {
+    return { error: 'la url no puede apuntar a esta misma maquina: el video se sirve desde R2' };
+  }
+
   const calidades = Array.isArray(d.calidades)
     ? d.calidades.map(Number).filter(n => Number.isFinite(n) && n > 0 && n <= 4320).slice(0, TOPE_CALIDADES)
     : [];
 
+  /* Los nombres de las pistas salen de los metadatos del archivo, o
+     sea del mismo lugar que el titulo y con la misma confianza: pasan
+     por `limpiar` por el mismo motivo. */
   const subtitulos = Array.isArray(d.subtitulos)
     ? d.subtitulos.slice(0, TOPE_SUBTITULOS).map(s => ({
-        idioma: String(s?.idioma ?? '').slice(0, 20),
-        nombre: String(s?.nombre ?? '').slice(0, 60),
+        idioma: limpiar(s?.idioma).slice(0, 20),
+        nombre: limpiar(s?.nombre).slice(0, 60),
       })).filter(s => s.idioma || s.nombre)
     : [];
 

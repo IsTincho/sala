@@ -23,6 +23,11 @@ const CARPETA = path.join(os.tmpdir(), `sala-pruebas-videos-${process.pid}-${Dat
 process.env.SALA_DATOS = CARPETA;
 delete process.env.MONGODB_URI;
 delete process.env.MONGO_URI;
+/* Se fija a mano y no se hereda del ambiente: `revisarFicha` compara la
+   URL de la ficha contra el host de URL_BASE, asi que si esta prueba se
+   corriera con la variable que tenga cargada la maquina, el chequeo
+   estaria comparando contra otra cosa cada vez. */
+process.env.URL_BASE = 'https://sala.example';
 
 const almacen = await import('../servidor/almacen.js');
 const videos = await import('../servidor/videos.js');
@@ -145,6 +150,189 @@ test('revisarFicha rechaza una url de mas de 500 caracteres', () => {
 
 test('revisarFicha rechaza un titulo vacio', () => {
   const r = videos.revisarFicha({ ...fichaCompleta(), titulo: '   ' });
+  assert.match(r.error, /falta el titulo/);
+});
+
+/* --------------------------------------- la url NO puede ser nuestra
+
+   Es la invariante mas cara del proyecto: el servidor no sirve video, y
+   una ficha que apunta a nuestro propio dominio manda a trescientos
+   navegadores a pedirle los segmentos a Railway. El comentario de
+   `revisarFicha` lo prometia desde que se escribio; el codigo no lo
+   hacia, y la verificacion de la Fase 2 lo cazo con un POST que
+   contestaba 200. */
+
+test('revisarFicha rechaza una url que apunta a nuestro propio dominio', () => {
+  /* URL_BASE es https://sala.example (arriba del archivo). */
+  const r = videos.revisarFicha({
+    ...fichaCompleta(),
+    url: 'https://sala.example/istincho/ep-01/playlist.m3u8',
+  });
+  assert.ok(r.error, 'esto tiene que ser un error, no una ficha');
+  assert.match(r.error, /este mismo servidor/);
+  assert.equal(r.ficha, undefined);
+});
+
+test('la comparacion del host ignora el puerto y las mayusculas', () => {
+  /* `host` llevaria el puerto y dejaria pasar sala.example:8443, que es
+     igual de nuestra. Por eso se compara `hostname`. */
+  for (const url of [
+    'https://sala.example:8443/x/maestra.m3u8',
+    'https://SALA.EXAMPLE/x/maestra.m3u8',
+  ]) {
+    const r = videos.revisarFicha({ ...fichaCompleta(), url });
+    assert.match(r.error ?? '', /este mismo servidor/, url);
+  }
+});
+
+test('un host que solo se PARECE al nuestro pasa: no se rechaza de mas', () => {
+  /* El chequeo compara el hostname entero. Un subdominio o un dominio
+     que lo contenga es otro host y tiene que poder servir video. */
+  for (const url of [
+    'https://videos.sala.example/x/maestra.m3u8',
+    'https://sala.example.attacker.test/x/maestra.m3u8',
+    'https://pub-abc123.r2.dev/istincho/ep-01/maestra.m3u8',
+  ]) {
+    const r = videos.revisarFicha({ ...fichaCompleta(), url });
+    assert.ok(r.ficha, `${url} tendria que pasar y dio: ${r.error}`);
+  }
+});
+
+test('revisarFicha rechaza loopback aunque no haya URL_BASE cargada', () => {
+  /* En local URL_BASE no esta, asi que el chequeo de arriba es un
+     no-op: este es el que queda. Y es cierto por si mismo, con o sin
+     variable: un playlist en 127.0.0.1 apunta a la maquina del que
+     mira. Es tambien el repro exacto de la verificacion. */
+  for (const url of [
+    'https://localhost:8821/sala/x.m3u8',
+    'https://127.0.0.1:8821/sala/x.m3u8',
+    'https://[::1]:8821/sala/x.m3u8',
+    'https://0.0.0.0/sala/x.m3u8',
+
+    /* Las formas raras de escribir lo mismo. Las cuatro primeras las
+       normaliza sola la URL de Node (127.1, el hexadecimal, el entero
+       de 32 bits y el IPv6 largo dan todas el mismo `hostname`); el
+       punto final de la forma absoluta NO lo saca, y se escapaba de la
+       comparacion por un caracter. */
+    'https://127.1/sala/x.m3u8',
+    'https://0x7f.0.0.1/sala/x.m3u8',
+    'https://2130706433/sala/x.m3u8',
+    'https://[0:0:0:0:0:0:0:1]/sala/x.m3u8',
+    'https://LocalHost/sala/x.m3u8',
+    'https://localhost./sala/x.m3u8',
+  ]) {
+    const r = videos.revisarFicha({ ...fichaCompleta(), url }, { hostPropio: '' });
+    assert.ok(r.error, `${url} tendria que dar error`);
+    assert.match(r.error, /esta misma maquina/);
+  }
+});
+
+test('el punto final de la forma absoluta tampoco esquiva el host propio', () => {
+  /* `sala.example.` y `sala.example` son el mismo lugar para cualquier
+     resolver: si uno se rechaza, el otro tambien. */
+  const r = videos.revisarFicha({
+    ...fichaCompleta(),
+    url: 'https://sala.example./istincho/ep-01/playlist.m3u8',
+  });
+  assert.match(r.error ?? '', /este mismo servidor/);
+});
+
+test('hostPropio sale de URL_BASE y aguanta que no este o que sea basura', () => {
+  const antes = process.env.URL_BASE;
+  try {
+    process.env.URL_BASE = 'https://sala-production.up.railway.app';
+    assert.equal(videos.hostPropio(), 'sala-production.up.railway.app');
+
+    /* Con puerto y con barra al final sigue siendo el mismo host. */
+    process.env.URL_BASE = 'https://sala.example:8443/';
+    assert.equal(videos.hostPropio(), 'sala.example');
+
+    /* Sin variable no se sabe cual es nuestro host: '' y el chequeo de
+       loopback es el que sostiene la invariante. */
+    delete process.env.URL_BASE;
+    assert.equal(videos.hostPropio(), '');
+
+    process.env.URL_BASE = 'no es una url';
+    assert.equal(videos.hostPropio(), '', 'una URL_BASE rota no puede tirar');
+  } finally {
+    process.env.URL_BASE = antes;
+  }
+});
+
+/* ------------------------------- el titulo no puede inventar un log */
+
+test('el titulo no puede meter una linea falsa en el log', () => {
+  /*
+   * EL BUG QUE ESTO ATAJA, con la salida real que consiguio la
+   * verificacion de la Fase 2.
+   *
+   * El titulo sale del nombre del archivo que se le pasa a subir.py, y
+   * `index.js` lo mete tal cual en un `console.log`. Un \n adentro
+   * parte esa linea en dos y la segunda la escribe quien subio el
+   * video. Los logs de Railway no se borran y son la unica evidencia
+   * cuando algo falla.
+   */
+  const veneno = 'Episodio 1\n[http] POST /api/panel 200 clave=FALSA';
+  const { ficha, error } = videos.revisarFicha({ ...fichaCompleta(), titulo: veneno });
+
+  assert.equal(error, undefined, 'no se rechaza: se limpia');
+  assert.equal(ficha.titulo.includes('\n'), false, 'el titulo no puede llevar un salto de linea');
+  assert.equal(ficha.titulo, 'Episodio 1 [http] POST /api/panel 200 clave=FALSA',
+    'el texto se conserva entero, en UNA sola linea');
+});
+
+test('el titulo se queda sin ningun caracter de control, de los cuatro grupos', () => {
+  /* C0, DEL, C1 y los dos separadores de linea de Unicode. Cada uno
+     hace dano en un lugar distinto: \r reescribe la linea en una
+     terminal, \t separa columnas en un log, \u001b abre una secuencia
+     ANSI, y \u2028 corta linea en un contexto JS.
+
+     Se escriben con escapes a proposito: un caracter de control de
+     verdad adentro de este archivo es justo lo que esta prueba
+     prohibe, y encima no sobrevive un copiar y pegar. */
+  const casos = [
+    ['a\u0000b', 'a b'],                     // NUL
+    ['a\rb', 'a b'],                         // CR
+    ['a\r\nb', 'a b'],                       // CRLF, colapsado a un espacio
+    ['a\tb', 'a b'],                         // TAB
+    ['a\u007Fb', 'a b'],                     // DEL
+    ['a\u009Bb', 'a b'],                     // C1 (CSI)
+    ['a\u2028b', 'a b'],                     // separador de linea
+    ['a\u2029b', 'a b'],                     // separador de parrafo
+    ['a\u001b[31mrojo', 'a [31mrojo'],       // el ESC de una secuencia ANSI
+  ];
+
+  const HAY_CONTROL = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+
+  for (const [entrada, esperado] of casos) {
+    const { ficha } = videos.revisarFicha({ ...fichaCompleta(), titulo: entrada });
+    assert.equal(ficha.titulo, esperado, JSON.stringify(entrada));
+    assert.equal(HAY_CONTROL.test(ficha.titulo), false,
+      `quedaron controles en ${JSON.stringify(ficha.titulo)}`);
+  }
+});
+
+test('los nombres de los subtitulos se limpian igual que el titulo', () => {
+  /* Salen de los metadatos del mismo archivo y valen lo mismo. */
+  const { ficha } = videos.revisarFicha({
+    ...fichaCompleta(),
+    subtitulos: [{ idioma: 'es\n', nombre: 'Espanol\r\n[http] falso' }],
+  });
+  assert.equal(ficha.subtitulos[0].idioma, 'es');
+  assert.equal(ficha.subtitulos[0].nombre, 'Espanol [http] falso');
+});
+
+test('limpiar no come el texto: junta, no borra', () => {
+  /* Si los controles se borraran en vez de reemplazarse por un espacio,
+     "hola\nchau" quedaria "holachau" y el titulo diria otra cosa. */
+  assert.equal(videos.limpiar('hola\nchau'), 'hola chau');
+  assert.equal(videos.limpiar('  espacios   de   sobra  '), 'espacios de sobra');
+  assert.equal(videos.limpiar('Los Simpson S01E03'), 'Los Simpson S01E03');
+  assert.equal(videos.limpiar(null), '');
+});
+
+test('un titulo que es SOLO controles se rechaza como vacio', () => {
+  const r = videos.revisarFicha({ ...fichaCompleta(), titulo: '\n\r\t' });
   assert.match(r.error, /falta el titulo/);
 });
 

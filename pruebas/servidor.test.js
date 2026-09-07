@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
 const AQUI = path.dirname(fileURLToPath(import.meta.url));
@@ -38,7 +39,11 @@ process.env.TWITCH_CLIENT_SECRET = 'secreto-twitch-de-prueba';
 process.env.URL_BASE = 'https://sala.example';
 process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 
-const { crearServidor } = await import('../servidor/index.js');
+/* `manejar` ademas de `crearServidor`: la carrera del cierre de
+   /eventos/:slug se prueba llamando al manejador con un pedido de
+   mentira, porque hay que cortar el socket EN EL MEDIO de dos `await` y
+   con un socket de verdad eso depende de la suerte. Ver el test. */
+const { crearServidor, manejar } = await import('../servidor/index.js');
 const canales = await import('../servidor/canales.js');
 const webhook = await import('../servidor/webhook.js');
 const almacen = await import('../servidor/almacen.js');
@@ -263,6 +268,70 @@ test('/oauth/kick/volver con un state inventado no explota', async () => {
   const r = await fetch(`${raiz}/oauth/kick/volver?code=x&state=inventado`);
   assert.equal(r.status, 200);
   assert.match(await r.text(), /No se pudo completar el login/);
+});
+
+test('el error que Kick devuelve no puede meter HTML en la pagina', async () => {
+  /*
+   * XSS REFLEJADO SIN AUTENTICACION, y por eso esta prueba existe.
+   *
+   * `/oauth/kick/volver?error=...` no pide nada: se abre con la URL y
+   * el valor del parametro sale escrito en la pagina que contesta el
+   * servidor. Ese es el MISMO origen donde vive la cookie del dueño y
+   * donde escucha POST /api/panel/clave, que regenera la clave de
+   * subida. Un `<script>` reflejado ahi no es una molestia: es la
+   * clave de subida y el panel entero.
+   *
+   * Hoy `pagina()` escapa bien. Lo que no habia era nada que lo
+   * sostuviera: sacarle el `escapar()` sobrevivia las 411 pruebas de la
+   * fase sin que se cayera una sola.
+   *
+   * Se prueban los dos lugares donde entra texto de afuera (el <title>
+   * y el cuerpo) y los cinco caracteres que rompen HTML, incluido el
+   * comillado, que es lo que hace falta para escaparse de un atributo.
+   */
+  const venenos = [
+    '<script>alert(1)</script>',
+    '"><img src=x onerror=alert(1)>',
+    "'-alert(1)-'",
+    '<svg onload=alert(1)>',
+  ];
+
+  for (const veneno of venenos) {
+    const r = await fetch(`${raiz}/oauth/kick/volver?error=${encodeURIComponent(veneno)}`);
+    assert.equal(r.status, 200, veneno);
+    const html = await r.text();
+
+    /* Llego: la pagina de verdad refleja el error, asi que si esto no
+       apareciera el test estaria pasando por no haber reflejado nada. */
+    assert.match(html, /Kick no autorizo/, veneno);
+    assert.ok(html.includes('&lt;') || html.includes('&quot;') || html.includes('&#39;'),
+      `no se escapo nada de ${veneno}`);
+
+    /* El payload no aparece NUNCA tal cual: si aparece, es que algo de
+       lo que lleva no se escapo. Ojo con lo que NO se asierta: un
+       `onerror=alert(1)` suelto en el texto es inofensivo una vez que
+       el `<img` de adelante quedo en `&lt;img`. Lo que hace la
+       diferencia es que no se pueda abrir una etiqueta. */
+    assert.equal(html.includes(veneno), false,
+      `el payload salio tal cual: ${veneno}`);
+
+    for (const apertura of ['<script', '<img', '<svg']) {
+      assert.equal(html.includes(apertura), false,
+        `se pudo abrir una etiqueta ${apertura} con el veneno ${veneno}`);
+    }
+  }
+});
+
+test('un cuerpo de pagina con comillas y & se escapa entero', async () => {
+  /* Los cinco que escapa `escapar`, uno por uno y en el mismo string:
+     si alguno se cayera de la lista, el reemplazo de & tiene que
+     seguir siendo el PRIMERO o los otros cuatro quedarian dobles. */
+  const veneno = `& < > " '`;
+  const r = await fetch(`${raiz}/oauth/kick/volver?error=${encodeURIComponent(veneno)}`);
+  const html = await r.text();
+
+  assert.match(html, /Kick contesto: &amp; &lt; &gt; &quot; &#39;/,
+    'los cinco tienen que salir escapados, y el & primero');
 });
 
 test('/oauth/twitch/entrar manda a id.twitch.tv con state y los scopes del chat', async () => {
@@ -660,6 +729,62 @@ test('HEAD /eventos/:slug contesta y no deja un cliente fantasma', async () => {
   } finally {
     r.cerrar();
   }
+});
+
+test('un socket que muere mientras se resuelve el permiso no deja un cliente fantasma', async () => {
+  /*
+   * LA CARRERA DEL CIERRE.
+   *
+   * `canales.suscribir` mete la respuesta en la lista de clientes y
+   * engancha su limpieza en el 'close' del pedido, pero recien despues
+   * de dos `await` (el permiso del canal y la sesion del dueño). Si el
+   * socket muere durante esos dos await, el 'close' YA se emitio: el
+   * listener que llega despues no dispara nunca. Y `res.write()` sobre
+   * una respuesta muerta no tira, asi que ni `difundir` ni el ping de
+   * 25 s lo sacan de la lista. Queda para siempre: contador de
+   * espectadores inflado, pico mentiroso y un canal que no se libera.
+   *
+   * POR QUE CON UN PEDIDO DE MENTIRA Y NO CON UN SOCKET DE VERDAD:
+   * con un socket hay que cortarlo justo en esa ventana. Si se corta
+   * antes, el servidor ni parsea; si se corta despues, la limpieza
+   * normal lo agarra y el test pasa sin haber probado nada. Llamando a
+   * `manejar` a mano, el 'close' se emite exactamente mientras el
+   * handler esta suspendido en el primer await: no hay temporizadores
+   * ni suerte, y el resultado es el mismo todas las veces.
+   */
+  const SLUG = 'canal-fantasma';
+  await almacen.poner('creadores', SLUG, { slug: SLUG, plan: 'amigo' });
+
+  /* Lo minimo que tocan `eventos` y `canales.suscribir`. */
+  const req = new EventEmitter();
+  req.method = 'GET';
+  req.url = `/eventos/${SLUG}`;
+  req.headers = { host: 'sala.example' };
+
+  const res = {
+    escrito: [],
+    headersSent: false,
+    writableEnded: false,
+    writeHead() { this.headersSent = true; return this; },
+    write(t) { this.escrito.push(t); return true; },
+    end() { this.writableEnded = true; },
+  };
+
+  /* No se espera: `manejar` corre hasta el primer await y devuelve el
+     control acá. */
+  const enCurso = manejar(req, res);
+
+  /* Y en ese hueco exacto, el socket se muere. */
+  req.emit('close');
+
+  await enCurso;
+  /* Un turno mas, por si algo quedo en la cola de microtareas. */
+  await new Promise(ok => setImmediate(ok));
+
+  assert.equal(canales.conectados(SLUG), 0,
+    'un pedido que se murio antes de suscribirse no puede contar como espectador');
+  assert.equal(canales.hayCanal(SLUG), false,
+    'y el canal que nadie mira tiene que quedar libre');
 });
 
 test('un slug con un escape roto da 404 y no 500', async () => {

@@ -161,6 +161,19 @@ async function aplicarYDifundir(slug, nuevo) {
      el que se conecte necesita para arrancar sin pedir nada mas. Va
      entero adentro del evento `estado` inicial (canales.estadoDe). */
   canales.ponerReloj(s, cable);
+
+  /* Salvo cuando se detiene: ahi se difunde y despues se olvida. Un
+     "detenido" es la ausencia de reloj, no un reloj, y dejarlo puesto
+     hacia que el canal no se liberara nunca aunque se fuera hasta el
+     ultimo espectador —el objeto de detenido es tan truthy como el de
+     reproduciendo—. `restaurar()` ya trata la ausencia asi (no pone
+     nada si no hay nada guardado); las dos mitades tienen que coincidir
+     o la memoria solo crece. El que se conecte despues recibe
+     `reloj: null` en el evento `estado`, que la sala ya interpreta como
+     "todavia no empezo": es el mismo camino que un canal recien
+     creado. */
+  if (nuevo.estado === 'detenido') canales.olvidarReloj(s);
+
   return cable;
 }
 

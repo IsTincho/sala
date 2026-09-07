@@ -229,6 +229,116 @@ function listaParaCorregir(p, reloj) {
   p.api().olvidarCorreccion();
 }
 
+/* ============================== el desfase medido contra /api/hora
+
+   Todo lo que hay abajo entra por `fijarDesfase()`, que es la puerta de
+   atrás: pone el desfase a mano y se saltea `medirDesfase()` entero. O
+   sea que la mitad del entregable 2 —"/api/hora para que el cliente
+   calcule su desfase"— no tenía una sola prueba, y borrar la línea que
+   aplica lo medido sobrevivía las 411.
+
+   Importa porque en una máquina con el reloj corrido, esa línea ES el
+   criterio de aceptación (a): sin ella, `ahoraServidor()` es el reloj
+   local y la película se pone en el segundo equivocado por tanto como
+   se haya corrido la máquina. */
+
+/** Espera hasta que `cumple()` sea verdad, o falla diciendo qué pasó. */
+async function hasta(cumple, queEsperaba, tope = 2000) {
+  const limite = Date.now() + tope;
+  while (Date.now() < limite) {
+    if (cumple()) return;
+    await esperar(5);
+  }
+  throw new Error(`nunca pasó: ${queEsperaba}`);
+}
+
+test('el desfase medido contra /api/hora se aplica de verdad', async () => {
+  /*
+   * El servidor va MEDIO MINUTO adelante del reloj de esta máquina.
+   * Medio minuto es mucho más que cualquier ruido de la ida y vuelta,
+   * así que no hay forma de que el resultado se confunda con cero.
+   *
+   * Y no se llama a `fijarDesfase()` en ningún momento: si la medición
+   * no se aplicara sola, `objetivo()` contestaría 100 en vez de 130.
+   */
+  const ADELANTO = 30_000;
+  const p = abrir({
+    respuestas: {
+      '/api/hora': async () => ({
+        ok: true, status: 200, json: async () => ({ ahora: Date.now() + ADELANTO }),
+      }),
+    },
+  });
+
+  /* Las tres muestras que pide `medirDesfase`. */
+  await hasta(
+    () => p.pedidos.filter(x => x.url === '/api/hora').length >= 3,
+    'la página nunca pidió /api/hora tres veces',
+  );
+  /* Y un turno más para que el `then` de la medición corra. */
+  await esperar(10);
+
+  const empezoEn = Date.now() - 100_000;
+  p.api().aplicarReloj(relojReproduciendo({ empezoEn, offsetInicial: 0 }));
+
+  /* Contra el reloj del SERVIDOR van 130 s de película, no 100. */
+  const objetivo = p.api().objetivo();
+  assert.ok(Math.abs(objetivo - 130) < 2,
+    `dijo ${objetivo}: con el desfase aplicado tendría que decir ~130, sin aplicar ~100`);
+
+  /* Y llegó hasta el player, que es lo que se ve: `aplicarReloj` fuerza
+     una sincronización. */
+  const video = p.el('video-peli');
+  assert.ok(Math.abs(video.currentTime - 130) < 2,
+    `el player quedó en ${video.currentTime}`);
+
+  p.cerrar();
+});
+
+test('el reloj atrasado también se corrige, y para el otro lado', async () => {
+  /* El signo importa: un desfase que se aplicara al revés pondría la
+     película al doble de distancia en vez de acomodarla. */
+  const ATRASO = -20_000;
+  const p = abrir({
+    respuestas: {
+      '/api/hora': async () => ({
+        ok: true, status: 200, json: async () => ({ ahora: Date.now() + ATRASO }),
+      }),
+    },
+  });
+
+  await hasta(
+    () => p.pedidos.filter(x => x.url === '/api/hora').length >= 3,
+    'la página nunca pidió /api/hora tres veces',
+  );
+  await esperar(10);
+
+  p.api().aplicarReloj(relojReproduciendo({ empezoEn: Date.now() - 100_000, offsetInicial: 0 }));
+
+  const objetivo = p.api().objetivo();
+  assert.ok(Math.abs(objetivo - 80) < 2,
+    `dijo ${objetivo}: tendría que decir ~80 (100 - 20), no ~100 ni ~120`);
+
+  p.cerrar();
+});
+
+test('si /api/hora no contesta, la sala sigue con el reloj local', async () => {
+  /* Sin desfase medido no se rompe nada: se sigue con cero, que es lo
+     que vale en una máquina con la hora bien. Un `/api/hora` caído no
+     puede dejar la sala muda. */
+  const p = abrir({
+    respuestas: { '/api/hora': async () => ({ ok: false, status: 500, json: async () => ({}) }) },
+  });
+  await arrancada();
+
+  p.api().aplicarReloj(relojReproduciendo({ empezoEn: Date.now() - 100_000, offsetInicial: 0 }));
+  const objetivo = p.api().objetivo();
+  assert.ok(Math.abs(objetivo - 100) < 2, `dijo ${objetivo}`);
+  assert.ok(p.conectadoAlBus, 'el bus se conecta igual: la hora no bloquea a nadie');
+
+  p.cerrar();
+});
+
 test('una deriva de más de 1,5 s se corrige, y una de menos no', async () => {
   const p = abrir();
   await arrancada();

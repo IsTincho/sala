@@ -107,7 +107,7 @@ herramientas/   scripts que corren en la PC del dueño (Fase 2)
 
 Reglas que no se negocian:
 
-- **El servidor nunca sirve video.** El navegador le pide los segmentos directo a R2. Si una ruta devolviera un `.m3u8` o un `.ts`, el egreso de Railway se comería el presupuesto del mes en una noche.
+- **El servidor nunca sirve video.** El navegador le pide los segmentos directo a R2. Si una ruta devolviera un `.m3u8` o un `.ts`, el egreso de Railway se comería el presupuesto del mes en una noche. La otra mitad de la regla la hace cumplir `revisarFicha`: una ficha cuya `url` apunte a nuestro propio dominio (el de `URL_BASE`) o a esta misma máquina se rechaza con 400, porque mandaría a trescientos navegadores a pedirle los segmentos a Railway sin que ninguna ruta tenga la culpa.
 - **Login identifica, no autoriza.** Quién es dueño, amigo o pago se decide en la colección `creadores`, no en el login.
 - **Todo webhook de Kick se verifica con RSA y se deduplica** por `Kick-Event-Message-Id`.
 - Cookies `HttpOnly`, `Secure`, `SameSite=Lax`.
@@ -133,12 +133,14 @@ Reglas que no se negocian:
 | `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos. Pide cookie de dueño |
 | `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick. Pide cookie de dueño |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
-| `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`), `GET` la lista (cookie de dueño) |
+| `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. `GET` lista **siempre el catálogo del dueño**: no hay parámetro que lo cambie |
 | `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script |
 | `/api/sala/:slug/reloj` | Play, pausa, reanudar, saltar y detener. Cookie de dueño |
-| `/api/sala/:slug/chat` | El mensaje de un espectador, que sale en kick.com con SU cuenta. Cookie de espectador |
+| `/api/sala/:slug/chat` | El mensaje de un espectador, que sale en kick.com con SU cuenta. Cookie de espectador. Hasta la Fase 3, sólo la sala del dueño: cualquier otra da 503, porque el mensaje se rutea al canal vinculado y ése es el suyo |
 | `/api/sala/:slug/yo` | Si esta persona entró y si puede escribir. Nunca la lista de quién está en la sala |
-| `/api/sala/:slug/salir` | Cierra la sesión del espectador y **olvida su token** |
+| `/api/sala/:slug/salir` | Cierra la sesión del espectador y **olvida su token**: el refresh token es de esa persona, no del dueño |
+
+Las cuatro rutas de `/api/sala/:slug/` dan 404 si el slug no es el del dueño ni el de un creador dado de alta, igual que `/eventos/:slug` y `/sala/:slug`.
 | `/api/panel` | Todo lo que muestra `/panel` en un pedido: salud, reloj, videos, métricas, clave. Cookie de dueño |
 | `/api/panel/clave` | `POST` genera la clave de subida (se devuelve una sola vez), `DELETE` la revoca |
 | `/api/prueba/webhook` | **Sólo con `MODO=local`.** Inyecta un evento sin firma, para desarrollar sin webhooks reales. Con `?tipo=chat.message.sent` entra por el mismo camino que uno real y sale traducido como `chat` |

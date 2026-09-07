@@ -4,6 +4,222 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-07 — Fase 2: lo que encontró la verificación, cerrado
+
+Las tres fallas y los cuatro puntos que el director sacó de las dudas de la
+entrada "Verificación de la Fase 2: NO PASA". **439 pruebas en verde** (eran
+411), la suite corrida **cinco veces seguidas sobre el código final sin un solo
+flake** (doce corridas en total durante el trabajo), y **doce mutaciones
+aplicadas una por una: las doce se caen.** Ninguna prueba nueva pasa contra el
+código roto.
+
+### Las tres fallas
+
+**F1. El chequeo de host que el comentario prometía y el código no hacía.**
+`videos.js` decía textual que la URL tiene que ser https "y de otro host, [...]
+no descubrirlo con la factura de egreso", y chequeaba el protocolo y el `.m3u8`
+y nada más. Un `POST /api/videos` con `url: https://localhost:8821/sala/x.m3u8`
+contestaba 200. Se escribió el chequeo y **el comentario se dejó como estaba**:
+la invariante era correcta, lo que faltaba era el código.
+
+Van **dos** comparaciones y no una, porque cada una tapa lo que la otra deja:
+
+1. Contra el `hostname` de `URL_BASE`. Es la respuesta autoritativa en
+   producción, donde `URL_BASE` no es opcional. Se compara `hostname` y no
+   `host` a propósito: con el puerto adentro, `sala.example:8443` pasaría, y es
+   igual de nuestra. Como la URL legítima vive en `r2.dev`, ignorar el puerto no
+   puede dar un falso positivo.
+2. Contra los nombres de la propia máquina (`localhost`, `127.x`, `::1`,
+   `0.0.0.0`). Vale **aunque `URL_BASE` no esté cargada**, que es el caso de
+   local y el que hacía que la primera sola no alcanzara —dejar el chequeo
+   dependiendo de una variable opcional era repetir la trampa que la
+   verificación acababa de encontrar—. Y es cierto por sí mismo: un playlist en
+   loopback apunta a la máquina del que mira, así que no puede servirle a nadie.
+
+Un detalle que salió de probar los bordes: el parser de URL de Node ya normaliza
+solo casi todas las formas raras de escribir la misma máquina —`127.1`,
+`0x7f.0.0.1`, `2130706433` y `[0:0:0:0:0:0:0:1]` llegan al chequeo ya como
+`127.0.0.1` y `[::1]`—, así que una regex sola alcanza. La que **no** normaliza
+es el punto final de la forma absoluta: `localhost.` y `sala.example.` resuelven
+al mismo lugar y se escapaban por un carácter. De ahí `hostnameDe()`, que baja a
+minúsculas y saca ese punto antes de comparar. Los diez casos están en la
+prueba.
+
+De dónde sale "nuestro host": `hostPropio()` lee `URL_BASE`, **nunca el header
+`Host`**. El `Host` lo elige quien llama, y usarlo sería dejar que el que sube
+la ficha decida contra qué se la compara. `revisarFicha` acepta el host por
+parámetro opcional con ese default, así que la prueba es determinista y, a la
+vez, un call site nuevo de la Fase 3 hereda el chequeo sin acordarse.
+
+**F2. Inyección de líneas en el log por el título del video.** El título sale
+del nombre de un archivo y `index.js` lo mete tal cual en un `console.log`. La
+verificación consiguió una línea falsa `[http] POST /api/panel 200 clave=FALSA`
+en el log. Ahora `revisarFicha` pasa el título por `limpiar()`: saca C0, DEL,
+C1 y los dos separadores de línea de Unicode, y colapsa los espacios.
+
+Se **reemplaza por un espacio y no se borra**: si se borrara, `"hola\nchau"`
+quedaría `"holachau"` y el título diría otra cosa. Y se limpia **antes** del
+corte a 200: recortando primero, el tope podía dejar afuera el último carácter
+útil y adentro el control. Los nombres de las pistas de subtítulos pasan por lo
+mismo: salen de los metadatos del mismo archivo y valen igual.
+
+**F3. Las cinco guardas sin prueba.** Las cinco tienen ahora la suya, y las
+cinco mutaciones se caen. Están listadas abajo con el nombre del test.
+
+### Los cuatro que entraron por decisión del director
+
+**La carrera de `/eventos/:slug`.** `canales.suscribir` engancha su limpieza en
+el `close` del pedido, pero recién después de dos `await`. Si el socket moría en
+el medio, el `close` ya se había emitido: el listener tardío no dispara nunca, y
+`res.write()` sobre una respuesta muerta no tira, así que ni `difundir` ni el
+ping de 25 s la sacaban de la lista. Cliente fantasma para siempre, contador
+inflado y canal que no se libera. Se anota la bandera **antes** de los `await` y
+no se suscribe un pedido que ya murió. Entre el `if` y el `suscribir` no queda un
+solo `await`, así que no hay ventana nueva.
+
+**`/yo` y `/salir` no validaban el slug.** Eran las dos únicas rutas de
+`/api/sala/` que no pasaban por `canalPermitido`. No filtraban nada; se cerró
+igual, porque una excepción sin motivo es una excepción que alguien copia.
+
+**El chat del espectador ruteaba por el dueño, no por la sala.** `apiSalaChat`
+aceptaba cualquier slug permitido y después mandaba el mensaje a
+`vinculos.identidad('kick')`, que es el canal del **dueño**. Un espectador
+escribiendo en `/api/sala/otrocreador/chat` le publicaba en kick.com/istincho.
+Se le puso el mismo guard `slug !== SLUG_DUENO` que ya tenía el reloj.
+
+Contesta **503 y no 403**, y la diferencia importa: el reloj da 403 "esa sala no
+es tuya" porque quien pide es el dueño y el problema es de permisos. Acá quien
+pide es un espectador y el problema es otro —esa sala todavía no tiene a dónde
+mandar—, que es exactamente el 503 "el canal todavía no está vinculado con Kick"
+que ya existía tres líneas más abajo, detectado antes de gastar un pedido.
+
+**El canal no se liberaba después de "detener".** `canales.js` no borra un canal
+que tenga `reloj` puesto, y `aplicarYDifundir` dejaba puesto también el de
+"detenido", que es un objeto igual de truthy y sin embargo es la *ausencia* de
+estado. `restaurar()` ya trataba la ausencia como corresponde del otro lado (si
+no hay nada guardado, no pone reloj ni crea el canal), así que las dos mitades
+decían cosas distintas sobre lo mismo.
+
+El arreglo va del lado de **`reloj.js`**, no de `canales.js`. Ese módulo no
+conoce la forma del reloj a propósito ("la Fase 2 define qué hay adentro"), y
+meterle un `estado === 'detenido'` rompería el límite justo antes de la fase que
+lo va a estirar. Queda `canales.olvidarReloj(slug)`, que saca el reloj y libera
+el canal si con eso quedó vacío; quien decide qué es "detenido" sigue siendo
+`reloj.js`. Efecto visible: el que se conecta después de un "detener" recibe
+`reloj: null` en el evento `estado`, que la sala ya interpreta como "todavía no
+empezó" —es el mismo camino que un canal recién creado—.
+
+### Qué prueba cada cosa
+
+| Arreglo | Prueba | Mutación que se caza |
+|---|---|---|
+| F1 host propio | `videos`: "rechaza una url que apunta a nuestro propio dominio", "ignora el puerto y las mayusculas", "no se rechaza de mas", "loopback aunque no haya URL_BASE" (diez formas de escribirlo), "el punto final de la forma absoluta", "hostPropio sale de URL_BASE" · `sala-http`: "una ficha que apunta a NUESTRO servidor se rechaza con 400" | sacar las dos comparaciones de host |
+| F2 log | `videos`: "no puede meter una linea falsa en el log", "sin ningun caracter de control", "limpiar no come el texto" · `sala-http`: "el título de un video no puede inventar una línea en el log" | volver el título a `String(...).trim()` |
+| F3 salir olvida el token | `sala-http`: "salir borra el refresh token del espectador, no sólo la cookie" | borrar `espectadores.olvidar(...)` |
+| F3 chat sin `canalPermitido` | `sala-http`: "no se puede escribir en una sala que no existe" | borrar `canalPermitido` de `apiSalaChat` |
+| F3 XSS reflejado | `servidor`: "el error que Kick devuelve no puede meter HTML en la pagina", "un cuerpo de pagina con comillas y & se escapa entero" | sacar `escapar()` de `pagina()` |
+| F3 fuga de tenant | `sala-http`: "el catálogo del panel es el del dueño y NO se elige por query" | `listar(searchParams.get('slug') ?? SLUG_DUENO)` |
+| F3 desfase medido | `pagina-sala`: "el desfase medido contra /api/hora se aplica de verdad", "el reloj atrasado también se corrige" | borrar `if (mejor) desfase = mejor.desfase` |
+| Carrera SSE | `servidor`: "un socket que muere mientras se resuelve el permiso no deja un cliente fantasma" | borrar el `if (cerrado ...) return` |
+| `/yo` y `/salir` | `sala-http`: "/yo y /salir también validan el slug" | sacar `canalPermitido` de cualquiera de las dos |
+| Chat en sala ajena | `sala-http`: "escribir en la sala de OTRO creador no le cae al dueño en el chat" | sacar el guard `slug !== SLUG_DUENO` |
+| Canal liberado | `reloj`: "detener libera el canal de la memoria si no quedó nadie mirando" (+ dos que cuidan que no se libere de más) | borrar `canales.olvidarReloj(s)` |
+
+### Dos trampas que aparecieron escribiendo estas pruebas
+
+Las dos son la misma que ya había mordido dos veces en esta fase: **una prueba
+que pasa por el motivo equivocado**.
+
+1. El test de "escribir en la sala de OTRO creador" usaba `sesionEspectador`, la
+   cookie compartida del archivo. Pero un test anterior (el del 401 de Kick) le
+   cierra la sesión y le borra el token a propósito. Con esa cookie, el pedido
+   moría en 401 antes de llegar al guard, y la aserción fuerte
+   —`pedidosAKick.length === 0`, "nada salió al canal del dueño"— era verdad **sin
+   que el guard existiera**. Se agregó `nuevoEspectador()`, que crea uno propio y
+   vivo por test. Verificado: con la mutación puesta, ahora contesta 200, o sea
+   que el mensaje llega a Kick de verdad.
+2. La primera versión del test de XSS asertaba que `onerror=` no apareciera en
+   la respuesta. Falla, y **el código tenía razón**: una vez que el `<img` de
+   adelante quedó en `&lt;img`, un `onerror=alert(1)` suelto en el texto es
+   inofensivo. Lo que hay que asertar es que no se pueda **abrir una etiqueta**, y
+   que el payload no aparezca nunca tal cual. Una aserción de más habría dejado
+   la prueba fallando por algo que no es un bug.
+
+Y una tercera, de escritura: los caracteres de control en los archivos fuente se
+escriben **con escapes** (`\u0000`, `\n`), nunca de verdad. Un `\n` literal adentro del
+archivo de la prueba es exactamente lo que la prueba prohíbe, y encima no
+sobrevive un copiar y pegar. Se arregló dos veces antes de que quedara.
+
+### Anotado, no arreglado (decisión del director)
+
+- **`DERIVA_TOLERADA = 1.5` es por navegador, el criterio es entre navegadores.**
+  Dos pantallas a 1,49 s del servidor y para lados opuestos dan casi 3 s entre
+  sí; en el papel el umbral tendría que ser 0,75. Se deja en 1,5 porque **la
+  deriva real es de un solo signo**: lo que la produce es el player, que se
+  atrasa al bufferear, al perder un cuadro o al volver de segundo plano, y
+  ninguna de esas cosas *adelanta* un `<video>`. Atrasándose las dos para el
+  mismo lado, la diferencia es la de sus atrasos y no la suma; medido con dos
+  pestañas reales, 0,04 s. Bajarlo tiene costo: cada corrección es un seek
+  visible y un segmento nuevo. El razonamiento entero quedó escrito arriba de la
+  constante en `sala.js`, con dónde mirar y cuál es el arreglo si algún día
+  aparecen dos pantallas de verdad a más de 1,5 s.
+- **No hay token CSRF en ningún POST**; la defensa es `SameSite=Lax`, que es lo
+  que pide el brief y alcanza. Lo anotado en `sesion.js` es que esa defensa es
+  **un solo renglón**, y qué cinco POST quedan abiertos de golpe el día que algo
+  pida `SameSite=None` (un embed de la Sala adentro de otro sitio es el caso
+  realista). Los cinco están listados por nombre ahí.
+- **El criterio (d), sin scroll horizontal en celular**, no lo puede cazar el DOM
+  de mentira, que no hace layout. El CSS está defendido (`minmax(0,…)`,
+  `min-width:0`, `overflow-wrap:anywhere`, `overflow-x:hidden` en el body). Queda
+  como está.
+
+### Archivos tocados
+
+`servidor/videos.js` (`limpiar`, `hostPropio`, los dos chequeos de host),
+`servidor/index.js` (carrera de `/eventos`, `canalPermitido` en `/yo` y
+`/salir`, guard de sala en el chat), `servidor/canales.js` (`soltarSiVacio`
+factorizado, `olvidarReloj`), `servidor/reloj.js` (olvidar el reloj al
+detener), `servidor/sesion.js` (la nota de CSRF), `paginas/sala/sala.js` (la
+nota de `DERIVA_TOLERADA`), `README.md`, y las pruebas de `videos`,
+`sala-http`, `servidor`, `pagina-sala` y `reloj`.
+
+**`herramientas/` no se tocó**, como estaba pedido. Sus 121 pruebas de Python se
+corrieron igual para confirmar que el chequeo de host nuevo no le rompe nada:
+`subir.py` arma la URL con `R2_URL_PUBLICA` (un `pub-….r2.dev`), y si alguna vez
+quedara mal cargada, ahora el script imprime el error del servidor tal cual, que
+es justo lo que hace falta para darse cuenta.
+
+### Cómo verlo
+
+```
+npm test                      # 439 en verde
+node --test pruebas/videos.test.js pruebas/sala-http.test.js
+```
+
+Y a mano, con el servidor levantado y una clave de subida generada en `/panel`:
+
+```
+curl -X POST localhost:8778/api/videos -H "X-Clave-Subida: <la clave>" \
+     -H 'Content-Type: application/json' \
+     -d '{"id":"x","slug":"istincho","titulo":"x","duracion":10,
+          "url":"https://localhost:8778/sala/x.m3u8"}'
+# 400: la url no puede apuntar a esta misma maquina
+```
+
+### Qué queda pendiente
+
+Nada de la verificación. Para la Fase 3, dos cosas que este trabajo dejó
+señalizadas y que **no** son opcionales cuando entre el segundo creador:
+
+1. El 503 del chat en salas ajenas es un cartel de obra, no la solución: el
+   mensaje tiene que rutearse al vínculo de Kick **de esa sala**, no al del
+   dueño. Lo mismo el 403 del reloj (`conDuenoDeLaSala` ya lo tiene anotado).
+2. `canalPermitido` sale a `creadores` en cada `/eventos/:slug`. Con la
+   colección vacía cortocircuita; con Mongo y mil creadores es una consulta por
+   conexión y conviene una cache corta.
+
+---
+
 ## 2026-09-06 — Fase 2: los cuatro cabos que quedaron sueltos
 
 Las cuatro cosas que la entrada de abajo dejó anotadas sin cerrar, cerradas.

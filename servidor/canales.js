@@ -129,6 +129,28 @@ const leDaEl = (opciones, evento) => {
   return redes.includes(red);
 };
 
+/**
+ * Borra el canal si ya no queda nada que recordar, y dice si lo borro.
+ *
+ * Un canal sin nadie mirando y sin nada adentro no tiene por que seguir
+ * ocupando lugar: con miles de creadores en la Fase 3 esto es la
+ * diferencia entre un Map que crece para siempre y uno que respira. El
+ * que tiene reloj puesto se queda: es estado real.
+ *
+ * El `canales.get(c.slug) === c` no es paranoia: `c` es el canal que
+ * existia cuando quien llama lo agarro. Si el ultimo se fue, el canal
+ * se borro, y despues entro otro con el mismo slug, el Map ya apunta a
+ * un canal NUEVO. Borrar por slug ahi dejaba al recien llegado con su
+ * EventSource abierto y sin canal detras: sin eventos, sin pings, sin
+ * error, para siempre.
+ */
+function soltarSiVacio(c) {
+  if (canales.get(c.slug) !== c) return false;
+  if (c.clientes.size || c.mensajes.length || c.reloj) return false;
+  canales.delete(c.slug);
+  return true;
+}
+
 /** El estado que recibe alguien apenas se conecta. */
 export const estadoDe = c => ({
   slug: c.slug,
@@ -195,20 +217,7 @@ export function suscribir(slug, req, res, opciones = {}) {
     if (soltado) return;
     soltado = true;
     c.clientes.delete(res);
-
-    /* Un canal sin nadie mirando y sin nada que recordar no tiene por
-       que seguir ocupando lugar: con miles de creadores en la Fase 3
-       esto es la diferencia entre un Map que crece para siempre y uno
-       que respira. El que tiene reloj puesto se queda: es estado real.
-
-       El `canales.get(c.slug) === c` no es paranoia: `c` es el canal
-       que existia cuando ESTA conexion se abrio. Si el ultimo se fue,
-       el canal se borro, y despues entro otro con el mismo slug, el
-       Map ya apunta a un canal NUEVO. Borrar por slug ahi dejaba al
-       recien llegado con su EventSource abierto y sin canal detras: sin
-       eventos, sin pings, sin error, para siempre. */
-    if (canales.get(c.slug) !== c) return;
-    if (!c.clientes.size && !c.mensajes.length && !c.reloj) canales.delete(c.slug);
+    soltarSiVacio(c);
   };
   req.on('close', soltar);
   req.on('error', soltar);
@@ -257,6 +266,29 @@ export const ultimos = slug =>
 export function ponerReloj(slug, reloj) {
   canal(slug).reloj = reloj;
   return difundir(slug, { tipo: 'reloj', ...reloj });
+}
+
+/**
+ * Saca el reloj del canal y lo libera si con eso quedo vacio. Devuelve
+ * si el canal se borro.
+ *
+ * Existe porque "detenido" no es un reloj: es la AUSENCIA de reloj. Se
+ * difunde igual (los que estan mirando tienen que enterarse de que se
+ * cortó), pero el objeto que se difunde es tan truthy como el de
+ * "reproduciendo", asi que `soltarSiVacio` lo tomaba por estado real y
+ * el canal se quedaba en el Map para siempre despues de un "detener".
+ * `reloj.restaurar()` ya evita justamente eso del otro lado (no pone
+ * reloj si no hay nada guardado); esto hace que las dos mitades digan
+ * lo mismo.
+ *
+ * Quien decide que es "detenido" es `reloj.js`, que es el que conoce la
+ * forma: este modulo sigue sin saber que hay adentro del reloj.
+ */
+export function olvidarReloj(slug) {
+  const c = canales.get(String(slug).toLowerCase());
+  if (!c) return false;
+  c.reloj = null;
+  return soltarSiVacio(c);
 }
 
 /* ------------------------------------------------------------- pings */

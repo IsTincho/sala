@@ -91,6 +91,25 @@ export function leerCookie(req, nombre) {
  *           arriba (GET), y con Lax la cookie viaja en ese caso. Con
  *           Strict el login terminaria sin cookie, que es el bug
  *           clasico de este flujo.
+ *
+ * ---------------------------------------------------------------
+ * EL LAX ES LA UNICA DEFENSA CONTRA CSRF QUE HAY EN TODO EL PROYECTO
+ *
+ * No hay token CSRF en ningun POST. Es lo que pide el brief y alcanza,
+ * porque Lax no manda la cookie en un POST cross-site: un formulario
+ * en otro sitio que apunte a /api/panel/clave llega sin sesion y se
+ * contesta 401.
+ *
+ * Lo que hay que saber es que esa defensa es UN SOLO renglon, y que
+ * cambiarlo abre cinco puertas de golpe. El dia que algo pida
+ * SameSite=None —un embed de la Sala adentro de otro sitio es el caso
+ * realista— quedan expuestos, todos juntos y sin aviso:
+ *   POST /api/panel/clave      (regenera la clave de subida)
+ *   DELETE /api/panel/clave    (la revoca)
+ *   POST /api/sala/:slug/reloj (play, pausa, salto, stop)
+ *   POST /api/sala/:slug/chat  (escribe en kick.com con la cuenta ajena)
+ *   POST /api/sala/:slug/salir (cierra la sesion y borra el token)
+ * Ese dia, y no antes, hace falta el token. Antes es ceremonia.
  */
 export function cabeceraCookie(tipo, valor) {
   return `${nombreDe(tipo)}=${valor}; Path=/; Max-Age=${DURA_SEGUNDOS}; ` +

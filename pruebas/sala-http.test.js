@@ -151,6 +151,32 @@ function abrirSse(slug, { cookie = '' } = {}) {
   };
 }
 
+/* Un titulo limpio: ni C0, ni DEL, ni C1, ni los separadores de linea
+   de Unicode. Se escribe con escapes a proposito. */
+const SIN_CONTROLES = /^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*$/;
+
+/**
+ * Un espectador recién llegado: vínculo con Kick guardado y sesión
+ * abierta. Devuelve la cookie.
+ *
+ * Existe porque varios tests de más abajo dejan a `sesionEspectador`
+ * sin token y sin sesión a propósito (el que prueba que un 401 de Kick
+ * cierra todo). Un test que use esa cookie después pasaría por el
+ * motivo equivocado: contestaría 401 antes de llegar a lo que quiere
+ * probar. Con un espectador propio, el pedido llega hasta el final.
+ */
+async function nuevoEspectador(usuarioId, nombre) {
+  await espectadores.guardar({
+    usuarioId,
+    nombre,
+    accessToken: `acceso-de-mentira-${usuarioId}`,
+    refreshToken: `refresco-de-mentira-${usuarioId}`,
+    venceEn: Date.now() + 3600_000,
+    scopes: 'user:read chat:write',
+  });
+  return cookieEspectador(await sesion.crear({ tipo: 'espectador', usuario: usuarioId, nombre }));
+}
+
 const fichaCompleta = (id = 'ep1', slug = SLUG) => ({
   id,
   slug,
@@ -296,6 +322,105 @@ test('una ficha inválida se rechaza con 400 y dice por qué', async () => {
     const { estado, datos } = await pedirJson('/api/videos', { metodo: 'POST', clave: claveSubida, cuerpo });
     assert.equal(estado, 400, JSON.stringify(cuerpo).slice(0, 80));
     assert.match(datos.error, esperado);
+  }
+});
+
+test('una ficha que apunta a NUESTRO servidor se rechaza con 400', async () => {
+  /*
+   * EL REPRO DE LA VERIFICACIÓN DE LA FASE 2, tal cual.
+   *
+   * El comentario de `revisarFicha` prometía desde el día uno que la
+   * URL tiene que ser https "y de otro host", con el motivo escrito al
+   * lado: el servidor no sirve video y una ficha que apunte a nuestro
+   * dominio se descubre con la factura de egreso. El código chequeaba
+   * el protocolo y el .m3u8 y nada más, así que esto contestaba 200.
+   *
+   * Es la invariante más cara del proyecto: una playlist en nuestro
+   * origen manda a trescientos navegadores a pedirle los segmentos a
+   * Railway en vez de a R2.
+   *
+   * URL_BASE de este archivo es https://sala.example (arriba del todo).
+   */
+  const casos = [
+    ['https://sala.example/sala/x.m3u8', /este mismo servidor/],
+    ['https://localhost:8821/sala/x.m3u8', /esta misma maquina/],
+    ['https://127.0.0.1:8821/sala/x.m3u8', /esta misma maquina/],
+  ];
+
+  for (const [url, esperado] of casos) {
+    const { estado, datos } = await pedirJson('/api/videos', {
+      metodo: 'POST', clave: claveSubida, cuerpo: { ...fichaCompleta('propia'), url },
+    });
+    assert.equal(estado, 400, `${url} tendría que dar 400 y dio ${estado}`);
+    assert.match(datos.error, esperado, url);
+  }
+
+  /* Y no quedó nada guardado con ninguna de las tres. */
+  assert.equal(await videos.obtener(SLUG, 'propia'), null,
+    'una ficha rechazada no puede haber quedado en el catálogo');
+});
+
+test('el título de un video no puede inventar una línea en el log', async () => {
+  /*
+   * La otra falla de la verificación. El título sale del nombre del
+   * archivo que se le pasa a subir.py, y `apiVideosGuardar` lo mete tal
+   * cual en un console.log. Con un \n adentro, la segunda mitad de esa
+   * línea la escribe quien subió el video: la salida real que consiguió
+   * el verificador fue un `[http] POST /api/panel 200 clave=FALSA`
+   * perfectamente creíble en el log de Railway, que no se borra y es la
+   * única evidencia cuando algo falla.
+   *
+   * Se asierta sobre lo que queda GUARDADO porque es exactamente el
+   * string que `console.log` interpola: `ficha.titulo`.
+   */
+  const veneno = 'Episodio raro\n[http] POST /api/panel 200 clave=FALSA';
+  const { estado } = await pedirJson('/api/videos', {
+    metodo: 'POST', clave: claveSubida, cuerpo: { ...fichaCompleta('venenoso'), titulo: veneno },
+  });
+  assert.equal(estado, 200, 'no se rechaza la ficha: se limpia el título');
+
+  const guardado = await videos.obtener(SLUG, 'venenoso');
+  assert.equal(guardado.titulo.includes('\n'), false, 'el título llegó al almacén con un salto de línea');
+  assert.equal(guardado.titulo.includes('\r'), false);
+  assert.equal(guardado.titulo, 'Episodio raro [http] POST /api/panel 200 clave=FALSA');
+
+  /* Y lo mismo por la ruta por la que lo ve el panel. */
+  const lista = await pedirJson('/api/videos', { cookie: sesionDueno });
+  const ficha = lista.datos.videos.find(v => v.id === 'venenoso');
+  assert.equal(SIN_CONTROLES.test(ficha.titulo), true,
+    `el panel ve un titulo con controles: ${JSON.stringify(ficha.titulo)}`);
+
+  await videos.borrar(SLUG, 'venenoso');
+});
+
+test('el catálogo del panel es el del dueño y NO se elige por query', async () => {
+  /*
+   * LA FUGA DE TENANT QUE LA FASE 3 HEREDA. `apiVideosListar` lista
+   * `SLUG_DUENO` y punto. La mutación que la verificación dejó viva era
+   * cambiar eso por `url.searchParams.get('slug') ?? SLUG_DUENO`: con
+   * una sola línea, la cookie del dueño pasaba a leer el catálogo de
+   * cualquier creador. Hoy `creadores` está casi vacía y no se nota;
+   * el día que haya mil, es el panel de todos.
+   */
+  const AJENA = 'salaajena';
+  await videos.guardar({
+    id: 'secreto', slug: AJENA, titulo: 'Video de otra persona',
+    duracion: 100, url: `https://pub-ejemplo.r2.dev/${AJENA}/secreto/maestra.m3u8`,
+    calidades: [720], subtitulos: [], bytes: 1,
+  });
+
+  try {
+    const { estado, datos } = await pedirJson(`/api/videos?slug=${AJENA}`, { cookie: sesionDueno });
+    assert.equal(estado, 200);
+
+    const ajenos = datos.videos.filter(v => v.slug === AJENA);
+    assert.deepEqual(ajenos, [], 'el catálogo de otra sala no puede salir por acá');
+    assert.equal(datos.videos.some(v => v.id === 'secreto'), false);
+    /* Y sigue devolviendo lo que tiene que devolver: los del dueño. */
+    assert.ok(datos.videos.length > 0, 'tiene que seguir listando los del dueño');
+    assert.ok(datos.videos.every(v => v.slug === SLUG));
+  } finally {
+    await videos.borrar(AJENA, 'secreto');
   }
 });
 
@@ -579,6 +704,137 @@ test('si Kick rechaza el permiso, se cierra la sesión y se olvida el token', as
   assert.equal(await espectadores.leer('1001'), null);
 
   respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true } }, cabeceras: {} };
+});
+
+test('no se puede escribir en una sala que no existe', async () => {
+  /*
+   * La guarda de `canalPermitido` en el chat no tenía una sola prueba:
+   * sacarla sobrevivía las 411. Sin ella, un espectador logueado postea
+   * a /api/sala/<lo-que-sea>/chat y el servidor le manda el mensaje a
+   * Kick igual, porque más abajo el destinatario sale de
+   * `vinculos.identidad('kick')` y no del slug de la URL.
+   */
+  espectadores.reiniciar();
+  pedidosAKick = [];
+  respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true, message_id: 'm' } }, cabeceras: {} };
+  /* Espectador propio y vivo: con uno al que otro test ya le cerró la
+     sesión, esto contestaría 401 y el test pasaría sin probar nada. */
+  const cookie = await nuevoEspectador('1004', 'la que prueba slugs');
+
+  const { estado, datos } = await pedirJson('/api/sala/no-existe-esta-sala/chat', {
+    metodo: 'POST', cookie, cuerpo: { texto: 'hola' },
+  });
+
+  assert.equal(estado, 404, `contestó ${estado}: sin la guarda esto es un 200`);
+  assert.match(datos.error, /no existe/);
+  assert.equal(pedidosAKick.length, 0, 'no se le puede haber pedido nada a Kick');
+});
+
+test('escribir en la sala de OTRO creador no le cae al dueño en el chat', async () => {
+  /*
+   * EL AGUJERO QUE LA FASE 3 HEREDABA. `apiSalaChat` aceptaba cualquier
+   * slug permitido y después mandaba el mensaje a
+   * `vinculos.identidad('kick')`, que es el canal del DUEÑO. O sea: un
+   * espectador escribiendo en /api/sala/otrocanal/chat le publicaba en
+   * kick.com/istincho.
+   *
+   * El reloj ya tenía su guard `slug !== SLUG_DUENO` con el comentario
+   * de la Fase 3; el chat no tenía ninguno de los dos. Hoy `otrocanal`
+   * está dado de alta en `creadores`, así que pasa `canalPermitido` y
+   * llega hasta acá: es exactamente el escenario de la Fase 3, un año
+   * antes.
+   *
+   * 503 y no 403 a propósito: quien pide no es el dueño de nada, y el
+   * problema no es de permisos sino que esa sala todavía no tiene a
+   * dónde mandar. Es el mismo 503 de "el canal todavía no está
+   * vinculado con Kick" que ya existía, detectado antes.
+   */
+  espectadores.reiniciar();
+  pedidosAKick = [];
+  respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true, message_id: 'm' } }, cabeceras: {} };
+  /* Igual que el de arriba, y acá importa más: si el pedido muriera
+     antes por falta de sesión, el `pedidosAKick.length === 0` del final
+     sería verdad sin que la guarda exista, y el test estaría pasando
+     por el motivo equivocado. Con este espectador, sin la guarda el
+     mensaje llega a Kick de verdad. */
+  const cookie = await nuevoEspectador('1005', 'la de la sala ajena');
+
+  const { estado, datos } = await pedirJson(`/api/sala/${OTRO}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'hola sala ajena' },
+  });
+
+  assert.equal(estado, 503, `contestó ${estado}`);
+  assert.match(datos.error, /todavia no puede recibir mensajes/);
+  /* Lo que de verdad importa: NADA salió al canal del dueño. */
+  assert.equal(pedidosAKick.length, 0,
+    'el mensaje de una sala ajena no puede terminar en el chat de Kick del dueño');
+});
+
+/* ================================================ entrar y salir
+
+   `POST /api/sala/:slug/salir` no tenía una sola prueba HTTP, y es la
+   única promesa de privacidad sobre datos de terceros de toda la fase:
+   el refresh token de un espectador es de esa persona, no del dueño. */
+
+test('salir borra el refresh token del espectador, no sólo la cookie', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA: sacar el `await espectadores.olvidar(...)`
+   * del handler sobrevivía las 411 pruebas. La sesión se cerraba, la
+   * cookie se borraba, la persona veía "saliste"... y su refresh token
+   * de Kick se quedaba guardado en el servidor. El README y el
+   * comentario del propio código prometen que no.
+   *
+   * Espectador propio (1003) para no depender de en qué orden corren
+   * los demás tests ni pisarles el vínculo.
+   */
+  const USUARIO = '1003';
+  const cookie = await nuevoEspectador(USUARIO, 'la que se va');
+
+  assert.ok(await espectadores.leer(USUARIO), 'antes de salir el vínculo tiene que estar');
+
+  const { estado, datos, cabeceras } = await pedirJson(`/api/sala/${SLUG}/salir`, {
+    metodo: 'POST', cookie,
+  });
+
+  assert.equal(estado, 200);
+  assert.equal(datos.ok, true);
+  assert.match(cabeceras.get('set-cookie') ?? '', /sala_espectador=; .*Max-Age=0/,
+    'la cookie se borra en el navegador');
+
+  /* Y ACÁ ESTÁ LO QUE IMPORTA: el token no puede seguir del lado del
+     servidor. Un "logout" que deja el refresh token es un logout de
+     mentira. */
+  assert.equal(await espectadores.leer(USUARIO), null,
+    'salir tiene que borrar el refresh token del espectador, no sólo la cookie');
+
+  /* Y la sesión tampoco vale más, aunque alguien se guarde la cookie. */
+  const despues = await pedirJson(`/api/sala/${SLUG}/yo`, { cookie });
+  assert.equal(despues.datos.entrado, false);
+});
+
+test('salir sin sesión no explota y contesta lo mismo', async () => {
+  /* No dice si había alguien: quien prueba cookies no se entera. */
+  const { estado, datos } = await pedirJson(`/api/sala/${SLUG}/salir`, { metodo: 'POST' });
+  assert.equal(estado, 200);
+  assert.equal(datos.ok, true);
+});
+
+test('/yo y /salir también validan el slug', async () => {
+  /* Eran las dos únicas rutas de /api/sala/ que no pasaban por
+     `canalPermitido`. No filtraban nada, pero una excepción sin motivo
+     es una excepción que alguien copia en la Fase 3. */
+  const yo = await pedirJson('/api/sala/no-existe-esta-sala/yo', { cookie: sesionEspectador });
+  assert.equal(yo.estado, 404, `/yo contestó ${yo.estado}`);
+
+  const salir = await pedirJson('/api/sala/no-existe-esta-sala/salir', {
+    metodo: 'POST', cookie: sesionEspectador,
+  });
+  assert.equal(salir.estado, 404, `/salir contestó ${salir.estado}`);
+
+  /* Y la sala de verdad sigue contestando. */
+  const buena = await pedirJson(`/api/sala/${SLUG}/yo`);
+  assert.equal(buena.estado, 200);
+  assert.equal(buena.datos.entrado, false);
 });
 
 /* ============================== el bus público y el chat de Twitch */

@@ -171,6 +171,30 @@
 
   // ---------- el reproductor ----------
 
+  /* OJO CON LO QUE MIDE ESTE NÚMERO, porque no es lo que pide el
+     criterio de aceptación.
+
+     1,5 s es la deriva de ESTA pantalla contra el reloj del servidor.
+     El criterio de aceptación es la diferencia ENTRE dos pantallas, y
+     dos pantallas cada una a 1,49 s del servidor y para lados opuestos
+     dan casi 3 s entre sí. En el papel, entonces, el umbral tendría que
+     ser 0,75.
+
+     Se deja en 1,5 igual, y a propósito: la deriva real es de un solo
+     signo. Lo que la produce es el player, que se atrasa cuando
+     bufferea, cuando el decodificador pierde un cuadro o cuando la
+     pestaña estuvo en segundo plano; ninguna de esas cosas ADELANTA un
+     `<video>`. Con las dos pantallas atrasándose para el mismo lado, la
+     diferencia entre ellas es la diferencia de sus atrasos, no la suma.
+     Medido con dos pestañas reales: 0,04 s.
+
+     Bajarlo a 0,75 tiene un costo concreto: cada corrección es un seek,
+     y un seek en HLS es un salto visible y un pedido de segmento nuevo.
+     Corregir el doble de seguido para tapar un caso que la física del
+     player no produce es empeorar lo que se ve.
+
+     Si algún día aparecen dos pantallas de verdad a más de 1,5 s, el
+     lugar donde mirar es éste, y el arreglo es 0,75 y no otra cosa. */
   const DERIVA_TOLERADA = 1.5;      // segundos
   const CADA_SINCRO = 10000;        // ms
   const DESPUES_DE_CORREGIR = 5000; // ms de gracia antes de volver a tocar

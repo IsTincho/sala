@@ -344,7 +344,7 @@ test('la cache se vence sola a los cinco segundos', async (t) => {
     'pasada la ventana tiene que volver a mirar el almacén');
 });
 
-test('la cache no crece para siempre: pasado el tope suelta a los mas viejos', async () => {
+test('la cache no crece para siempre: pasado el tope suelta a los mas viejos', async (t) => {
   /* La cache guarda TAMBIÉN a los que no existen, que es lo que hace
      que `/eventos/<slug inventado>` no sea una consulta por pedido. Sin
      tope, eso es el mismo ataque corrido un casillero: en vez de llenar
@@ -361,6 +361,16 @@ test('la cache no crece para siempre: pasado el tope suelta a los mas viejos', a
      único observable: la ranciedad de la entrada más vieja. Si sigue
      rancia después de llenar el Map, no se soltó. */
   await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  /* El reloj se para: lo que este test mide es ranciedad, y la
+     ranciedad también se termina sola a los CACHE_MS. Las 5.001
+     lecturas de abajo tardan ~140 ms en esta máquina, pero eso es
+     tiempo real y no hay nada que lo ancle: en una máquina cargada
+     podrían pasar los cinco segundos, y entonces la entrada de 'ana'
+     saldría fresca porque VENCIÓ, no porque el tope la soltó, y el
+     test estaría verde con el tope sacado. */
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+
   assert.equal(await creadores.planDe('ana'), 'pendiente');   // 'ana' queda primera en el orden
 
   await almacen.poner('creadores', 'ana', { slug: 'ana', plan: 'amigo', vence: 0 });
@@ -372,6 +382,56 @@ test('la cache no crece para siempre: pasado el tope suelta a los mas viejos', a
 
   assert.equal(await creadores.planDe('ana'), 'amigo',
     'la entrada más vieja tenía que haberse soltado: si sigue rancia, el Map no tiene tope');
+});
+
+test('el tope suelta por ULTIMO USO, no por orden de llegada', async (t) => {
+  /* El test de arriba no distingue LRU de FIFO: 'ana' es la primera de
+     los dos órdenes, así que sale soltada con cualquiera de las dos
+     políticas. Y sacar el `cache.delete(slug)` de `guardarEnCache` —la
+     línea que devuelve al final del orden a la entrada que se acaba de
+     releer— sobrevivía la suite entera: convertía la política en FIFO
+     por primera inserción, que es justo lo contrario de lo que el
+     comentario de arriba promete ("el que acaba de entrar es el que
+     está hablando ahora").
+
+     Que la diferencia importe, y no sea gusto: con FIFO, la sala que
+     está pasando una película —la que se lee en cada latido del
+     reloj— se suelta igual que una que nadie mira desde hace horas, y
+     una ráfaga de slugs inventados le saca la entrada a la única sala
+     que la estaba usando. Con LRU esa ráfaga sólo se pisa a sí misma.
+
+     Se ven las dos entradas: se releen en un orden (primero 'beto',
+     después 'ana') y se hace lugar para soltar exactamente una. Con
+     LRU se suelta 'beto', que es la que hace más que no se toca; con
+     FIFO se suelta 'ana', que es la que llegó primera. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+  await creadores.crear({ slug: 'beto', usuarioId: '222', terminos: '1' });
+
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+
+  assert.equal(await creadores.planDe('ana'), 'pendiente');    // 1ª en llegar
+  assert.equal(await creadores.planDe('beto'), 'pendiente');   // 2ª
+
+  /* Vencidas las dos, se releen AL REVÉS: ahora la más recién usada es
+     'ana', pero la que llegó primero sigue siendo 'ana'. */
+  t.mock.timers.tick(creadores.CACHE_MS + 1);
+  assert.equal(await creadores.planDe('beto'), 'pendiente');
+  assert.equal(await creadores.planDe('ana'), 'pendiente');
+
+  /* Derecho al almacén, salteando `creadores.js`: la que sobreviva al
+     desalojo va a seguir contestando lo viejo, y la soltada lo nuevo. */
+  await almacen.poner('creadores', 'ana', { slug: 'ana', plan: 'amigo', vence: 0 });
+  await almacen.poner('creadores', 'beto', { slug: 'beto', plan: 'amigo', vence: 0 });
+
+  /* Justo lo necesario para que sobre UNA entrada: con 'ana' y 'beto'
+     adentro, TOPE_CACHE - 1 slugs nuevos dejan el Map en TOPE_CACHE + 1
+     y se suelta una sola. */
+  for (let i = 0; i < creadores.TOPE_CACHE - 1; i++) await creadores.existe(`inventado-${i}`);
+
+  assert.equal(await creadores.planDe('ana'), 'pendiente',
+    'la última usada tiene que seguir en la cache: si contesta "amigo", se soltó por orden de llegada (FIFO) y no por último uso');
+  assert.equal(await creadores.planDe('beto'), 'amigo',
+    'y la que hacía más que no se tocaba tenía que ser la soltada: si sigue rancia, no se soltó ninguna y lo de arriba no probó nada');
 });
 
 test('un slug con forma invalida se contesta false sin mirar nada', async () => {

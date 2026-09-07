@@ -1079,6 +1079,58 @@ test('una clave inventada no cae en la cookie del navegador de al lado', async (
   assert.match(r.datos.error, /clave de subida invalida/);
 });
 
+test('una clave de una sala dada de baja no firma nada mas', async () => {
+  /* La clave sobrevive a la sala: vive en `subidas` y la sala en
+     `creadores`, así que darse de baja no la revoca. Sin la
+     comprobación, esa clave sigue firmando PUT y DELETE sobre un
+     prefijo que ya no es de nadie —y que puede volver a ser de otro
+     dueño el día que alguien se dé de alta con el mismo slug.
+
+     Es el mismo caso que "una sesion de una sala borrada no abre
+     ningun panel", del lado de la terminal: ahí la que sobrevive es la
+     cookie, acá la clave, y el 403 es el mismo. */
+  const EFIMERA = 'efimera';
+  await creadores.crear({ slug: EFIMERA, usuarioId: '999', terminos: creadores.TERMINOS_VERSION });
+  await creadores.ponerPlan(EFIMERA, 'amigo', { quien: 'dueno' });
+  const cookie = cookieCreador(await sesion.crear({
+    tipo: 'dueno', usuario: '999', nombre: 'Efimera', slug: EFIMERA,
+  }));
+
+  try {
+    const { datos: clave } = await pedir('/api/panel/clave', { metodo: 'POST', cookie });
+    const conLaClave = (ruta, cuerpo) => pedir(ruta, {
+      metodo: 'POST',
+      cabeceras: { 'X-Clave-Subida': clave.clave },
+      cuerpo,
+    });
+
+    /* Con la sala en pie la clave firma. Sin esto, todo lo de abajo
+       podría estar pasando porque la clave nunca sirvió. */
+    const antes = await conLaClave('/api/subida', {
+      id: 'ep1', archivos: [{ ruta: 'maestra.m3u8', bytes: 1 }],
+    });
+    assert.equal(antes.estado, 200, JSON.stringify(antes.datos));
+
+    assert.equal(await creadores.borrar(EFIMERA), true, 'la sala tenía que existir para poder borrarla');
+
+    const subir = await conLaClave('/api/subida', {
+      id: 'ep1', archivos: [{ ruta: 'maestra.m3u8', bytes: 1 }],
+    });
+    assert.equal(subir.estado, 403, `contestó ${subir.estado}: ${subir.texto.slice(0, 120)}`);
+    assert.match(subir.datos.error, /no corresponde a ninguna sala/);
+
+    /* Y el DELETE, que es el que no necesita ni plan ni URL pública:
+       si la guarda estuviera sólo del lado de la subida, ésta seguiría
+       firmando borrados del prefijo de la sala que ya no está. */
+    const borrar = await conLaClave('/api/subida/borrar', { id: 'ep1' });
+    assert.equal(borrar.estado, 403, `contestó ${borrar.estado}: ${borrar.texto.slice(0, 120)}`);
+    assert.match(borrar.datos.error, /no corresponde a ninguna sala/);
+  } finally {
+    await videos.revocarClave(EFIMERA);
+    await creadores.borrar(EFIMERA);
+  }
+});
+
 test('--listar también anda con la clave', async () => {
   const { datos: clave } = await pedir('/api/panel/clave', { metodo: 'POST', cookie: sesionBeto });
   const r = await pedir('/api/videos', { cabeceras: { 'X-Clave-Subida': clave.clave } });

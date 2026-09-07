@@ -113,7 +113,14 @@ class EventSubFalso {
     this.conectada = false;
     this.cerrada = false;
   }
-  conectar() { this.conectada = true; }
+  /* `estado` cambia al conectar, igual que en la clase de verdad
+     (`twitch.js` pasa a 'conectando' apenas abre el socket, antes del
+     welcome). No es decoracion: `chat.salud()` contesta
+     `conexionTwitch?.estado ?? twitch.estado`, asi que con el falso
+     quieto en 'cortado' cualquier afirmacion sobre el estado de una
+     sala CONECTADA daria 'cortado' igual que una que no conecto nunca,
+     y el test del tope no podria notar la diferencia. */
+  conectar() { this.conectada = true; this.estado = 'conectando'; }
   cerrar() { this.cerrada = true; }
 }
 
@@ -474,7 +481,8 @@ test('el tope de conexiones de Twitch frena la que sobra, y dice que fue el tope
     const salud = chat.salud(salas[2]).twitch;
     assert.equal(salud.vinculado, true);
     assert.equal(salud.tope, true, 'sin esto el panel dice "cortado" y nadie sabe por que');
-    assert.equal(salud.estado, 'cortado');
+    assert.equal(salud.estado, 'cortado',
+      'no hay conexion: si esto dice otra cosa es que la tercera se abrio igual');
 
     /* CONTROL, a proposito: sin esto, "no conectar nunca a nadie"
        pasaria todo lo de arriba. Reconectar una sala que YA tenia

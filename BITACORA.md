@@ -4,6 +4,134 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-07 — Fase 3: las tres dudas que dejó la verificación, cerradas
+
+La Fase 3 **pasó** la verificación independiente. Lo que sigue no rehace nada de
+eso: son las tres dudas que el verificador dejó anotadas y que el director
+eligió cerrar, las tres baratas. **618 pruebas en verde** (eran 616), la suite
+corrida **cuatro veces seguidas sin un solo flake**, las **121 de Python
+intactas** y **`herramientas/` no se tocó**. No cambió una línea de `servidor/`:
+las tres son pruebas.
+
+### 1. El 403 de `conCreadorOClave` no tenía red
+
+Borrar el bloque `if (!await creadores.existe(slug))` de `index.js` **sobrevivía
+la suite entera**, y no es una comodidad: es la línea que impide que **una clave
+de subida siga firmando PUT y DELETE después de que la sala se dio de baja**. La
+clave vive en `subidas` y la sala en `creadores`, así que darse de baja no la
+revoca: sin la guarda, esa clave sigue firmando sobre un prefijo que ya no es de
+nadie —y que puede volver a ser de otro dueño el día que alguien se dé de alta
+con el mismo slug. El caso análogo de la **cookie** ya tenía prueba ("una sesion
+de una sala borrada no abre ningun panel"); el de la clave, no.
+
+`multicanal`: **"una clave de una sala dada de baja no firma nada mas"**. Crea
+una sala efímera, saca su clave, **firma con la sala en pie** (para que el 403
+de abajo no pueda estar pasando porque la clave nunca sirvió), borra la sala y
+exige **403 en `/api/subida` y en `/api/subida/borrar`**. Los dos, porque el
+DELETE es el que no necesita ni plan ni URL pública: una guarda puesta sólo del
+lado de la subida lo dejaría pasar. Mutación aplicada tal cual —bloque borrado—:
+el test se cae, y es el único que se cae.
+
+### 2. La sexta aserción vacua, arreglada; la séptima, declarada
+
+**La sexta** era `assert.equal(salud.estado, 'cortado')` en el test del tope de
+`chat-suscripciones`. `EventSubFalso.conectar()` nunca tocaba `this.estado` y un
+canal recién creado ya nace en `'cortado'`, así que la igualdad era verdadera
+con tope y sin tope. **Se arregló donde estaba el problema, que era el doble**:
+ahora `conectar()` pasa a `'conectando'`, igual que la clase de verdad apenas
+abre el socket. Como `chat.salud()` contesta
+`conexionTwitch?.estado ?? twitch.estado`, ahora una sala conectada y una que no
+conectó nunca **no dicen lo mismo**. Comprobado con la mutación de la guarda del
+tope (`if (false)`) sobre una copia del test **sin** las aserciones de `tope` ni
+las de `eventSubs.length`: se cae, y se cae por esa línea (`+ 'conectando'`).
+
+**La séptima** es `assert.ok(!r.texto.includes(BETO))` en el DELETE de
+`multicanal`. Con el filtro sacado la respuesta es `{"error":"error del
+servidor"}`, que tampoco contiene "beto": pasa exactamente en el caso que dice
+cuidar, y es más débil que el `deepEqual` que tiene arriba. No se toca —cubre la
+respuesta entera, no sólo `archivos[].clave`— pero **se declaró como control en
+la lista de la entrada de abajo**, que hasta hoy decía que no faltaba ninguna.
+
+### 3. La cache de creadores había dejado de ser LRU sin que nada lo notara
+
+Borrar `cache.delete(slug)` de `guardarEnCache` **sobrevivía**: convertía la
+política de desalojo en **FIFO por primera inserción**, lo contrario de lo que
+promete el comentario del test ("el que acaba de entrar es el que está hablando
+ahora"). El test viejo no podía verlo porque `'ana'` es la primera en los dos
+órdenes.
+
+Y la diferencia importa: con FIFO, la sala que está pasando una película —la que
+se relee en cada latido del reloj— se suelta igual que una que nadie mira desde
+hace horas, así que una ráfaga de slugs inventados le saca la entrada
+justamente a la única sala que la estaba usando. Con LRU esa ráfaga sólo se pisa
+a sí misma.
+
+`creadores`: **"el tope suelta por ULTIMO USO, no por orden de llegada"**. Entran
+`'ana'` y `'beto'` en ese orden, vencen las dos, y se **releen al revés**: la más
+recién usada pasa a ser `'ana'` mientras la primera en llegar sigue siendo
+`'ana'`. Después se hace lugar para soltar **exactamente una**
+(`TOPE_CACHE - 1` slugs inventados) y se miran las dos: `'ana'` tiene que seguir
+rancia (LRU) y `'beto'` tiene que salir fresca. Con FIFO se cae la primera; si no
+se soltara ninguna, se cae la segunda. Mutación aplicada: se cae.
+
+**De paso, el reloj del test del tope quedó anclado.** Medía ranciedad sin
+`mock.timers`: si el loop de 5.001 `existe()` tardara más de `CACHE_MS` en una
+máquina cargada, la entrada de `'ana'` habría vencido **por reloj** y el test
+pasaba por el motivo equivocado (verde con el tope sacado). Hoy tarda ~140 ms,
+36× de margen, pero el margen era de tiempo real. Con el reloj parado sigue
+cazando las dos mutaciones que ya cazaba (sin tope, y tope que suelta al recién
+llegado); se volvió a comprobar.
+
+### Anotado, no arreglado
+
+Cuatro cosas **documentadas y cumplidas por el código, que ninguna prueba
+sostiene**. El director las deja para más adelante; están acá para que quien las
+toque sepa que al romperlas la suite no dice nada:
+
+- **`venceEn` en la respuesta de `/api/subida`.** Es el dato con el que
+  `subir.py` tiene que decidir el corte de las tandas (la regla de las tandas de
+  la entrada de abajo depende de él). Sacarlo no rompe ninguna prueba.
+- **`archivos[].ruta` en esa misma respuesta.** El script empareja por ahí lo que
+  pidió con lo que le firmaron.
+- **`TOPE_ARCHIVOS = 500`** en `/api/subida`: existe para que un solo pedido no
+  arme cien mil URL, y nada lo prueba.
+- **`videos.idValido(id)`** en las **dos** rutas de subida (firmar y borrar): es
+  lo que impide que el `id` se meta en la clave de R2 con cualquier forma.
+- Y una más chica: **`CACHE_MS` se prueba por la constante exportada**
+  (`tick(creadores.CACHE_MS + 1)`), así que lo probado es el **mecanismo** del
+  vencimiento, no el **valor**. Cambiar los cinco segundos por cinco horas no
+  rompe nada.
+
+### Cómo verlo funcionando
+
+```bash
+npm test                                     # 618 en verde
+node --test pruebas/multicanal.test.js       # el 403 de la clave que sobrevivió a la sala
+node --test pruebas/creadores.test.js        # la cache: guarda, vence, tiene tope y es LRU
+node --test pruebas/chat-suscripciones.test.js
+python herramientas/pruebas_subir.py         # las 121 de Python, intactas
+```
+
+### Archivos tocados
+
+`pruebas/`: `multicanal.test.js` (el test del 403), `creadores.test.js` (el test
+de LRU y el reloj anclado en el del tope), `chat-suscripciones.test.js`
+(`EventSubFalso.conectar()` cambia `estado`, y el mensaje de la aserción que
+ahora muerde).
+
+`BITACORA.md`: esta entrada, la corrección de la frase de `R2_URL_PUBLICA` y las
+dos aserciones que le faltaban a la lista de controles de la entrada de abajo.
+
+**Ni una línea de `servidor/`.** Sin dependencias nuevas. **`herramientas/` no se
+tocó.**
+
+### Qué queda pendiente
+
+Lo mismo que la entrada de abajo, más los cinco puntos de "anotado, no
+arreglado" de acá arriba.
+
+---
+
 ## 2026-09-07 — Fase 3: lo que encontró la verificación, cerrado
 
 Las cuatro fallas de la verificación independiente, cerradas, más tres guardas
@@ -150,10 +278,14 @@ byte**. Hay prueba de las dos mitades, la unitaria y la de la ruta.
 **El precio, escrito con todas las letras:** sin `R2_URL_PUBLICA` tampoco se
 firman los **DELETE**, que no la necesitan. Se eligió igual porque la
 alternativa es una matriz de "qué se puede hacer con cuáles variables" que hay
-que mantener y probar, para un caso que casi no existe: con esa variable sin
-cargar no se pudo subir nada por este servidor, así que no hay casi nada que
-borrar. Y si aparece —el dueño la borra de Railway por accidente—, el 503 dice
-el nombre exacto de lo que hay que volver a poner.
+que mantener y probar, y el caso que queda afuera es chico: sin esa variable no
+se subió nada **por este servidor**, así que casi todo lo que se podría querer
+borrar tampoco está. ⚠ *Corregido: "casi" no es "nada".* Lo que sí está es **lo
+que el dueño subió en la Fase 2 con su propio token desde su PC**, que vive en
+el bucket sin que este servidor haya tenido nunca esas variables: si algún día
+`R2_URL_PUBLICA` se borra de Railway, `/api/subida/borrar` deja de firmar esos
+DELETE. Impacto bajo —la salida es el script local, que tiene el token— y el
+503 dice el nombre exacto de lo que hay que volver a poner.
 
 ### Lo que se corrigió de la entrada de abajo
 
@@ -223,9 +355,21 @@ motivo escrito al lado en el archivo:
   borrar nada suyo.
 - `r2`: "y la clave de su propia sala se firma igual que siempre" impide que el
   arreglo sea no firmar nunca, que dejaría a todos sin poder subir.
+- ⚠ *Agregada por la entrada de arriba:* `multicanal`, en el DELETE de la clave
+  ajena, `assert.ok(!r.texto.includes(BETO))`. Es un cinturón por afuera del
+  `deepEqual` que está arriba suyo y **más débil que él**: con el filtro sacado
+  la respuesta es `{"error":"error del servidor"}`, que tampoco contiene "beto",
+  así que pasa exactamente en el caso que dice cuidar. Se queda porque el
+  `deepEqual` sólo mira `archivos[].clave` y esto mira la respuesta entera
+  —incluidas las URL firmadas—, pero **no cuenta como cobertura de nada**.
 
 Ninguna se cae con ninguna de las 13 mutaciones, y ninguna se cuenta como
 cobertura en la tabla de arriba.
+
+⚠ **Esta lista estaba incompleta**: le faltaban dos. La de arriba es una; la
+otra —`assert.equal(salud.estado, 'cortado')` en el test del tope de
+`chat-suscripciones`— no era un control sino un descuido, y **se arregló** en la
+entrada de arriba en vez de declararse.
 
 ### Anotado, no arreglado
 

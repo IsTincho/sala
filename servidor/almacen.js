@@ -26,7 +26,11 @@
    otra. Asi que el almacen de Sala es orientado a documentos: una
    coleccion de verdad por cada cosa, un documento por fila.
 
-   Colecciones: creadores, tokens, sesiones, videos, reloj.
+   Colecciones: creadores, tokens, sesiones, videos, reloj, subidas.
+
+   `subidas` guarda el HASH de la clave de subida de cada sala, no la
+   clave. Es la misma idea que `sesiones`: un volcado de la base no
+   alcanza para subir ni borrar videos.
 
    ---------------------------------------------------------------
    REGLA DE ORO: la connection string lleva usuario y clave adentro.
@@ -59,7 +63,7 @@ const BASE = process.env.MONGODB_DB  ?? process.env.MONGO_DB  ?? 'sala';
 /* Las unicas colecciones que existen. La lista esta para que un typo
    (`sesion` en vez de `sesiones`) explote al escribir y no cree una
    coleccion fantasma que despues nadie lee. */
-export const COLECCIONES = ['creadores', 'tokens', 'sesiones', 'videos', 'reloj'];
+export const COLECCIONES = ['creadores', 'tokens', 'sesiones', 'videos', 'reloj', 'subidas'];
 
 let conexion = null;              // promesa de la base, para no abrir dos
 let modo     = URI ? 'mongo' : 'archivo';

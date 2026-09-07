@@ -97,6 +97,12 @@ async function pedir(ruta, { token, metodo = 'GET', cuerpo } = {}) {
   if (!r.ok) {
     const e = new Error(`${metodo} ${ruta} -> ${r.status}: ${txt.slice(0, 300)}`);
     e.status = r.status;
+    /* Kick no documenta su rate limit de envio, asi que cuando frena
+       lo unico que dice cuanto esperar es este encabezado. Sin
+       guardarlo aca, el que atrapa el 429 tiene que adivinar, y
+       adivinar de menos es pedir otro 429. */
+    const reintentar = Number(r.headers.get('retry-after'));
+    if (Number.isFinite(reintentar) && reintentar > 0) e.retryAfter = reintentar;
     throw e;
   }
   return txt ? JSON.parse(txt) : null;

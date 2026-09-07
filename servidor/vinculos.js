@@ -126,6 +126,29 @@ export async function olvidar(red) {
   return almacen.quitar('tokens', idDe(red));
 }
 
+/**
+ * Quien es el dueño en esta red, SIN tokens y sin refrescar nada.
+ *
+ * Existe para el camino del espectador: para mandarle un mensaje al
+ * chat del dueño hace falta su `broadcaster_user_id` y nada mas. Con
+ * `acceso('kick')` se conseguiria igual, pero refrescaria su token
+ * (un pedido a Kick) en cada mensaje que escriba cualquiera, y
+ * ademas devolveria un access token a un camino que no tiene por que
+ * verlo. El refresh token no sale de este modulo nunca.
+ */
+export async function identidad(red) {
+  validarRed(red);
+  const doc = await almacen.obtener('tokens', idDe(red));
+  if (!doc) return null;
+  return {
+    red,
+    usuarioId: doc.usuarioId ?? '',
+    nombre: doc.nombre ?? '',
+    login: doc.login ?? '',
+    slug: doc.slug ?? '',
+  };
+}
+
 export const hayVinculo = async red => Boolean(await leer(red));
 
 /* ---------------------------------------------------------- acceso */

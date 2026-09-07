@@ -527,6 +527,92 @@ ya no sale en ninguna de las dos. Si molesta, se cambia.
 
 ---
 
+## 2026-09-06 — Verificación de la Fase 2: NO PASA
+
+Escrito por el director. La verificación la lanzó el propio agente de fase y
+llegó **después** de que la sesión se cortara, así que **nada de esto está
+arreglado**. Queda entero para la próxima sesión.
+
+Cómo verificó: `npm test` tres veces sobre `715efec` (411/411, sin flakes),
+**72 mutaciones propias** (63 cazadas, 9 vivas), y el servidor levantado a mano
+en `:8821` sembrado con sesión de dueño, sesión de espectador, dos claves de
+subida (una de una sala ajena) y una ficha de video. Ninguna mutación
+sobreviviente prueba código incorrecto: son agujeros de red.
+
+### Fallas
+
+**F1. `servidor/videos.js:144-154` promete un chequeo de host que no existe.**
+El comentario dice textual que la URL tiene que ser https *"y de otro host: el
+servidor no sirve video, así que una ficha que apunte a nuestro propio dominio
+es un error de configuración que conviene atajar acá y no descubrirlo con la
+factura de egreso"*. El código chequea `protocol` y `.m3u8`, y **nada más**.
+Verificado: un `POST /api/videos` con `url: https://localhost:8821/sala/x.m3u8`
+devuelve 200. Hoy no cuesta plata porque ninguna ruta sirve `.m3u8`, pero es la
+invariante más cara del proyecto **documentada como implementada sin estarlo**.
+O se escribe el chequeo o se corrige el comentario: dejarlo así es que la Fase 3
+lo lea y lo dé por hecho.
+
+**F2. Inyección de líneas en el log por el título del video.** `videos.js:136`
+recorta a 200 caracteres pero no saca caracteres de control, y `index.js:920`
+lo mete en un `console.log`. El título sale del nombre de un archivo. Salida
+real conseguida: una línea falsa `[http] POST /api/panel 200 clave=FALSA` en el
+log. Necesita la clave de subida (o sea, es el dueño), pero los logs de Railway
+no se borran y ésa es la única evidencia cuando algo falla.
+
+**F3. Cinco guardas de la Fase 2 sin una sola prueba** (las mutaciones
+sobreviven las 411):
+- Borrar `await espectadores.olvidar(...)` de "Salir" (`index.js:795`): la
+  sesión se cierra pero **el refresh token del espectador no se borra**. El
+  README y el comentario prometen que sí. Es la única promesa de privacidad
+  sobre datos de terceros de toda la fase, y no hay ninguna prueba HTTP de
+  `POST /api/sala/:slug/salir`.
+- Borrar `canalPermitido(slug)` de `apiSalaChat` (`index.js:812`).
+- Sacar `escapar()` de `pagina()` (`index.js:102`): habilita **XSS reflejado sin
+  autenticación** en `/oauth/kick/volver?error=…`, en el origen donde vive la
+  cookie del dueño. Hoy escapa bien; nada lo sostiene.
+- `videos.listar(SLUG_DUENO)` volviéndose elegible por query (`index.js:949`):
+  la fuga de tenant que la Fase 3 hereda.
+- Borrar `if (mejor) desfase = mejor.desfase;` (`paginas/sala/sala.js:153`): el
+  desfase medido contra `/api/hora` **nunca se aplica**. Los tests de
+  sincronización entran por `fijarDesfase()` y se saltean `medirDesfase()`. En
+  una máquina con el reloj corrido, el criterio de aceptación (a) depende
+  enteramente de esa línea.
+
+### Dudas que conviene resolver antes de la Fase 3
+
+- **Carrera en `/eventos/:slug` que deja un cliente fantasma**
+  (`index.js:1091-1128`): `canales.suscribir` engancha el `close` después de dos
+  `await`; si el socket muere en el medio, el listener tardío no dispara y
+  `res.write()` no tira, así que nada lo saca. Contador de espectadores inflado,
+  pico mentiroso, canal que no se libera. Hoy inalcanzable en el camino normal
+  (los dos `await` cortocircuitan sin I/O); con Mongo y slugs de creador, real.
+- `/api/sala/:slug/yo` y `/salir` no validan el slug: son las dos únicas rutas
+  de `/api/sala/` que no pasan por `canalPermitido`.
+- **El chat del espectador rutea por el dueño, no por la sala** (`index.js:841`).
+  El reloj tiene su guard `slug !== SLUG_DUENO` con comentario de Fase 3; el
+  chat no tiene ninguno. Hoy no explotable porque `creadores` está vacío.
+- El canal nunca se libera después de "detener": `canales.js:211` no lo borra si
+  `c.reloj` es truthy, y detener deja un objeto truthy. `restaurar()` evita
+  justamente eso, así que las dos mitades no coinciden.
+- `DERIVA_TOLERADA = 1.5` es **por navegador**, pero el criterio de aceptación es
+  *entre* navegadores: dos pantallas podrían estar a 3 s. En la práctica la
+  deriva es de un solo signo y se midieron 0,04 s con dos pestañas reales.
+- `init.mp4` suelto en la raíz y `.gitignore` no ignora ningún formato de video:
+  un `git add -A` lo commitea.
+
+### Lo bueno
+
+El filtro por red del bus es la parte mejor probada de la fase: seis mutaciones
+distintas, las seis cazadas. El reloj se corrió en vivo (reproducir → pausar →
+saltar +300 → reanudar) y la aritmética no pierde el tiempo de pausa. hls.js
+1.5.17 clavado con `integrity`. El `<video>` no tiene `controls`, así que no hay
+barra de adelantar. La autorización se probó con curl: reloj sin sesión 401, con
+cookie de espectador 401, dueño en sala ajena 403, y la cookie de espectador
+pegada en la ranura del dueño da 401 porque la firma está atada al nombre de la
+cookie. Cero `innerHTML` en las tres páginas nuevas.
+
+---
+
 ## 2026-09-06 — Dónde quedó todo (corte para dormir)
 
 Escrito por el director al frenar la sesión. **`herramientas/` tiene trabajo a

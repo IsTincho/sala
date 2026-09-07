@@ -15,8 +15,13 @@
      /kick/webhook            eventos de Kick, firmados con RSA
      /panel                   el panel del dueño
      /chat                    el Chat Global (Kick + Twitch)
+     /sala/:slug              la Sala: camara, peli y chat
      /api/chat/*              salud, envio y resuscripcion del chat
      /api/estado              como esta el servidor
+     /api/hora                la hora del servidor, para sincronizar
+     /api/videos              el catalogo (lo escribe herramientas/subir.py)
+     /api/sala/:slug/*        reloj, chat del espectador y salir
+     /api/panel/*             lo que solo mira y toca el dueño
 
    LO QUE ESTE SERVIDOR NO HACE NUNCA: servir video. El navegador le
    pide los segmentos directo a R2. Si algun dia una ruta de aca
@@ -35,9 +40,13 @@ import * as almacen from './almacen.js';
 import * as canales from './canales.js';
 import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
+import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
+import * as metricas from './metricas.js';
+import * as reloj from './reloj.js';
 import * as sesion from './sesion.js';
 import * as twitch from './twitch.js';
+import * as videos from './videos.js';
 import * as vinculos from './vinculos.js';
 import * as webhook from './webhook.js';
 
@@ -326,11 +335,45 @@ async function kickVolver(url, req, res) {
     return pagina(res, 'No se pudo completar el login', e.message);
   }
 
-  /* El login de espectador es de la Fase 2: hoy no hay donde usarlo y
-     guardar su token seria juntar datos de gente para nada. */
+  /*
+   * El espectador. Entra para poder escribir en el chat de la Sala con
+   * SU cuenta, que es toda la gracia del proyecto.
+   *
+   * Se le guarda lo minimo: id, nombre y sus tokens cifrados. El
+   * refresh hace falta de verdad (el access dura una hora y una peli
+   * dura dos y media), y "Salir" lo borra. Sin CLAVE_CIFRADO no se
+   * guarda nada: antes que dejar el token de una persona en claro,
+   * que no pueda escribir.
+   *
+   * Y sigue siendo cierto que login no es autorizacion: esto no le da
+   * ningun permiso sobre el canal, solo la identifica para que Kick
+   * publique su mensaje con su nombre.
+   */
   if (t.rol !== 'dueno') {
-    return pagina(res, `Hola, ${yo.nombre}`,
-      'Kick te reconocio. El login de espectador llega con la Sala, en la Fase 2.');
+    try {
+      await espectadores.guardar({
+        usuarioId: yo.id,
+        nombre: yo.nombre,
+        accessToken: t.accessToken,
+        refreshToken: t.refreshToken,
+        venceEn: t.venceEn,
+        scopes: t.scopes,
+      });
+    } catch (e) {
+      return pagina(res, 'No se pudo entrar', e.message);
+    }
+
+    const cookieEspectador = await sesion.crear({
+      tipo: 'espectador',
+      usuario: yo.id,
+      nombre: yo.nombre,
+      slug: yo.slug,
+      agente: req.headers['user-agent'] ?? '',
+    });
+
+    return redirigir(res, destinoSeguro(t.destino) || '/', {
+      'Set-Cookie': sesion.cabeceraCookie('espectador', cookieEspectador),
+    });
   }
 
   if (!SLUG_DUENO) {
@@ -512,6 +555,11 @@ async function kickWebhook(url, req, res) {
 async function procesarEvento(evento, cuerpo) {
   const r = chat.recibirDeKick(evento, cuerpo);
   const slug = cuerpo?.broadcaster?.channel_slug ?? SLUG_DUENO;
+  /* Las metricas cuentan los mensajes de KICK, que son los del chat de
+     la Sala. Los de Twitch viajan por el mismo bus pero no entran por
+     aca y tampoco llegan a la sala: ver el filtro por red de
+     canales.js. */
+  if (r.hecho === 'chat') metricas.registrarMensaje(slug);
   console.log(`[webhook] ${evento.tipo} de ${slug}: ${r.hecho}`);
 }
 
@@ -557,6 +605,7 @@ async function pruebaWebhook(url, req, res) {
       ? { ...cuerpo, broadcaster: { ...(cuerpo?.broadcaster ?? {}), channel_slug: slug } }
       : cuerpo;
     const r = chat.recibirDeKick(evento, conCanal);
+    if (r.hecho === 'chat') metricas.registrarMensaje(slug);
     return json(res, 200, { ok: true, canal: slug, tipo, hecho: r.hecho });
   }
 
@@ -644,6 +693,312 @@ async function apiChatResuscribir(url, req, res) {
   return conDueno(req, res, async () => {
     try { return json(res, 200, await chat.resuscribirKick()); }
     catch (e) { return json(res, 502, { error: e.message }); }
+  });
+}
+
+/* ------------------------------------------------------ la Sala */
+
+/**
+ * La hora del servidor.
+ *
+ * Es lo que le permite a cada navegador calcular su desfase: pide
+ * esto, mide cuanto tardo la ida y vuelta, y se queda con
+ * `ahora + rtt/2 - suPropioReloj`. Sin esto, una maquina con el reloj
+ * cinco minutos adelantado calcularia la posicion de la peli cinco
+ * minutos mas adelante y el player pediria un segmento que todavia no
+ * corresponde.
+ *
+ * No pide sesion ni dice nada de nadie: es un numero.
+ */
+async function apiHora(url, req, res) {
+  return json(res, 200, { ahora: Date.now() });
+}
+
+/**
+ * Corre `fn(slug)` si el pedido trae la sesion del dueño Y el slug es
+ * una sala que existe.
+ */
+async function conDuenoDeLaSala(url, req, res, p, fn) {
+  const suyo = await sesion.leer(req, 'dueno');
+  if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
+  const slug = String(p.slug ?? '').toLowerCase();
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  /* Hoy el unico que pasa el `canalPermitido` con sesion de dueño es
+     el dueño mismo. En la Fase 3 hay que comprobar ademas que la sala
+     sea SUYA: la sesion dice quien es, no de que canal es dueño. */
+  if (SLUG_DUENO && slug !== SLUG_DUENO) {
+    return json(res, 403, { error: 'esa sala no es tuya' });
+  }
+  return fn(slug, suyo);
+}
+
+/**
+ * Play, pausa, salto y stop. Solo el dueño.
+ *
+ * La respuesta lleva el reloj nuevo entero, el mismo objeto que salio
+ * por el bus: asi el panel no tiene que esperar su propio evento SSE
+ * para pintar el estado que acaba de pedir.
+ */
+async function apiRelojAccion(url, req, res, p) {
+  return conDuenoDeLaSala(url, req, res, p, async (slug) => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const r = await reloj.aplicar(slug, String(pedido?.accion ?? ''), {
+      videoId: pedido?.videoId,
+      segundos: pedido?.segundos,
+      desde: pedido?.desde,
+    });
+    if (r.error) return json(res, 400, { error: r.error });
+    return json(res, 200, { ok: true, reloj: r.reloj });
+  });
+}
+
+/**
+ * Quien esta mirando, desde el navegador de esa persona.
+ *
+ * Dice SU nombre y nada mas: nunca la lista de quienes estan en la
+ * sala. Una pagina publica que enumere a la gente conectada es una
+ * lista de asistencia que nadie pidio.
+ */
+async function apiSalaYo(url, req, res, p) {
+  const suyo = await sesion.leer(req, 'espectador');
+  if (!suyo) return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false });
+
+  const v = await espectadores.leer(suyo.usuario);
+  if (!v) {
+    /* La sesion sobrevivio al token (se revoco el permiso, o cambio la
+       CLAVE_CIFRADO). No sirve para nada: se cierra en vez de dejar a
+       la persona con una caja de escribir que va a fallar. */
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false },
+      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+
+  return json(res, 200, {
+    entrado: true,
+    nombre: suyo.nombre || v.nombre,
+    /* Si el permiso que dio no incluye escribir, mejor decirlo ahora
+       que despues de que escriba un mensaje largo. */
+    puedeEscribir: String(v.scopes ?? '').split(/\s+/).includes('chat:write'),
+  });
+}
+
+/** Cierra la sesion del espectador y OLVIDA su token. */
+async function apiSalaSalir(url, req, res) {
+  const suyo = await sesion.leer(req, 'espectador');
+  if (suyo) {
+    await sesion.cerrar(req, 'espectador');
+    /* Salir borra el token, no solo la cookie. Un "logout" que deja el
+       refresh token del otro lado no es un logout. */
+    await espectadores.olvidar(suyo.usuario);
+  }
+  return json(res, 200, { ok: true }, { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+}
+
+/**
+ * El mensaje de un espectador, que sale en kick.com con SU cuenta.
+ *
+ * Tres frenos, en este orden y por este motivo:
+ *   1. el tope de Kick (500 caracteres / 2048 bytes), antes de gastar
+ *      un pedido en algo que va a rebotar;
+ *   2. la espera del CANAL, si Kick nos frenó hace poco: el 429 es del
+ *      canal, no de la persona, y seguir mandando solo consigue mas;
+ *   3. la espera de la persona, uno cada dos segundos.
+ */
+async function apiSalaChat(url, req, res, p) {
+  const slug = String(p.slug ?? '').toLowerCase();
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+
+  const suyo = await sesion.leer(req, 'espectador');
+  if (!suyo) return json(res, 401, { error: 'entra con Kick para poder escribir' });
+
+  let pedido;
+  try { pedido = await leerJson(req); }
+  catch { return json(res, 400, { error: 'json invalido' }); }
+
+  const cuerpo = String(pedido?.texto ?? '');
+  const problema = kick.porQueNoSePuedeMandar(cuerpo);
+  if (problema) return json(res, 400, { error: problema });
+
+  const esperaCanal = espectadores.esperaDelCanalQueFalta(slug);
+  if (esperaCanal) {
+    const segundos = Math.ceil(esperaCanal / 1000);
+    return json(res, 429, { error: 'Kick esta frenando los envios del canal', esperar: segundos },
+      { 'Retry-After': String(segundos) });
+  }
+
+  const falta = espectadores.esperaQueLeFalta(suyo.usuario);
+  if (falta) {
+    const segundos = Math.ceil(falta / 1000);
+    return json(res, 429, { error: 'espera un momento entre mensajes', esperar: segundos },
+      { 'Retry-After': String(segundos) });
+  }
+
+  /* El mensaje cae en el canal del dueño, no en el de quien escribe.
+     `identidad` y no `acceso`: hace falta su numero, no su token. */
+  const dueno = await vinculos.identidad('kick');
+  if (!dueno?.usuarioId) {
+    return json(res, 503, { error: 'el canal todavia no esta vinculado con Kick' });
+  }
+
+  const token = await espectadores.acceso(suyo.usuario);
+  if (!token) {
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 401, { error: 'tu permiso con Kick vencio: entra de nuevo' },
+      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+
+  /* Se anota ANTES de mandar, y a proposito. Si se anotara despues de
+     que salga bien, un error que tarda (un timeout de 30s) dejaria a
+     la persona reintentando sin freno mientras tanto. */
+  espectadores.anotarEnvio(suyo.usuario);
+
+  try {
+    const r = await kick.enviarMensaje(token, dueno.usuarioId, cuerpo);
+    metricas.registrarEnvio(slug, { ok: r.enviado });
+    if (!r.enviado) return json(res, 502, { error: 'Kick lo recibio pero no lo publico' });
+    /* No se difunde nada por el bus: el mensaje vuelve por el webhook
+       como cualquier otro. Difundirlo aca lo mostraria dos veces, y
+       ademas mentiria (se veria aunque Kick lo hubiera retenido). */
+    return json(res, 200, { ok: true });
+  } catch (e) {
+    const estado = e.status ?? 0;
+    metricas.registrarEnvio(slug, { ok: false, estado });
+
+    if (estado === 429) {
+      const espera = espectadores.anotar429(slug, e.retryAfter);
+      const segundos = Math.ceil(espera / 1000);
+      return json(res, 429, { error: 'Kick esta frenando los envios del canal', esperar: segundos },
+        { 'Retry-After': String(segundos) });
+    }
+    if (estado === 401 || estado === 403) {
+      await espectadores.olvidar(suyo.usuario);
+      await sesion.cerrar(req, 'espectador');
+      return json(res, 401, { error: 'Kick rechazo tu permiso: entra de nuevo' },
+        { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+    }
+    /* El texto del error de Kick se recorta: se muestra en pantalla y
+       no se le confia el largo a la API de nadie. */
+    return json(res, 502, { error: String(e.message ?? 'no se pudo enviar').slice(0, 200) });
+  }
+}
+
+/* ------------------------------------------------------- videos
+
+   Estas dos rutas las llama `herramientas/subir.py` desde una
+   terminal, no un navegador: se autentican con la cabecera
+   `X-Clave-Subida` y no con una cookie. La clave se genera en /panel y
+   se guarda hasheada. */
+
+async function conClaveDeSubida(req, res, fn) {
+  const slug = await videos.salaDeLaClave(req.headers['x-clave-subida'] ?? '');
+  /* El 401 no dice si la clave no existe o si es de otra sala: quien
+     esta probando claves no tiene por que enterarse de cual fallo. */
+  if (!slug) return json(res, 401, { error: 'clave de subida invalida' });
+  return fn(slug);
+}
+
+async function apiVideosGuardar(url, req, res) {
+  return conClaveDeSubida(req, res, async (slugAutenticado) => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const { error, ficha } = videos.revisarFicha(pedido);
+    if (error) return json(res, 400, { error });
+
+    /* La clave autoriza UNA sala. Sin esto, la clave del dueño podria
+       escribir en el catalogo de cualquier creador de la Fase 3 con
+       solo cambiar un campo del JSON. */
+    if (ficha.slug !== slugAutenticado) {
+      return json(res, 403, { error: 'esa clave no es de esa sala' });
+    }
+
+    await videos.guardar(ficha);
+    console.log(`[videos] ${ficha.slug}/${ficha.id}: ${ficha.titulo} (${Math.round(ficha.duracion)}s)`);
+    return json(res, 200, { ok: true, id: ficha.id, slug: ficha.slug });
+  });
+}
+
+async function apiVideosBorrar(url, req, res, p) {
+  return conClaveDeSubida(req, res, async (slug) => {
+    const id = String(p.id ?? '');
+    if (!videos.idValido(id)) return json(res, 400, { error: 'id invalido' });
+
+    /* Se para el reloj ANTES de borrar la ficha. Si el canal estaba
+       pasando justo este video, dejarlo correr con los segmentos ya
+       borrados de R2 deja a la sala cargando para siempre, sin un
+       error que diga por que. */
+    const detenido = await reloj.detenerSiUsa(slug, id);
+    const habia = await videos.borrar(slug, id);
+
+    if (!habia) {
+      /* 404 no es un error para el script: significa "el servidor no
+         lo tenia" y sigue con lo suyo. */
+      return json(res, 404, { error: 'ese video no estaba en el catalogo', relojDetenido: detenido });
+    }
+    console.log(`[videos] borrado ${slug}/${id}${detenido ? ' (se detuvo el reloj)' : ''}`);
+    return json(res, 200, { ok: true, relojDetenido: detenido });
+  });
+}
+
+/** El catalogo, para el panel. Con cookie de dueño, no con la clave. */
+async function apiVideosListar(url, req, res) {
+  return conDueno(req, res, async () => json(res, 200, { videos: await videos.listar(SLUG_DUENO) }));
+}
+
+/* -------------------------------------------------------- panel */
+
+/**
+ * Todo lo que muestra /panel, en un solo pedido.
+ *
+ * Se junta aca y no se reparte en cinco endpoints porque el panel lo
+ * refresca cada pocos segundos mientras el dueño mira: cinco pedidos
+ * en vez de uno es cinco veces el ruido en los logs de Railway por
+ * exactamente la misma pantalla.
+ */
+async function apiPanel(url, req, res) {
+  return conDueno(req, res, async () => {
+    const slug = SLUG_DUENO;
+    return json(res, 200, {
+      slug,
+      modo: MODO,
+      hora: Date.now(),
+      salud: chat.salud(),
+      reloj: slug ? await reloj.actual(slug) : null,
+      videos: slug ? await videos.listar(slug) : [],
+      conectados: canales.conectados(slug),
+      metricas: metricas.resumen(slug),
+      claveSubida: slug ? await videos.estadoClave(slug) : { hay: false, creada: 0 },
+      almacen: almacen.dondeGuarda(),
+      /* La URL que hay que pegar a mano en el portal de Kick. Se
+         muestra porque olvidarla es la falla mas cara del proyecto: se
+         crean las suscripciones sin error y no llega ni un webhook. */
+      urlWebhook: `${baseDe(req)}/kick/webhook`,
+    });
+  });
+}
+
+/**
+ * Genera la clave de subida. La devuelve UNA sola vez: lo que queda
+ * guardado es su hash.
+ */
+async function apiClaveGenerar(url, req, res) {
+  return conDueno(req, res, async () => {
+    if (!SLUG_DUENO) return json(res, 409, { error: 'falta KICK_SLUG' });
+    const clave = await videos.generarClave(SLUG_DUENO);
+    console.log('[videos] clave de subida nueva para', SLUG_DUENO);
+    return json(res, 200, { clave });
+  });
+}
+
+async function apiClaveRevocar(url, req, res) {
+  return conDueno(req, res, async () => {
+    if (!SLUG_DUENO) return json(res, 409, { error: 'falta KICK_SLUG' });
+    const habia = await videos.revocarClave(SLUG_DUENO);
+    return json(res, 200, { ok: true, habia });
   });
 }
 
@@ -742,22 +1097,109 @@ async function eventos(url, req, res, p) {
     });
     return res.end();
   }
-  return canales.suscribir(p.slug, req, res);
+
+  /*
+   * QUE REDES VE CADA CONEXION. Esta es la decision que la Fase 1 dejo
+   * anotada y que la Sala obliga a tomar.
+   *
+   * Por el bus de un canal viaja tambien el chat de TWITCH del dueño:
+   * `chat.js` recuerda las dos redes en el canal de su slug, porque
+   * /chat las muestra juntas. Pero `/eventos/:slug` no pide sesion, y
+   * desde esta fase lo escucha cualquiera que abra la Sala a ver la
+   * peli. Esa gente no tiene nada que ver con la comunidad de Twitch
+   * del dueño, ni al reves.
+   *
+   * Asi que el bus publico manda SOLO Kick, y las dos redes se
+   * desbloquean con la sesion del dueño, que es la unica pagina que
+   * las necesita. Se filtra en el servidor y no en el navegador
+   * porque, filtrando en el navegador, el chat de Twitch igual saldria
+   * por el cable hacia trescientas pestañas y un `curl` lo veria
+   * entero: la regla solo es verdad donde se decide.
+   *
+   * Efecto secundario buscado: la Fase 3 hereda la puerta cerrada. El
+   * dia que haya varios creadores, "que ve cada conexion" ya es una
+   * pregunta que este codigo se hace.
+   */
+  const esDueno = Boolean(await sesion.leer(req, 'dueno'));
+  canales.suscribir(p.slug, req, res, { redes: esDueno ? null : ['kick'] });
+
+  anotarPresencia(p.slug);
+  req.on('close', () => anotarPresencia(p.slug));
+  return res;
+}
+
+/* Cuanta gente hay mirando, avisado por el mismo bus.
+ *
+ * Con rebote: cuando arranca la peli entran de a decenas en pocos
+ * segundos, y difundir uno por uno seria N eventos a N pestañas. Un
+ * solo aviso por segundo dice exactamente lo mismo.
+ *
+ * El rebote ademas ordena la carrera del cierre: `canales.suscribir`
+ * se saca de la lista en su propio 'close' y este no depende de cual
+ * de los dos corra primero, porque para cuando el timer dispara la
+ * cuenta ya esta bien. */
+export const REBOTE_PRESENCIA = 1000;
+const presenciaPendiente = new Map();
+
+function anotarPresencia(slug) {
+  const s = String(slug ?? '').toLowerCase();
+  metricas.verConectados(s, canales.conectados(s));
+  if (presenciaPendiente.has(s)) return;
+  const t = setTimeout(() => {
+    presenciaPendiente.delete(s);
+    const cuantos = canales.conectados(s);
+    metricas.verConectados(s, cuantos);
+    canales.difundir(s, { tipo: 'presencia', conectados: cuantos });
+  }, REBOTE_PRESENCIA);
+  t.unref?.();
+  presenciaPendiente.set(s, t);
+}
+
+/**
+ * La pagina de la Sala. Se sirve solo para un canal que existe: un
+ * `/sala/lo-que-sea` que devolviera la pagina dejaria a alguien
+ * mirando una pantalla de carga eterna en vez de un 404.
+ */
+async function paginaSala(url, req, res, p) {
+  /* OJO, TRAMPA DEL ENRUTADOR: `/sala/:slug` tapa TODO lo que cuelgue
+     de /sala/, y ahi viven el CSS y el JS de esta misma pagina
+     (`paginas/sala/sala.css`). Sin esto, `/sala/sala.css` se
+     interpretaria como "la sala del canal sala.css", daria 404, y la
+     pagina se veria sin estilos ni script. Un slug no lleva punto, asi
+     que lo que no parece slug se deja pasar a los estaticos. */
+  if (!videos.slugValido(p.slug)) {
+    if (await estatico(url, req, res)) return;
+    return texto(res, 404, 'no existe');
+  }
+  if (!await canalPermitido(p.slug)) return texto(res, 404, 'esa sala no existe');
+  return servirPagina('sala.html')(url, req, res, p);
 }
 
 const RUTAS = [
-  ['GET',  '/api/estado',          apiEstado],
-  ['GET',  '/api/chat/salud',      apiChatSalud],
-  ['POST', '/api/chat/enviar',     apiChatEnviar],
-  ['POST', '/api/chat/resuscribir', apiChatResuscribir],
-  ['GET',  '/panel',               servirPagina('panel.html')],
-  ['GET',  '/chat',                servirPagina('chat.html')],
-  ['GET',  '/eventos/:slug',       eventos],
-  ['GET',  '/oauth/kick/entrar',   kickEntrar],
-  ['GET',  '/oauth/kick/volver',   kickVolver],
-  ['GET',  '/oauth/twitch/entrar', twitchEntrar],
-  ['GET',  '/oauth/twitch/volver', twitchVolver],
-  ['POST', '/kick/webhook',        kickWebhook],
+  ['GET',    '/api/estado',            apiEstado],
+  ['GET',    '/api/hora',              apiHora],
+  ['GET',    '/api/chat/salud',        apiChatSalud],
+  ['POST',   '/api/chat/enviar',       apiChatEnviar],
+  ['POST',   '/api/chat/resuscribir',  apiChatResuscribir],
+  ['GET',    '/api/panel',             apiPanel],
+  ['POST',   '/api/panel/clave',       apiClaveGenerar],
+  ['DELETE', '/api/panel/clave',       apiClaveRevocar],
+  ['GET',    '/api/videos',            apiVideosListar],
+  ['POST',   '/api/videos',            apiVideosGuardar],
+  ['DELETE', '/api/videos/:id',        apiVideosBorrar],
+  ['POST',   '/api/sala/:slug/reloj',  apiRelojAccion],
+  ['POST',   '/api/sala/:slug/chat',   apiSalaChat],
+  ['GET',    '/api/sala/:slug/yo',     apiSalaYo],
+  ['POST',   '/api/sala/:slug/salir',  apiSalaSalir],
+  ['GET',    '/panel',                 servirPagina('panel.html')],
+  ['GET',    '/chat',                  servirPagina('chat.html')],
+  ['GET',    '/sala/:slug',            paginaSala],
+  ['GET',    '/eventos/:slug',         eventos],
+  ['GET',    '/oauth/kick/entrar',     kickEntrar],
+  ['GET',    '/oauth/kick/volver',     kickVolver],
+  ['GET',    '/oauth/twitch/entrar',   twitchEntrar],
+  ['GET',    '/oauth/twitch/volver',   twitchVolver],
+  ['POST',   '/kick/webhook',          kickWebhook],
   /* la de prueba solo se registra en local; ver pruebaWebhook */
   ...(ES_LOCAL ? [['POST', '/api/prueba/webhook', pruebaWebhook]] : []),
 ].map(([metodo, patron, manejador]) => ({ metodo, patron, manejador, ...compilar(patron) }));
@@ -776,14 +1218,34 @@ export async function manejar(req, res) {
   }
   const ruta = url.pathname;
 
+  /* Se juntan TODAS las que coinciden por camino y recien despues se
+     elige por metodo.
+
+     Antes se cortaba en la primera coincidencia de camino y, si el
+     metodo no era ese, se contestaba 405. Con una sola ruta por camino
+     daba igual; desde que `/api/videos` acepta GET y POST, la version
+     vieja contestaba "solo acepta GET" a un POST perfectamente valido
+     nada mas que porque el GET estaba escrito mas arriba en la tabla.
+     Y el Allow del 405 tiene que listar los metodos de verdad. */
+  const coinciden = [];
   for (const r of RUTAS) {
     const m = r.regex.exec(ruta);
-    if (!m) continue;
-    /* La ruta existe pero con otro metodo: 405 y no 404. La diferencia
-       le ahorra media hora a quien esta probando con curl. */
-    if (r.metodo !== req.method && !(r.metodo === 'GET' && req.method === 'HEAD')) {
-      return texto(res, 405, `${ruta} solo acepta ${r.metodo}`, { Allow: r.metodo });
+    if (m) coinciden.push([r, m]);
+  }
+
+  if (coinciden.length) {
+    const elegida = coinciden.find(([r]) => r.metodo === req.method)
+      /* Un HEAD lo atiende el GET: la respuesta se corta sin cuerpo. */
+      ?? (req.method === 'HEAD' ? coinciden.find(([r]) => r.metodo === 'GET') : undefined);
+
+    if (!elegida) {
+      /* La ruta existe pero con otro metodo: 405 y no 404. La
+         diferencia le ahorra media hora a quien prueba con curl. */
+      const permitidos = [...new Set(coinciden.map(([r]) => r.metodo))].join(', ');
+      return texto(res, 405, `${ruta} solo acepta ${permitidos}`, { Allow: permitidos });
     }
+
+    const [r, m] = elegida;
     /* decodeURIComponent tira URIError con un %ZZ o un % suelto. Sin
        este try eso sale como 500 con stack trace en los logs; lo
        honesto es 404, que es lo mismo que hace estatico(). */
@@ -869,6 +1331,20 @@ export async function arrancar() {
 
   canales.arrancarPings();
 
+  /* El reloj de la sala vuelve del almacen. Sin esto, un deploy en
+     medio de la peli dejaba la sala en "detenido" hasta que el dueño
+     volviera a tocar play, y aca deployar en medio del stream es la
+     forma normal de trabajar. Como `empezoEn` es una fecha absoluta, la
+     posicion despues del reinicio sigue dando lo mismo. */
+  if (SLUG_DUENO) {
+    try {
+      const puesto = await reloj.restaurar(SLUG_DUENO);
+      if (puesto) console.log(`[reloj] ${SLUG_DUENO} sigue en ${puesto.videoId} (${Math.round(puesto.posicion)}s, ${puesto.estado})`);
+    } catch (e) {
+      console.warn('[reloj] no se pudo restaurar:', e.name);
+    }
+  }
+
   /* El Chat Global se levanta solo con lo que haya guardado: si el
      dueño ya vinculo Twitch, la conexion EventSub vuelve sin que nadie
      toque nada; si vinculo Kick, se comprueba que la suscripcion siga
@@ -883,6 +1359,8 @@ export async function arrancar() {
   const apagar = () => {
     console.log('[sala] apagando');
     chat.parar();
+    for (const t of presenciaPendiente.values()) clearTimeout(t);
+    presenciaPendiente.clear();
     canales.cerrarTodo();
     servidor.close(() => process.exit(0));
     /* Railway manda SIGTERM y despues mata. Si alguna conexion SSE no

@@ -72,6 +72,8 @@ Valores que NO son secretos y sí se anotan acá abajo, en "Datos públicos": do
 
 - [ ] **10. Token de R2 para tu PC.** R2 → Manage R2 API Tokens → Create → permisos Object Read & Write, sólo bucket `sala-video`. Te da Access Key ID, Secret Access Key y el Account ID. Van a `herramientas/.env` en esta carpeta (el agente de Fase 2 deja `herramientas/.env.ejemplo` con los nombres exactos). Nunca a Railway, nunca al chat.
 
+- [ ] **10.b Clave de subida.** Entrá a `/panel` con Kick y tocá **Generar una nueva** en "Clave de subida", después **Copiar**, y pegala en `herramientas/.env` como `CLAVE_SUBIDA`. Es lo que le permite al script avisarle al servidor que subiste una película. Se muestra una sola vez y el panel la copia al portapapeles **sin mostrarla**: si estás transmitiendo, no toques "Mostrar igual". Si la perdés, generás otra (la vieja deja de servir en el acto).
+
 - [x] **11. ffmpeg y Python en tu PC.** HECHA, no hacía falta instalar casi nada: ya tenías ffmpeg 8.1.2 y Python 3.14.3. El director corrió `python -m pip install -r herramientas/requirements.txt` (boto3 1.43.89), que era lo único que faltaba. Lo de abajo queda como referencia por si alguna vez hay que rehacerlo en otra máquina. En PowerShell:
   ```powershell
   winget install Gyan.FFmpeg

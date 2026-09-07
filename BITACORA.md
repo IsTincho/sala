@@ -4,6 +4,262 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Fase 2: la Sala
+
+Los entregables 2 a 5 del prompt, más las dos rutas que el script de subida ya
+llamaba y todavía no existían. **404 pruebas en verde** (eran 238) y **30 de 30
+mutaciones cazadas** sobre una copia limpia del árbol. La sincronización se
+verificó **con dos navegadores de verdad** contra el servidor levantado a mano:
+0,04 s de diferencia entre los dos, y 0,51 s después de pausar, saltar 300 s y
+reanudar desde el panel.
+
+Trabajo hecho en paralelo con el cierre de los cabos sueltos de la Fase 1,
+sin tocar `servidor/chat.js`, `servidor/twitch.js` ni `pruebas/chat-*.test.js`.
+
+### Lo que quedó funcionando
+
+- **Las dos rutas que faltaban.** `POST /api/videos` y `DELETE /api/videos/:id`,
+  con la cabecera `X-Clave-Subida` (no cookie: el script corre en una terminal).
+  El mismo `id` pisa y no duplica. El `DELETE` contesta 404 si no lo tenía, que
+  para el script no es error. Se acepta también la ficha corta de `--avisar`,
+  que manda cinco campos y ninguna calidad.
+- **La clave de subida** se genera y se revoca desde `/panel`, se guarda
+  hasheada en la colección nueva `subidas`, y autoriza **una sola sala**.
+- **`servidor/reloj.js`**: estado por canal, persistido, con `reproducir`,
+  `pausar`, `reanudar`, `saltar` y `detener`. Cada cambio sale por SSE como
+  `{tipo:"reloj", …}`. `GET /api/hora` para que cada navegador mida su desfase.
+- **`/sala/:slug`**: hls.js clavado en 1.5.17 con `integrity`, cámara en un
+  iframe de `player.kick.com`, chat de Kick con el render compartido, login de
+  espectador, envío con límite de uno cada dos segundos, contador de gente
+  conectada, y pantalla de espera con la cámara grande cuando el reloj está
+  detenido. En celular se apila y **no hay scroll horizontal** (medido:
+  `scrollWidth === clientWidth` a 375 px).
+- **`/panel`** extendido: reloj con play/pausa/saltar/detener, lista de videos,
+  espectadores conectados y pico, salud de Kick y Twitch, la URL del webhook
+  que hay que pegar a mano, y la clave de subida.
+- **`servidor/metricas.js`**: mensajes por hora, envíos, 429 y espectadores
+  pico, mostrados en el panel.
+- **`?demo=1`** en la Sala: se ve la página entera sin servidor ni credenciales.
+
+### La decisión que la Fase 1 dejó anotada: qué ve el bus público
+
+**El bus público manda sólo Kick. Las dos redes se desbloquean con la sesión
+del dueño.**
+
+Por el canal del dueño viaja también su chat de Twitch (`chat.js:356` hace
+`recordar(slugDueno, mensaje)` para las dos redes) porque `/chat` las muestra
+juntas. Pero `/eventos/:slug` no pide sesión, y desde esta fase lo escucha
+cualquiera que abra la Sala a ver la película.
+
+Se evaluaron tres caminos:
+
+1. **Filtrar en el cliente.** Cero cambios en el servidor. Descartado: el chat
+   de Twitch igual saldría por el cable hacia trescientas pestañas y un `curl
+   /eventos/istincho` lo vería entero. Además es ancho de banda regalado por
+   cada espectador.
+2. **Filtrar en el servidor, por conexión.** Elegido. Cada conexión declara qué
+   redes quiere (`canales.suscribir(slug, req, res, {redes})`), y la ruta decide:
+   sin cookie de dueño, `['kick']`. Vive entero en `canales.js` + `index.js`, o
+   sea que **no toca `servidor/chat.js`**, que lo tenía el otro agente.
+3. **Partir el bus en dos canales.** Descartado por ahora: obliga a tocar
+   `chat.js` y a duplicar el buffer, para el mismo resultado.
+
+Dos detalles que importan:
+
+- **El buffer de 200 mensajes pasa por el mismo filtro.** Sin eso, una sala que
+  no recibe Twitch en vivo se comía igual los últimos 200 mensajes de Twitch al
+  conectarse: la mitad del problema, y la más visible.
+- **La página de la Sala NO vuelve a filtrar, a propósito.** Si filtrara, una
+  regresión en la puerta del servidor sería invisible. Una sola fuente de
+  verdad. Hay una prueba que deja escrito que un mensaje de Twitch entregado a
+  la página se muestra, justamente para que nadie "arregle" eso.
+
+Efecto buscado para la Fase 3: el día que haya varios creadores, "qué ve cada
+conexión" ya es una pregunta que este código se hace.
+
+### Otras decisiones, y por qué
+
+**1. El reloj guarda `empezoEn`, no "el segundo actual".** Guardar la posición
+obligaría a escribirla todo el tiempo y entre dos escrituras el estado estaría
+mal. Con el momento en que arrancó el tramo, el estado sólo cambia cuando
+alguien toca un botón, y un deploy en medio de la película no pierde nada
+porque es una fecha absoluta. `arrancar()` lo levanta del almacén; si el video
+ya no está en el catálogo, arranca detenido y limpia.
+
+**2. `posicion` y `ahora` viajan en el evento pero no se usan para calcular.**
+El reloj le llega al que se conecta adentro del evento `estado`, y ese objeto
+está guardado en el canal desde que se tocó play: su `posicion` puede tener
+horas de viejo. La página calcula siempre con `offsetInicial + (ahora −
+empezoEn)`. Hay una prueba que lo hace cumplir (y una mutación que la caza).
+
+**3. Seek duro por encima de 1,5 s, con tres guardas.** Se evaluó corregir con
+`playbackRate` (más suave), pero converge en un minuto y el criterio de
+aceptación pide menos de 1,5 s de diferencia. El riesgo del seek duro es
+oscilar; lo matan las guardas: no se corrige con la pausa local puesta, ni
+mientras el video busca o no tiene datos (ahí la deriva medida es el buffer),
+ni dentro de los 5 s de una corrección anterior.
+
+**4. La película arranca muda.** Ningún navegador deja reproducir con sonido sin
+un gesto, y esperar ese gesto significa arrancar tarde y desincronizado. Muda
+arranca siempre; el botón del parlante devuelve el sonido y no mueve nada más.
+El `mudo` guardado en `localStorage` sólo puede apagar el sonido, nunca
+prenderlo: si no, alguien que vuelve se quedaría esperando un gesto que quizás
+no llegue.
+
+**5. La clave de subida no se muestra en pantalla.** El dueño trabaja con la
+transmisión al aire. El panel la copia al portapapeles y sólo la muestra si
+alguien toca "Mostrar igual", con el aviso al lado. Se guarda hasheada con
+SHA-256 (32 bytes al azar no necesitan bcrypt) y se compara con
+`timingSafeEqual`.
+
+**6. Las métricas viven en memoria.** Una escritura en Mongo por cada mensaje
+del chat, todas las noches, para un número que se mira una vez, no se paga. El
+precio es que un despliegue las pone en cero, y el panel lo dice al lado de los
+números en vez de dejar creer que son de toda la noche.
+
+**7. El contador de espectadores va por el bus, con rebote de 1 segundo.**
+Cuando arranca la película entra gente de a decenas: difundir uno por uno serían
+N eventos a N pestañas. El rebote además ordena la carrera del cierre (para
+cuando el timer dispara, la cuenta ya está bien). Vive en `index.js`, no en
+`canales.js`: el bus sigue siendo un caño tonto.
+
+**8. El render de un mensaje se sacó a `paginas/comun/mensajes.js`.** La Sala
+muestra los mismos mensajes con el mismo formato único; dos copias del armado
+terminan siendo dos comportamientos el día que alguien arregla uno. `/chat`
+ahora lo usa también (`crearElementoMensaje` quedó como una línea). Se hizo al
+final, con el trabajo del otro agente ya commiteado.
+
+### Tres trampas que costaron y quedan anotadas
+
+**A. El enrutador contestaba 405 al método bueno.** Cortaba en la primera
+coincidencia de camino: con `GET /api/videos` escrito más arriba en la tabla, un
+`POST /api/videos` perfectamente válido se contestaba "solo acepta GET". Con una
+ruta por camino no se notaba; desde que hay dos métodos por camino, sí. Ahora se
+juntan todas las que coinciden y recién después se elige por método, y el
+`Allow` del 405 lista los de verdad.
+
+**B. `/sala/:slug` tapa todo lo que cuelgue de `/sala/`.** Y ahí viven
+`sala.css`, `sala.js` y `demo.js`. `/sala/sala.css` se interpretaba como "la
+sala del canal sala.css", daba 404, y la página se veía sin estilos ni script.
+Un slug no lleva punto, así que lo que no parece slug se deja pasar a los
+estáticos. Es una trampa de cualquier ruta con parámetro sobre un directorio de
+estáticos.
+
+**C. `elemento.hidden = true` no esconde nada si el CSS le puso un `display`.**
+Las columnas y las bandas de aviso son flex, así que `[hidden]{display:none
+!important}` no es decoración: sin esa línea la pantalla de espera convivía con
+el video.
+
+Y una que no es un bug pero se parece: **Chrome pausa solo el video mudo de una
+pestaña que no se ve** ("video-only background media was paused to save power")
+y al volver no lo arranca. Salió corriendo la página de verdad, no de un test.
+Se atiende con `visibilitychange`. Además, un `play()` rechazado no siempre es
+autoplay bloqueado: el `AbortError` de una carga que pisó a la anterior no tiene
+que sacar el cartel de "tocá play".
+
+### Cómo verlo funcionando
+
+```bash
+npm test                     # 404 pruebas
+```
+
+Sin credenciales de ningún tipo, la página entera con datos de mentira:
+
+```
+http://localhost:8778/sala/istincho?demo=1
+```
+
+Con el servidor de verdad y sin R2, usando un HLS público de prueba: se siembra
+una ficha de video y una sesión de dueño en el almacén (`SALA_DATOS` apunta a
+una carpeta propia), se levanta `node servidor/index.js`, y se maneja el reloj
+con curl:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" -H "Cookie: sala_dueno=…" \
+  -d '{"accion":"reproducir","videoId":"prueba"}' \
+  http://localhost:8778/api/sala/istincho/reloj
+```
+
+Con dos pestañas abiertas en `/sala/istincho`, `video.currentTime` de las dos
+quedó a 0,04 s; después de `pausar`, `saltar +300` y `reanudar`, a 0,51 s.
+
+Para probar con un archivo propio sin bucket:
+
+```bash
+python herramientas/subir.py "algo.mkv" --solo-preparar
+cd hls-<id> && python -m http.server 8001
+```
+
+y se carga esa `maestra.m3u8` como `url` de la ficha.
+
+### Qué queda sin verificar contra lo real
+
+- **Nada se probó contra Kick de verdad.** No hay `KICK_CLIENT_ID` ni secret
+  (tareas 3 y 4 de `TAREAS-DUENO.md`). Lo que falta comprobar: que el login de
+  espectador con `user:read chat:write` devuelva el `scope` con ese nombre
+  exacto, que `POST /public/v1/chat` con `type:"user"` publique con el nombre
+  del espectador y no con el de la app, y **cuál es el rate limit de envío**
+  (no está documentado). El camino del 429 y su `Retry-After` se ejercita con un
+  `fetch` de mentira que contesta como la API, así que el código está probado;
+  el número, no.
+- **Nada se probó contra R2 de verdad.** No existe el bucket (tareas 9 y 10).
+  Sin el CORS del bucket, hls.js no carga nada: es lo primero a mirar cuando
+  esté.
+- **Nada se probó contra Mongo de verdad.** Todo corrió en modo archivo.
+- **Una película de dos horas.** El reloj se probó con un HLS de prueba y con
+  saltos de 300 s; el comportamiento con miles de segmentos y un buffer real de
+  dos horas está sin medir.
+- **`r2.dev` con trescientas personas.** El riesgo que anota PLAN.md sección 5.
+
+### Lo que necesita el dueño
+
+1. Cargar `KICK_CLIENT_ID`, `KICK_CLIENT_SECRET`, `CLAVE_CIFRADO`, `KICK_SLUG`,
+   `URL_BASE` y `MONGODB_URI` en Railway (tareas 3 a 8).
+2. Crear el bucket R2 con acceso público **y CORS** (tareas 9 y 10). Sin CORS el
+   video no carga y el error del navegador no dice por qué.
+3. Entrar a `/panel`, tocar **Generar una nueva** en la clave de subida,
+   **Copiar**, y pegarla en `herramientas/.env` como `CLAVE_SUBIDA`. No hace
+   falta que aparezca en pantalla; si estás transmitiendo, no toques "Mostrar
+   igual".
+4. Pegar la URL del webhook (`/panel` la muestra) en kick.com → Settings →
+   Developer → Enable Webhooks. Sin eso el chat de la Sala queda mudo.
+
+### Pendiente, anotado
+
+- **La cuenta secundaria de Kick** para probar el circuito completo del
+  espectador (login → escribir en la Sala → aparece en kick.com → vuelve por el
+  webhook) es lo único que falta del criterio de aceptación y depende de las
+  credenciales.
+- **El botón "Suscribirse" a kick.com/istincho** que menciona el objetivo del
+  prompt (no está en la lista de entregables). Es un link; se agrega en cinco
+  minutos cuando el dueño diga dónde lo quiere.
+- **`chat.js` todavía puede crear canales del bus con cualquier slug del
+  payload** (anotado en la entrada "Fase 1: CERRADA"). El filtro por red no lo
+  toca: sigue siendo la misma puerta, del otro lado.
+- **El límite de envío y la espera del 429 viven en memoria.** Con más de una
+  instancia en Railway dejarían de valer. Hoy hay una sola.
+- **La sincronización no corrige con `playbackRate`.** Un seek de 1,5 s se ve.
+  Si molesta, la alternativa está evaluada en la decisión 3.
+
+### Archivos tocados
+
+Nuevos: `servidor/{videos,reloj,espectadores,metricas}.js`,
+`paginas/sala.html`, `paginas/sala/{sala.js,sala.css,demo.js}`,
+`paginas/panel/{panel.js,panel.css}`, `paginas/comun/mensajes.js`,
+`pruebas/{videos,metricas,reloj,espectadores,sala-http,pagina-sala,pagina-panel}.test.js`.
+
+Editados: `servidor/index.js` (rutas nuevas, callback de espectador, filtro de
+redes, presencia, enrutador), `servidor/canales.js` (filtro por red por
+conexión), `servidor/almacen.js` (colección `subidas`), `servidor/vinculos.js`
+(`identidad`), `servidor/kick.js` (`retryAfter` en el error),
+`paginas/panel.html` (reescrita, el JS salió a `panel/panel.js`),
+`paginas/chat.html` y `paginas/chat/chat.js` (usan el render compartido),
+`pruebas/canales.test.js` (el filtro), `pruebas/pagina-chat.test.js` (carga el
+render compartido), `pruebas/fijos/dom-falso.js` (elementos `<video>`, `append`,
+scripts previos, ruta y globales), `README.md`, `BITACORA.md`.
+
+---
+
 ## 2026-09-06 — Fase 1: los cabos sueltos del cierre
 
 Los siete puntos que la entrada "Fase 1: CERRADA" dejó anotados como

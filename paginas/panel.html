@@ -4,61 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Panel · Sala</title>
-<link rel="stylesheet" href="comun/base.css">
-<style>
-  /* estilos minimos propios del panel: la Fase 2 completa esto,
-     por ahora solo lo justo para que el layout no quede feo */
-  .fila-botones{
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--espacio-3);
-    margin: var(--espacio-3) 0;
-  }
-  .boton-grande{
-    flex: 1 1 12rem;
-    display: block;
-    text-align: center;
-    text-decoration: none;
-    font-weight: 600;
-    background: var(--fondo-tarjeta);
-    color: var(--texto);
-    border: 1px solid var(--borde);
-    border-radius: var(--radio);
-    padding: var(--espacio-3);
-  }
-  .boton-grande:hover{ border-color: var(--acento); }
-  /* apagado: primero hay que entrar con Kick para poder vincular Twitch.
-     No se usa <a disabled>, que no existe: se marca con aria-disabled y
-     se le saca el aspecto de boton usable con esta clase. */
-  .boton-grande.apagado{
-    opacity: 0.5;
-    pointer-events: none;
-  }
-  .fila-red{
-    display: flex;
-    align-items: center;
-    gap: var(--espacio-2);
-    margin: var(--espacio-2) 0;
-  }
-  .boton-secundario{
-    font: inherit;
-    background: var(--fondo);
-    color: var(--texto);
-    border: 1px solid var(--borde);
-    border-radius: var(--radio);
-    padding: 0.4rem 0.8rem;
-    cursor: pointer;
-  }
-  button:focus-visible, a:focus-visible{
-    outline: 2px solid var(--acento);
-    outline-offset: 2px;
-  }
-</style>
+<link rel="stylesheet" href="/comun/base.css">
+<link rel="stylesheet" href="/panel/panel.css">
 </head>
 <body>
-<main class="contenedor">
+<main class="contenedor contenedor-panel">
   <h1>Panel</h1>
 
+  <div id="aviso-panel" class="banda-aviso" hidden>
+    <span id="texto-aviso-panel"></span>
+    <button type="button" id="boton-cerrar-aviso-panel" aria-label="Cerrar aviso">×</button>
+  </div>
+
+  <!-- ---------- conexiones ---------- -->
   <section class="tarjeta" id="tarjeta-estado" aria-live="polite">
     <p id="texto-carga">consultando…</p>
   </section>
@@ -68,83 +26,107 @@
     <a id="link-twitch" class="boton-grande apagado" href="/oauth/twitch/entrar?destino=/panel" aria-disabled="true">Vincular Twitch</a>
   </div>
 
+  <!-- ---------- la sala ---------- -->
+  <section class="tarjeta" id="tarjeta-sala" hidden>
+    <h2>La sala</h2>
+
+    <p class="linea-reloj">
+      <span class="puntito" id="puntito-reloj"></span>
+      <span id="estado-reloj">sin nada puesto</span>
+    </p>
+    <p class="dato-grande"><span id="posicion-reloj">–</span></p>
+
+    <div class="fila-controles">
+      <select id="select-video" class="select-panel" aria-label="Video a reproducir">
+        <option value="">— elegí un video —</option>
+      </select>
+      <button type="button" id="boton-reproducir" class="boton-panel">Reproducir</button>
+      <button type="button" id="boton-pausar" class="boton-panel">Pausar</button>
+      <button type="button" id="boton-reanudar" class="boton-panel">Reanudar</button>
+      <button type="button" id="boton-detener" class="boton-panel boton-peligro">Detener</button>
+    </div>
+
+    <div class="fila-controles">
+      <button type="button" id="boton-atras-60" class="boton-panel">−60 s</button>
+      <button type="button" id="boton-atras-10" class="boton-panel">−10 s</button>
+      <button type="button" id="boton-adelante-10" class="boton-panel">+10 s</button>
+      <button type="button" id="boton-adelante-60" class="boton-panel">+60 s</button>
+    </div>
+
+    <p class="linea-tenue">
+      <span id="dato-conectados">0</span> mirando ·
+      pico <span id="dato-pico">0</span> ·
+      <a id="link-sala" href="/sala/">abrir la Sala</a>
+    </p>
+  </section>
+
+  <!-- ---------- videos ---------- -->
+  <section class="tarjeta" id="tarjeta-videos" hidden>
+    <h2>Videos</h2>
+    <ul class="lista-videos" id="lista-videos"></ul>
+    <p class="linea-tenue" id="sin-videos" hidden>
+      Todavía no hay ninguno. Se suben desde tu PC con
+      <code>python herramientas/subir.py "archivo.mkv"</code>.
+    </p>
+  </section>
+
+  <!-- ---------- métricas ---------- -->
+  <section class="tarjeta" id="tarjeta-metricas" hidden>
+    <h2>Métricas</h2>
+    <p class="linea-tenue">Se cuentan en memoria: vuelven a cero en cada despliegue.
+      Desde <span id="dato-desde">–</span>.</p>
+    <ul class="lista-metricas">
+      <li><b id="dato-mensajes-hora">0</b> mensajes en la última hora</li>
+      <li><b id="dato-mensajes-total">0</b> mensajes en las últimas 24 h</li>
+      <li><b id="dato-envios">0</b> envíos desde la Sala (<span id="dato-envios-ok">0</span> salieron)</li>
+      <li><b id="dato-429">0</b> frenadas de Kick (429)</li>
+      <li><b id="dato-pico-metricas">0</b> espectadores a la vez, como máximo</li>
+    </ul>
+    <div class="grafico-horas" id="grafico-horas" aria-hidden="true"></div>
+  </section>
+
+  <!-- ---------- clave de subida ---------- -->
+  <section class="tarjeta" id="tarjeta-clave" hidden>
+    <h2>Clave de subida</h2>
+    <p class="linea-tenue">
+      La usa <code>herramientas/subir.py</code> desde tu PC. Se guarda hasheada:
+      esta pantalla no la puede volver a mostrar.
+    </p>
+    <p><span id="estado-clave">no hay ninguna</span></p>
+
+    <div class="fila-controles">
+      <button type="button" id="boton-generar-clave" class="boton-panel">Generar una nueva</button>
+      <button type="button" id="boton-revocar-clave" class="boton-panel boton-peligro">Revocar</button>
+    </div>
+
+    <!-- La clave recién generada NO se muestra: esta pantalla se mira
+         con la transmisión al aire. Se copia al portapapeles, y sólo
+         si alguien insiste se muestra, con el aviso al lado. -->
+    <div class="caja-clave" id="caja-clave" hidden>
+      <p class="aviso-pantalla">Se ve una sola vez. <b>No la muestres si estás transmitiendo.</b></p>
+      <div class="fila-controles">
+        <button type="button" id="boton-copiar-clave" class="boton-panel">Copiar</button>
+        <button type="button" id="boton-mostrar-clave" class="boton-panel">Mostrar igual</button>
+      </div>
+      <code class="valor-clave" id="valor-clave" hidden></code>
+      <p class="linea-tenue">Pegala en <code>herramientas/.env</code> como <code>CLAVE_SUBIDA</code>.</p>
+    </div>
+  </section>
+
+  <!-- ---------- lo que hay que hacer a mano ---------- -->
+  <section class="tarjeta" id="tarjeta-webhook" hidden>
+    <h2>Webhook de Kick</h2>
+    <p class="linea-tenue">
+      Esta dirección se pega <b>a mano</b> en kick.com → Settings → Developer →
+      Enable Webhooks. La API no la acepta, y sin ella las suscripciones se
+      crean bien pero no llega ni un mensaje.
+    </p>
+    <code class="valor-clave" id="url-webhook"></code>
+  </section>
+
   <p><a href="/chat">Abrir el Chat Global</a></p>
 </main>
 
-<script>
-  const textoCarga   = document.getElementById('texto-carga');
-  const tarjetaEstado = document.getElementById('tarjeta-estado');
-  const linkKick   = document.getElementById('link-kick');
-  const linkTwitch = document.getElementById('link-twitch');
-
-  // arma una fila "puntito + texto" para una red dentro de la tarjeta de estado
-  function filaRed(colorPuntito, texto) {
-    const p = document.createElement('p');
-    p.className = 'fila-red';
-    const puntito = document.createElement('span');
-    puntito.className = 'puntito ' + colorPuntito;
-    const span = document.createElement('span');
-    span.textContent = texto;
-    p.append(puntito, span);
-    return p;
-  }
-
-  function formatearUltima(iso) {
-    if (!iso) return 'sin mensajes todavía';
-    return 'última: ' + new Date(iso).toLocaleString('es-AR');
-  }
-
-  function mostrarSinSesion() {
-    textoCarga.textContent = 'todavía no entraste con Kick';
-    // sin sesion de dueño no se puede vincular Twitch: se apaga el link
-    // hasta que haya sesion (login con Kick no autoriza nada por si solo,
-    // pero sin el no hay ni siquiera con quien asociar el vinculo)
-    linkTwitch.classList.add('apagado');
-    linkTwitch.setAttribute('aria-disabled', 'true');
-  }
-
-  function mostrarEstado(salud) {
-    tarjetaEstado.innerHTML = ''; // seguro: el contenido siguiente se arma con createElement/textContent, no con datos crudos de afuera
-
-    const kick = salud.kick;
-    const colorKick = !kick.vinculado ? 'mal' : kick.suscripcion === 'activa' ? 'bien' : kick.suscripcion === 'falta' ? 'regular' : 'regular';
-    tarjetaEstado.appendChild(filaRed(colorKick,
-      `Kick: ${kick.vinculado ? 'vinculado' : 'no vinculado'} · suscripción ${kick.suscripcion} · ${formatearUltima(kick.ultima)}`));
-
-    const twitch = salud.twitch;
-    const colorTwitch = !twitch.vinculado ? 'mal' : twitch.estado === 'conectado' ? 'bien' : twitch.estado === 'cortado' ? 'mal' : 'regular';
-    tarjetaEstado.appendChild(filaRed(colorTwitch,
-      `Twitch: ${twitch.vinculado ? 'vinculado' : 'no vinculado'} · ${twitch.estado} (${twitch.modo}) · ${formatearUltima(twitch.ultima)}`));
-
-    if (kick.vinculado) {
-      const boton = document.createElement('button');
-      boton.type = 'button';
-      boton.className = 'boton-secundario';
-      boton.textContent = 'Resuscribir Kick';
-      boton.addEventListener('click', () => {
-        boton.disabled = true;
-        fetch('/api/chat/resuscribir', { method: 'POST', credentials: 'same-origin' })
-          .then(() => location.reload())
-          .catch(() => { boton.disabled = false; boton.textContent = 'no se pudo, reintentar'; });
-      });
-      tarjetaEstado.appendChild(boton);
-    }
-
-    // ya hay sesion: se puede vincular Twitch, y los links pasan a "volver a"
-    linkTwitch.classList.remove('apagado');
-    linkTwitch.removeAttribute('aria-disabled');
-    linkKick.textContent = 'Volver a entrar con Kick';
-    if (twitch.vinculado) linkTwitch.textContent = 'Volver a vincular Twitch';
-  }
-
-  fetch('/api/chat/salud', { credentials: 'same-origin' })
-    .then(r => {
-      if (r.status === 401) { mostrarSinSesion(); return null; }
-      if (!r.ok) throw new Error('http ' + r.status);
-      return r.json();
-    })
-    .then(salud => { if (salud) mostrarEstado(salud); })
-    .catch(() => { textoCarga.textContent = 'no se pudo consultar el estado'; });
-</script>
+<script src="/panel/panel.js"></script>
 </body>
 </html>

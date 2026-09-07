@@ -1,0 +1,180 @@
+/* ============================================================
+   El panel del dueño. Encima de comun/base.css.
+
+   Se mira desde el celular mientras el stream está al aire, así que
+   los botones son grandes y nada depende de pasar el mouse por
+   encima.
+   ============================================================ */
+
+/* El `hidden` del HTML vale `display:none` sólo si nadie pone un
+   display propio, y acá hay varias filas flex que se esconden. */
+[hidden]{ display: none !important; }
+
+.contenedor-panel{
+  max-width: 48rem;
+  padding-block: var(--espacio-4);
+}
+
+.tarjeta{ margin-bottom: var(--espacio-3); }
+.tarjeta h2{ font-size: 1rem; margin: 0 0 var(--espacio-2); }
+
+.fila-botones{
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--espacio-3);
+  margin: var(--espacio-3) 0;
+}
+
+.boton-grande{
+  flex: 1 1 12rem;
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 600;
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: var(--espacio-3);
+}
+.boton-grande:hover{ border-color: var(--acento); }
+
+/* apagado: primero hay que entrar con Kick para poder vincular
+   Twitch. No se usa <a disabled>, que no existe: se marca con
+   aria-disabled y se le saca el aspecto de botón usable. */
+.boton-grande.apagado{
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.fila-red{
+  display: flex;
+  align-items: center;
+  gap: var(--espacio-2);
+  margin: var(--espacio-2) 0;
+}
+
+.fila-controles{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+  margin: var(--espacio-2) 0;
+}
+
+.boton-panel, .boton-secundario{
+  font: inherit;
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  min-height: 2.5rem;   /* dedo, no mouse */
+}
+.boton-panel:hover{ border-color: var(--acento); }
+.boton-panel:disabled{ opacity: 0.45; cursor: default; }
+.boton-peligro{ border-color: var(--mal); color: var(--mal); }
+
+.select-panel{
+  font: inherit;
+  background: var(--fondo);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.5rem;
+  min-height: 2.5rem;
+  flex: 1 1 12rem;
+  max-width: 100%;
+}
+
+.linea-reloj{
+  display: flex;
+  align-items: center;
+  gap: var(--espacio-2);
+  margin: 0;
+}
+
+.dato-grande{
+  font-size: 1.6rem;
+  font-variant-numeric: tabular-nums;
+  margin: var(--espacio-1) 0 var(--espacio-3);
+}
+
+.linea-tenue{ color: var(--texto-tenue); font-size: 0.85rem; }
+
+.lista-videos, .lista-metricas{
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lista-videos li{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+  padding: var(--espacio-2) 0;
+  border-bottom: 1px solid var(--borde);
+}
+.lista-videos li:last-child{ border-bottom: 0; }
+
+.nombre-video{ flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.dato-video{ color: var(--texto-tenue); font-size: 0.85rem; }
+.video-en-marcha{ color: var(--acento); font-weight: 700; }
+
+.lista-metricas li{ padding: 0.15rem 0; }
+
+/* barras de mensajes por hora: 24 columnas, sin librería */
+.grafico-horas{
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 3rem;
+  margin-top: var(--espacio-2);
+}
+.grafico-horas span{
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--acento);
+  opacity: 0.7;
+  border-radius: 2px 2px 0 0;
+  min-height: 1px;
+}
+
+.caja-clave{
+  border: 1px solid var(--regular);
+  border-radius: var(--radio);
+  padding: var(--espacio-3);
+  margin-top: var(--espacio-2);
+}
+
+.aviso-pantalla{ color: var(--regular); margin: 0 0 var(--espacio-2); }
+
+.valor-clave{
+  display: block;
+  background: var(--fondo);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: var(--espacio-2);
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+
+.banda-aviso{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--regular);
+  border-radius: var(--radio);
+  padding: var(--espacio-2);
+  margin-bottom: var(--espacio-3);
+  font-size: 0.9rem;
+}
+
+button:focus-visible, a:focus-visible, select:focus-visible{
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}

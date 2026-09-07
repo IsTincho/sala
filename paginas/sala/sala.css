@@ -297,6 +297,20 @@
   padding: 0.3rem 0.7rem;
 }
 
+/* Suscribirse: abajo de todo, ancho completo y en el verde de Kick.
+   Es lo último de la columna del chat a propósito: se ofrece, no se
+   mete en el medio de lo que la persona está leyendo. */
+.boton-suscribirse{
+  display: block;
+  text-align: center;
+  background: var(--kick);
+  color: #0b0d10;
+  text-decoration: none;
+  font-weight: 700;
+  border-radius: var(--radio);
+  padding: 0.45rem 0.7rem;
+}
+
 .caja-escritura{
   display: flex;
   flex-direction: column;

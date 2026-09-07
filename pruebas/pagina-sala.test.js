@@ -767,3 +767,162 @@ test('el botón del parlante devuelve el sonido', async () => {
 
   p.cerrar();
 });
+
+/* ------------------------------------------- el botón con la sala en pausa */
+
+test('con la sala en pausa, ▶ no arranca la película: la deja quieta y lo dice', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA. El botón de play existe porque el navegador
+   * puede no dejar arrancar solo, no para pelearse con el reloj de la
+   * sala. Cuando arrancaba por su cuenta con la sala en pausa, la
+   * película corría unos segundos y la sincronización de cada diez la
+   * tironeaba de vuelta: la persona veía el video moverse y después
+   * dar un salto para atrás, sin entender por qué.
+   */
+  const p = abrir();
+  await arrancada();
+  p.api().fijarDesfase(0);
+
+  const video = p.el('video-peli');
+  const empezoEn = Date.now() - 60_000;
+  p.api().aplicarReloj(relojReproduciendo({
+    estado: 'pausado', empezoEn, pausadoEn: empezoEn + 30_000, offsetInicial: 0,
+  }));
+  assert.equal(video.paused, true, 'con la sala en pausa el video arranca quieto');
+
+  p.el('boton-play').disparar('click');
+
+  assert.equal(video.paused, true,
+    'arrancó con la sala en pausa: en diez segundos el reloj lo tironea para atrás');
+  assert.equal(p.el('aviso-sala').hidden, false, 'arrancó o no arrancó, pero no dijo nada');
+  assert.match(p.el('texto-aviso').textContent, /pausa/i);
+
+  /* Y la pausa local quedó levantada: cuando la sala reanude, esta
+     pantalla arranca sola sin que nadie toque nada. */
+  assert.equal(p.api().pausaLocal, false);
+  p.api().aplicarReloj(relojReproduciendo({ empezoEn: Date.now() - 30_000, offsetInicial: 0 }));
+  assert.equal(video.paused, false, 'la sala reanudó y esta pantalla se quedó parada');
+
+  p.cerrar();
+});
+
+test('con la sala detenida, ▶ tampoco arranca nada', async () => {
+  const p = abrir();
+  await arrancada();
+
+  const video = p.el('video-peli');
+  p.api().aplicarReloj({ tipo: 'reloj', estado: 'detenido', videoId: '' });
+
+  p.el('boton-play').disparar('click');
+
+  assert.equal(video.paused, true, 'se puso a reproducir un video que no existe');
+  assert.match(p.el('texto-aviso').textContent, /no empezó/i);
+
+  p.cerrar();
+});
+
+/* ------------------------------------------------- el arranque de la página */
+
+test('un /api/hora colgado no deja la sala muda: el bus se conecta igual', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA. `iniciar()` hacía `await medirDesfase()`
+   * antes de conectar, y el fetch no tenía corte. Un /api/hora que no
+   * contesta nunca (un proxy que se traga la respuesta) dejaba la sala
+   * SIN BUS: ni reloj, ni chat, ni contador, y ni un error a la vista.
+   */
+  const señales = [];
+  const p = abrir({
+    respuestas: {
+      '/api/hora': opciones => new Promise((_, rechazar) => {
+        señales.push(opciones.signal);
+        opciones.signal.addEventListener('abort', () => rechazar(new Error('abortada')));
+      }),
+    },
+  });
+  await arrancada();
+
+  assert.equal(p.conectadoAlBus, true,
+    'sin la hora del servidor no se conectó al bus: la sala queda muda para siempre');
+
+  /* Y con el cable puesto, lo que importa llega igual. */
+  p.llega('chat', mensaje({ texto: 'se lee igual' }));
+  assert.equal(p.el('lista-chat').children.length, 1);
+  p.llega('presencia', { tipo: 'presencia', conectados: 9 });
+  assert.equal(p.el('contador-espectadores').textContent, '9');
+
+  p.cerrar();
+});
+
+test('el pedido de la hora se corta solo en vez de esperar para siempre', async () => {
+  const señales = [];
+  const p = abrir({
+    respuestas: {
+      '/api/hora': opciones => new Promise((_, rechazar) => {
+        señales.push(opciones.signal);
+        opciones.signal.addEventListener('abort', () => rechazar(new Error('abortada')));
+      }),
+    },
+  });
+
+  /* Se espera a que el corte llegue, con margen de sobra: el corte es
+     de 3 s. Sin corte, esta espera se agota y la señal sigue viva. */
+  const hasta = Date.now() + 6000;
+  while (!señales[0]?.aborted && Date.now() < hasta) await esperar(50);
+
+  assert.equal(señales.length, 1, 'volvió a pedir la hora después de un corte: son 9 s de espera al pedo');
+  assert.equal(señales[0].aborted, true, 'el fetch de la hora no tiene corte: espera para siempre');
+
+  p.cerrar();
+});
+
+/* --------------------------------------------------- pantalla completa */
+
+test('pantalla completa es la caja del video, no el video pelado, y el botón la saca', async () => {
+  /* La caja lleva los controles adentro: pedirla sobre el <video> deja
+     a la persona en pantalla completa sin volumen ni subtítulos. */
+  const p = abrir();
+  await arrancada();
+  p.api().aplicarReloj(relojReproduciendo());
+
+  /* Se compara por id y no por el elemento: un assert que falla sobre
+     un nodo del árbol imprime el árbol entero, con sus padres, y la
+     suite se queda colgada armando el mensaje. */
+  const quienLaTiene = () => p.documento.fullscreenElement?.id ?? null;
+
+  const boton = p.el('boton-pantalla-completa');
+  boton.disparar('click');
+  assert.equal(quienLaTiene(), 'caja-video');
+
+  boton.disparar('click');
+  assert.equal(quienLaTiene(), null, 'el mismo botón tiene que sacarla');
+
+  p.cerrar();
+});
+
+/* ------------------------------------------------------ suscribirse */
+
+test('el botón de suscribirse es un link a kick.com/<canal>/subscribe', async () => {
+  const p = abrir({ ruta: '/sala/istincho' });
+  await arrancada();
+
+  const link = p.el('link-suscribirse');
+  assert.equal(link.hidden, false);
+  assert.equal(link.href, 'https://kick.com/istincho/subscribe');
+  /* Se abre en otra pestaña y sin dejarle a Kick la referencia a esta:
+     la película sigue corriendo acá. */
+  assert.equal(link.getAttribute('target'), '_blank');
+  assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+
+  p.cerrar();
+});
+
+test('un canal raro tampoco se cuela en el link de suscribirse', async () => {
+  const p = abrir({ busqueda: '?canal=x%22%3E%26a%3D1' });
+  await arrancada();
+
+  const link = p.el('link-suscribirse');
+  assert.equal(link.href, 'https://kick.com/x%22%3E%26a%3D1/subscribe');
+  assert.ok(!link.href.includes('"'), link.href);
+
+  p.cerrar();
+});

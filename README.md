@@ -249,6 +249,10 @@ Cada 10 s se compara `video.currentTime` con el objetivo y se salta si la difere
 
 Medido con dos navegadores contra el servidor de verdad: **0,04 s de diferencia** entre los dos, y **0,51 s** después de pausar, saltar 300 s y reanudar desde el panel.
 
+El botón ▶ **no arranca nada por su cuenta**: existe porque el navegador puede no dejar reproducir sin un gesto, no para pelearse con el reloj. Con la sala en pausa, tocarlo levanta la pausa local, deja el video quieto y avisa que la sala está en pausa; si arrancara, la película correría unos segundos y la corrección de los 10 s la tironearía para atrás, que es exactamente el salto que la persona no entiende. Cuando la sala reanuda, esa pantalla arranca sola.
+
+Y la medición del desfase (`/api/hora`, tres muestras, se elige la del viaje más corto) **no bloquea el arranque de la página**: se conecta al bus primero y el desfase se acomoda cuando llega, con un corte de 3 s por pedido. Antes era un `await` sin timeout: un `/api/hora` colgado dejaba la sala sin bus, o sea sin reloj y sin chat, y sin un solo error a la vista.
+
 Además: Chrome **pausa solo** el video mudo de una pestaña que no se ve, y al volver no lo arranca. Por eso hay un `visibilitychange` que resincroniza y vuelve a reproducir; sin él, quien se va a otra pestaña media hora vuelve a una película congelada media hora atrás.
 
 ### hls.js
@@ -270,6 +274,8 @@ Al escribir, `POST /api/sala/:slug/chat` pasa por tres frenos en este orden:
 1. el tope de Kick (500 caracteres / 2048 bytes), antes de gastar un pedido en algo que va a rebotar;
 2. la espera del **canal**, si Kick nos frenó hace poco: el 429 es del canal, no de la persona, y seguir mandando sólo consigue más;
 3. la espera de la persona: **uno cada dos segundos**.
+
+Debajo del chat hay un **"Suscribirse"**: es un link a `https://kick.com/<canal>/subscribe`, se abre en otra pestaña (`rel="noopener noreferrer"`, así la película sigue corriendo acá) y no hay nada que cobrar de este lado.
 
 El mensaje **no se difunde por el bus**: vuelve por el webhook como cualquier otro. Pintarlo al enviarlo lo mostraría dos veces y encima mentiría si Kick lo retuvo.
 

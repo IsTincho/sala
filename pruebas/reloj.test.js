@@ -191,13 +191,21 @@ test('reanudar arranca un tramo nuevo: el tiempo pausado no cuenta', async () =>
   const rPausa = await reloj.aplicar('canal-reloj-reanudar', 'pausar', {});
   const posEnPausa = reloj.posicion(rPausa.reloj, Date.now());
 
-  await esperar(300);                                            // pausado un buen rato
+  await esperar(1200);                                           // pausado un buen rato
 
   const rReanuda = await reloj.aplicar('canal-reloj-reanudar', 'reanudar', {});
   const posJustoDespues = reloj.posicion(rReanuda.reloj, Date.now());
 
+  /* Los dos numeros son a proposito: 1,2 s de pausa contra medio
+     segundo de tolerancia. Esta posicion se mide contra el reloj de
+     pared, o sea que se le suma lo que tarde la escritura en el
+     almacen; con 0,3 s de pausa y 0,1 s de tolerancia, una escritura
+     lenta hacia fallar la prueba una de cada diez corridas SIN que
+     nada estuviera roto. Con esta distancia, el bug que ataja (contar
+     el tiempo pausado) da 1,2 s y se sigue cazando, y el ruido de la
+     maquina tiene tres veces mas lugar del que necesita. */
   assert.ok(
-    Math.abs(posJustoDespues - posEnPausa) < 0.1,
+    Math.abs(posJustoDespues - posEnPausa) < 0.5,
     `la posicion al reanudar (${posJustoDespues}) tiene que ser casi igual a la de la pausa (${posEnPausa})`,
   );
   /* El offsetInicial del tramo nuevo tiene que ser EXACTAMENTE la

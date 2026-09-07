@@ -4,6 +4,147 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Fase 2: los cuatro cabos que quedaron sueltos
+
+Las cuatro cosas que la entrada de abajo dejó anotadas sin cerrar, cerradas.
+**411 pruebas en verde** (eran 404) y **once mutaciones aplicadas a mano, once
+cazadas** sobre una copia del árbol en un directorio aparte. La suite se corrió
+entera diez veces: las primeras cuatro destaparon un test que fallaba una de
+cada diez, y ese también se arregló.
+
+Trabajo hecho en paralelo con el arreglo del script de subida, sin tocar
+`herramientas/`.
+
+### 1. El botón ▶ con la sala en pausa (el peor de los cuatro)
+
+Con la sala pausada, tocar ▶ arrancaba la película. El reloj no se enteraba, y
+diez segundos después la sincronización la tironeaba de vuelta al segundo donde
+la sala estaba congelada. La persona veía el video moverse y después dar un
+salto para atrás, sin nada que lo explicara; y volvía a pasar cada diez
+segundos mientras siguiera insistiendo.
+
+El botón existe porque el navegador puede no dejar arrancar solo, **no para
+pelearse con el reloj de la sala**. Ahora el click levanta la pausa local,
+sincroniza y le pasa la decisión a `aplicarReproduccion()`, que es la única que
+decide si se reproduce y que con la sala en pausa deja el video quieto. Y como
+"no pasó nada" es una respuesta pésima para un botón, se avisa por qué: *la
+sala está en pausa: arranca sola cuando la reanuden* (o *todavía no empezó la
+película*, si el reloj está detenido).
+
+El efecto que importa: la pausa local queda **levantada**, así que cuando el
+dueño reanuda, esa pantalla arranca sola sin que nadie toque nada. Hay una
+prueba que sigue la historia entera: pausa → click → sigue quieto y lo dice →
+llega el reloj reanudado → arranca.
+
+### 2. `iniciar()` ya no depende de que `/api/hora` conteste
+
+Era `await medirDesfase()` **antes** de conectar al bus, y el `fetch` no tenía
+timeout. Un `/api/hora` colgado —un proxy que se traga la respuesta, una red
+que se fue a mitad de camino— dejaba la sala **muda para siempre y sin un solo
+error visible**: no conectaba, así que no llegaba ni el reloj, ni el chat, ni
+el contador. En vivo eso parece "se rompió todo" y no deja rastro.
+
+Dos cambios:
+
+- **Primero el cable.** `conectar()` y el intervalo de sincronización van
+  antes; la medición sale después y sin `await`, y cuando termina fuerza una
+  sincronización. El desfase arranca en cero, que es una suposición razonable
+  (el reloj de una máquina rara vez está a más de un segundo) y se corrige sola
+  en cuanto la medición llega.
+- **Corte de 3 s por pedido**, con `AbortController`. Si el primero se cortó,
+  no se intentan los otros dos: son nueve segundos de espera para el mismo
+  resultado. Queda para la medición de dentro de diez minutos, que ya existía.
+
+### 3. El botón "Suscribirse"
+
+Debajo del chat, ancho completo, en el verde de Kick. Es un link de verdad a
+`https://kick.com/<canal>/subscribe`, con `target="_blank"` y
+`rel="noopener noreferrer"` para que la película siga corriendo en esta
+pestaña. El slug sale de la dirección, así que va con `encodeURIComponent` como
+el del iframe de la cámara, y hay una prueba con un canal raro que lo verifica.
+De este lado no se cobra nada: la suscripción se paga y se maneja en Kick.
+
+### 4. La prueba de pantalla completa
+
+Faltaba, y no era decorativa: prueba que se pide sobre `#caja-video` y **no
+sobre el `<video>` pelado**. La diferencia se ve: la caja lleva los controles
+adentro, así que pedirla sobre el video deja a la persona en pantalla completa
+sin volumen, sin subtítulos y sin play.
+
+Para eso, `pruebas/fijos/dom-falso.js` aprendió tres cosas chicas:
+`requestFullscreen()` en los elementos, `fullscreenElement` / `exitFullscreen()`
+en el documento, y `AbortController` en el contexto de la página. Además, ahora
+**todo el árbol parseado sabe de qué documento es** (antes sólo lo sabían los
+elementos creados desde el JS), que es lo que permite que un elemento del HTML
+pida la pantalla completa.
+
+### El test que pasaba nueve de cada diez veces
+
+Corriendo la suite entera cuatro veces apareció `reloj.test.js` → *reanudar
+arranca un tramo nuevo: el tiempo pausado no cuenta*, fallando **una de cada
+diez**, y no por un bug: la posición se mide contra el reloj de pared después
+de que `aplicar()` escriba en el almacén, y esa escritura a veces se toma 140
+ms. Con 300 ms de pausa y 0,1 s de tolerancia, eso alcanzaba para fallar.
+
+Se separaron los números en vez de aflojar la tolerancia sola: **1,2 s de pausa
+contra 0,5 s de tolerancia**. El bug que ataja (que reanudar cuente el tiempo
+pausado) da 1,2 s de diferencia y se sigue cazando —verificado con la mutación—
+y el ruido de la máquina tiene tres veces más lugar del que necesita.
+
+### Las once mutaciones, y qué las caza
+
+| Mutación | La caza |
+|---|---|
+| ▶ con la sala en pausa vuelve a `intentarReproducir()` | *con la sala en pausa, ▶ no arranca la película* (y la de "detenida") |
+| se saca el aviso de por qué no arrancó | las mismas dos |
+| vuelve el `await medirDesfase()` antes de `conectar()` | *un /api/hora colgado no deja la sala muda* |
+| se saca el corte de 3 s del `fetch` de la hora | *el pedido de la hora se corta solo* |
+| se saca el `break` y se cuelga tres veces seguidas | la misma |
+| pantalla completa sobre el `<video>` en vez de la caja | *pantalla completa es la caja del video* |
+| el botón no sale de pantalla completa | la misma |
+| el link de suscribirse sin `encodeURIComponent` | *un canal raro tampoco se cuela* |
+| el link sin `rel="noopener noreferrer"` | *el botón de suscribirse es un link a kick.com* |
+| el link se queda escondido | la misma |
+| `reanudar` cuenta el tiempo que estuvo pausado | *reanudar arranca un tramo nuevo* (con el margen nuevo) |
+
+### Una trampa que costó, y queda anotada
+
+**Un `assert.equal` sobre un nodo del árbol cuelga la suite.** El primer test de
+pantalla completa comparaba el elemento contra `p.el('caja-video')`. Cuando la
+mutación lo hizo fallar, node se puso a armar el mensaje de error imprimiendo
+los dos elementos —con sus padres, sus hijos y las referencias circulares— y la
+corrida no terminó nunca: dos minutos y hubo que matarla. La mutación quedaba
+como "la suite se cuelga" en vez de "este test falla", que es de lo peor que
+puede pasar cuando lo que estás midiendo es si el test cae. Ahora se compara
+por `id`. Vale para cualquier prueba de estas páginas.
+
+### Cómo verlo funcionando
+
+```bash
+npm test                     # 411 pruebas
+```
+
+En `http://localhost:8778/sala/istincho?demo=1` se ve el botón "Suscribirse"
+debajo del chat (apunta al canal de la dirección igual que la página de verdad).
+
+### Pendiente, sin cambios
+
+Lo de la entrada de abajo sigue igual: la cuenta secundaria de Kick para probar
+el circuito completo del espectador, `chat.js` creando canales del bus con el
+slug del payload, el límite de envío en memoria, y la corrección por seek en
+vez de `playbackRate`. Nada de eso se tocó.
+
+### Archivos tocados
+
+`paginas/sala/sala.js` (el botón ▶, el arranque, el corte del fetch, el link de
+suscribirse), `paginas/sala.html` (el link), `paginas/sala/sala.css` (su
+estilo), `pruebas/pagina-sala.test.js` (siete pruebas nuevas),
+`pruebas/fijos/dom-falso.js` (pantalla completa, `AbortController`, el árbol
+sabe de su documento), `pruebas/reloj.test.js` (el margen de la prueba que
+fallaba una de cada diez), `README.md`, `BITACORA.md`.
+
+---
+
 ## 2026-09-06 — Fase 2: la Sala
 
 Los entregables 2 a 5 del prompt, más las dos rutas que el script de subida ya

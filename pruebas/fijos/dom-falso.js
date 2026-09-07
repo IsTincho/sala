@@ -180,6 +180,15 @@ class Elemento {
     return c;
   }
 
+  /* Pantalla completa: lo justo para poder probar el boton. Quien la
+     tiene lo guarda el documento, como en el navegador, asi que el
+     test puede mirar QUE elemento se puso en grande (la caja del
+     video, con los controles adentro, y no el <video> pelado). */
+  requestFullscreen() {
+    if (this.raiz) this.raiz.fullscreenElement = this;
+    return Promise.resolve();
+  }
+
   addEventListener(tipo, fn) {
     if (!this.escuchas.has(tipo)) this.escuchas.set(tipo, []);
     this.escuchas.get(tipo).push(fn);
@@ -320,6 +329,9 @@ export function abrirPagina({
     documentElement,
     head: cabeza,
     body: raiz,
+    /* Nadie tiene la pantalla completa hasta que alguien la pida. */
+    fullscreenElement: null,
+    exitFullscreen: () => { documento.fullscreenElement = null; return Promise.resolve(); },
     getElementById: id => porId.get(id) ?? null,
     createElement: etiqueta => {
       const el = new Elemento(etiqueta);
@@ -337,14 +349,22 @@ export function abrirPagina({
       nodo.onload?.();
     },
   };
-  cabeza.raiz = documento;
-  raiz.raiz = documento;
+  /* Todo el arbol parseado sabe de que documento es. Sin esto, un
+     elemento que vino del HTML no puede pedir la pantalla completa
+     (no tiene a quien avisarle) y el test del boton no probaria nada. */
+  (function marcar(nodo) {
+    nodo.raiz = documento;
+    for (const h of nodo.children) marcar(h);
+  })(raiz);
 
   const almacenLocal = new Map();
 
   const caja = {
     console,
     URL, URLSearchParams, Response, TextDecoder,
+    /* El navegador lo tiene, y la pagina lo usa para cortar un fetch
+       que se colgo. El del test es el de verdad, de Node. */
+    AbortController,
     setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); temporizadores.add(t); t.unref?.(); return t; },
     clearTimeout: t => { temporizadores.delete(t); return clearTimeout(t); },
     setInterval: (fn, ms) => { const t = setInterval(fn, ms); temporizadores.add(t); t.unref?.(); return t; },

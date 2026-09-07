@@ -75,6 +75,7 @@
   const campoTexto = document.getElementById('campo-texto');
   const contadorCaracteres = document.getElementById('contador-caracteres');
   const botonEnviar = document.getElementById('boton-enviar');
+  const linkSuscribirse = document.getElementById('link-suscribirse');
 
   if (tituloSala && slug) tituloSala.textContent = slug;
 
@@ -118,15 +119,24 @@
   let desfase = 0;          // ms a sumarle al reloj local para tener el del servidor
   const ahoraServidor = () => Date.now() + desfase;
 
+  /* Un `fetch` sin timeout no falla nunca: espera. Un `/api/hora`
+     colgado (un proxy que se traga la respuesta, una red que se fue a
+     mitad de camino) dejaba esta función esperando para siempre, y con
+     ella todo lo que viniera después. Tres segundos son de sobra para
+     pedir la hora; pasados, se corta y se sigue sin desfase medido. */
+  const ESPERA_HORA = 3000;   // ms
+
   /* Tres muestras y se elige la del viaje más corto. La ida y vuelta
      más rápida es la que menos ruido tiene: en la más lenta no se sabe
      qué parte del tiempo fue de ida y qué parte de vuelta. */
   async function medirDesfase(muestras = 3) {
     let mejor = null;
     for (let i = 0; i < muestras; i++) {
+      const control = new AbortController();
+      const corte = setTimeout(() => control.abort(), ESPERA_HORA);
       try {
         const salida = Date.now();
-        const r = await fetch('/api/hora', { cache: 'no-store' });
+        const r = await fetch('/api/hora', { cache: 'no-store', signal: control.signal });
         const llegada = Date.now();
         if (!r.ok) continue;
         const datos = await r.json();
@@ -134,6 +144,11 @@
         const candidato = { viaje, desfase: Number(datos.ahora) + viaje / 2 - llegada };
         if (Number.isFinite(candidato.desfase) && (!mejor || viaje < mejor.viaje)) mejor = candidato;
       } catch { /* un intento perdido no rompe nada: quedan los otros */ }
+      finally { clearTimeout(corte); }
+      /* Si el primero se colgó hasta el corte, los otros dos se van a
+         colgar igual: son nueve segundos de espera para el mismo
+         resultado. Se deja para la medición de dentro de diez minutos. */
+      if (control.signal.aborted) break;
     }
     if (mejor) desfase = mejor.desfase;
     return desfase;
@@ -270,6 +285,12 @@
       : `desfasado ${deriva >= 0 ? '+' : ''}${deriva.toFixed(1)} s`;
   }
 
+  /** Si la SALA está pasando la película ahora mismo, más allá de
+      lo que haga esta pantalla. */
+  function salaEnMarcha() {
+    return Boolean(relojActual && relojActual.videoId && relojActual.estado === 'reproduciendo');
+  }
+
   /** Lo que el reloj dice que tiene que estar pasando en el player. */
   function aplicarReproduccion() {
     if (!relojActual || relojActual.estado === 'detenido') { video.pause(); return; }
@@ -323,7 +344,24 @@
          se quedó: si no, la persona sigue mirando el pasado. */
       pausaLocal = false;
       sincronizar({ forzar: true });
-      intentarReproducir();
+      /*
+       * EL BOTÓN NO ARRANCA NADA POR SU CUENTA.
+       *
+       * Este botón existe porque el navegador puede no dejar arrancar
+       * solo, no para pelearse con el reloj de la sala. Si arrancara
+       * con la sala en pausa, la película correría unos segundos y la
+       * sincronización de cada diez segundos la tironearía de vuelta:
+       * la persona ve el video moverse y después dar un salto para
+       * atrás, sin entender por qué. Quien decide si se reproduce es
+       * `aplicarReproduccion`, que con la sala en pausa deja el video
+       * quieto; acá sólo se dice por qué no pasó nada.
+       */
+      aplicarReproduccion();
+      if (!salaEnMarcha()) {
+        avisar(relojActual && relojActual.estado === 'pausado'
+          ? 'la sala está en pausa: arranca sola cuando la reanuden'
+          : 'todavía no empezó la película', { autoOcultar: true });
+      }
     } else {
       pausaLocal = true;
       video.pause();
@@ -732,17 +770,39 @@
         encodeURIComponent(`/sala/${slug}`);
     }
 
+    /* Suscribirse es un link de Kick, no una ruta nuestra: la
+       suscripción se paga y se maneja allá. El slug viene de la URL,
+       así que va escapado como el del iframe de la cámara. */
+    if (linkSuscribirse) {
+      linkSuscribirse.hidden = !slug;
+      if (slug) linkSuscribirse.href = `https://kick.com/${encodeURIComponent(slug)}/subscribe`;
+    }
+
     if (modoDemo) { iniciarDemo(); return; }
 
     pintarSesion({ entrado: false, nombre: '', puedeEscribir: false });
     consultarSesion();
-    await medirDesfase();
+
+    /*
+     * PRIMERO EL CABLE, DESPUÉS LA HORA.
+     *
+     * Esto era `await medirDesfase()` antes de conectar: un
+     * `/api/hora` lento o colgado dejaba la sala muda para siempre y
+     * sin un solo error a la vista —no conectaba al bus, así que no
+     * llegaba ni el reloj ni el chat, y desde afuera parecía que se
+     * había roto todo—. La medición ya no bloquea a nadie: el desfase
+     * arranca en cero (el reloj de una máquina rara vez está a más de
+     * un segundo) y se acomoda cuando la medición llega.
+     */
+    conectar();
+    setInterval(() => sincronizar(), CADA_SINCRO);
+
+    medirDesfase()
+      .then(() => sincronizar({ forzar: true }))
+      .catch(() => { /* sin desfase medido se sigue con el reloj local */ });
     /* El reloj de una máquina se corre solo con las horas; se vuelve a
        medir de a ratos para que la peli no se despegue de a poco. */
     setInterval(medirDesfase, 10 * 60 * 1000);
-
-    conectar();
-    setInterval(() => sincronizar(), CADA_SINCRO);
   }
 
   /* Se expone lo justo para poder probar la sincronización sin un

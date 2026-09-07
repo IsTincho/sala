@@ -25,6 +25,25 @@ const DATOS = await fsp.mkdtemp(path.join(os.tmpdir(), 'sala-vinculos-'));
 process.env.SALA_DATOS = DATOS;
 process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 
+/* KICK_SLUG NO ES DECORATIVO ACA, y por eso tiene su propio parrafo.
+
+   `vinculos.js` no lee esta variable, y sin embargo sin ella las ocho
+   aserciones de "el slug es obligatorio" no sostienen la promesa que
+   dicen sostener. El bug que cuidan es el que el encabezado de
+   `vinculos.js` describe con todas las letras: "lo comodo habria sido
+   agregar el slug al final con el del dueño como default", o sea
+
+       const s = String(slug || process.env.KICK_SLUG || '')
+
+   En un proceso sin KICK_SLUG ese default se resuelve a '', la guarda
+   dispara igual y la mutacion pasa la suite entera sin despeinarse:
+   las ocho aserciones cazan un default LITERAL ('istincho' escrito a
+   mano) y no el que sale del entorno, que es justamente el que
+   alguien escribiria. Con la variable puesta —como esta en Railway y
+   en cualquier proceso de verdad—, `leer(undefined, 'kick')` devuelve
+   el vinculo del dueño en vez de tirar, y la mutacion se cae. */
+process.env.KICK_SLUG = 'istincho';
+
 const almacen = await import('../servidor/almacen.js');
 const vinculos = await import('../servidor/vinculos.js');
 

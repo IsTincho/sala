@@ -76,7 +76,7 @@ const FIRMA_DELETE =
 /* ------------------------------------------------ los vectores de oro */
 
 test('la URL de un PUT es, byte por byte, la que firma boto3', () => {
-  assert.equal(r2.firmar('PUT', 'ana/ep1/720p/lista.m3u8', { segundos: 600, ahora: AHORA }), FIRMA_PUT);
+  assert.equal(r2.firmar('PUT', 'ana/ep1/720p/lista.m3u8', 'ana', { segundos: 600, ahora: AHORA }), FIRMA_PUT);
 });
 
 test('un nombre de archivo con parentesis, espacios y "+" firma igual que boto3', () => {
@@ -86,12 +86,12 @@ test('un nombre de archivo con parentesis, espacios y "+" firma igual que boto3'
      en "Episodio 1 (final).mkv". El error saldria como un 403 de R2 sin
      explicacion, y solo para algunos archivos. */
   const clave = 'ana/ep1/un archivo (raro)+1~2.m3u8';
-  assert.equal(r2.firmar('PUT', clave, { segundos: 600, ahora: AHORA }), FIRMA_PUT_RARO);
+  assert.equal(r2.firmar('PUT', clave, 'ana', { segundos: 600, ahora: AHORA }), FIRMA_PUT_RARO);
 });
 
 test('un DELETE firma distinto que un PUT sobre la misma clave', () => {
-  assert.equal(r2.firmar('DELETE', 'ana/ep1/maestra.m3u8', { segundos: 60, ahora: AHORA }), FIRMA_DELETE);
-  const put = r2.firmar('PUT', 'ana/ep1/maestra.m3u8', { segundos: 60, ahora: AHORA });
+  assert.equal(r2.firmar('DELETE', 'ana/ep1/maestra.m3u8', 'ana', { segundos: 60, ahora: AHORA }), FIRMA_DELETE);
+  const put = r2.firmar('PUT', 'ana/ep1/maestra.m3u8', 'ana', { segundos: 60, ahora: AHORA });
   assert.notEqual(put, FIRMA_DELETE, 'el metodo entra en la firma: si no, un PUT firmado borraria');
 });
 
@@ -123,7 +123,7 @@ test('codificar sigue la regla de AWS y no la de encodeURIComponent', () => {
 });
 
 test('las barras de la clave siguen siendo barras en la URL', () => {
-  const url = r2.firmar('PUT', 'ana/ep1/720p/lista.m3u8', { ahora: AHORA });
+  const url = r2.firmar('PUT', 'ana/ep1/720p/lista.m3u8', 'ana', { ahora: AHORA });
   assert.ok(url.includes('/sala-video/ana/ep1/720p/lista.m3u8?'),
     'si los segmentos se codificaran enteros, R2 crearia un objeto con barras en el nombre');
 });
@@ -157,10 +157,74 @@ test('esDeLaSala pide la barra: "ana" no puede firmar en "anaconda"', () => {
   assert.equal(r2.esDeLaSala('ana', 'ana'), false, 'el prefijo solo no es un archivo');
 });
 
+/* ------------------------------- el prefijo, comprobado POR QUIEN FIRMA
+
+   Los dos de arriba prueban `esDeLaSala` como funcion. Estos prueban
+   que `firmar()` la USE, que es otra cosa y es la que importa: hasta la
+   Fase 3 el encabezado de r2.js prometia que firmar volvia a comprobar
+   el prefijo y firmar ni siquiera recibia el slug, asi que
+   `r2.firmar('DELETE', 'otrocreador/loquesea.ts')` devolvia una URL
+   valida para borrarle la pelicula a otro.
+
+   El caso del DELETE no es el hipotetico: las claves que se firman para
+   borrar salen de un XML de R2, no las arma este servidor. */
+
+test('firmar no firma una clave que no es de la sala que se le dice', () => {
+  for (const [clave, slug] of [
+    ['beto/ep1/maestra.m3u8', 'ana'],
+    ['anaconda/ep1/x.ts', 'ana'],          // el prefijo sin la barra
+    ['ana/ep1/x.ts', 'beto'],
+    ['ana/ep1/x.ts', ''],                  // sin slug tampoco
+    ['ana/ep1/x.ts', null],
+    ['ana/ep1/x.ts', undefined],
+  ]) {
+    assert.throws(
+      () => r2.firmar('PUT', clave, slug, { ahora: AHORA }),
+      /fuera de la sala/,
+      `firmo ${clave} para ${JSON.stringify(slug)}`,
+    );
+  }
+});
+
+test('un call site viejo, con las opciones donde va el slug, explota en el acto', () => {
+  /* El encabezado de r2.js promete exactamente esto, y una promesa
+     escrita que ninguna prueba sostiene es la falla que este proyecto
+     ya cometio tres veces. La firma vieja era
+     `firmar(metodo, clave, { segundos })`: si alguien copia una
+     llamada de antes de la Fase 3, el objeto de opciones cae en el
+     lugar del slug. Que eso tire —y no que firme sobre el prefijo de
+     cualquiera con las opciones por defecto— es todo el argumento de
+     por que el slug va posicional y obligatorio. */
+  assert.throws(() => r2.firmar('PUT', 'ana/ep1/x.ts', { segundos: 600, ahora: AHORA }),
+    /fuera de la sala/);
+});
+
+test('el DELETE de una clave ajena tampoco se firma', () => {
+  /* El mismo cinturon, sobre el metodo que no se puede deshacer. Un
+     PUT sobre el prefijo de otro le pisa un archivo; un DELETE le borra
+     la pelicula. */
+  assert.throws(() => r2.firmar('DELETE', 'beto/ep1/maestra.m3u8', 'ana', { ahora: AHORA }),
+    /fuera de la sala/);
+  assert.throws(() => r2.firmar('DELETE', 'otrocreador/loquesea.ts', 'ana', { ahora: AHORA }),
+    /fuera de la sala/);
+});
+
+test('y la clave de su propia sala se firma igual que siempre', () => {
+  /* CONTROL NEGATIVO, a proposito: sin esto, "no firmar nunca" pasaria
+     los dos tests de arriba y nadie podria subir nada. Es el mismo
+     vector de oro del principio del archivo, ahora con el slug. */
+  assert.equal(r2.firmar('PUT', 'ana/ep1/720p/lista.m3u8', 'ana', { segundos: 600, ahora: AHORA }),
+    FIRMA_PUT);
+  /* Y el slug se compara sin distinguir mayusculas, como `esDeLaSala`:
+     el prefijo del bucket siempre esta en minusculas. */
+  assert.equal(r2.firmar('PUT', 'ana/ep1/720p/lista.m3u8', 'ANA', { segundos: 600, ahora: AHORA }),
+    FIRMA_PUT);
+});
+
 /* ------------------------------------------------------ vencimiento */
 
 test('el vencimiento se recorta a lo que acepta S3 y nunca queda en cero', () => {
-  const conVence = s => new URL(r2.firmar('PUT', 'ana/x.ts', { segundos: s, ahora: AHORA }))
+  const conVence = s => new URL(r2.firmar('PUT', 'ana/x.ts', 'ana', { segundos: s, ahora: AHORA }))
     .searchParams.get('X-Amz-Expires');
 
   assert.equal(conVence(600), '600');
@@ -171,8 +235,8 @@ test('el vencimiento se recorta a lo que acepta S3 y nunca queda en cero', () =>
 });
 
 test('dos firmas del mismo pedido en momentos distintos no son iguales', () => {
-  const a = r2.firmar('PUT', 'ana/x.ts', { ahora: AHORA });
-  const b = r2.firmar('PUT', 'ana/x.ts', { ahora: AHORA + 3600_000 });
+  const a = r2.firmar('PUT', 'ana/x.ts', 'ana', { ahora: AHORA });
+  const b = r2.firmar('PUT', 'ana/x.ts', 'ana', { ahora: AHORA + 3600_000 });
   assert.notEqual(a, b, 'la fecha entra en la firma');
 });
 
@@ -185,22 +249,33 @@ test('sin credenciales no se firma nada y se dice cual falta', () => {
     assert.equal(r2.hayCredenciales(), false);
     assert.match(r2.porQueNoHay(), /R2_SECRET_ACCESS_KEY/);
     assert.ok(!r2.porQueNoHay().includes(antes), 'nunca el valor de una variable');
-    assert.throws(() => r2.firmar('PUT', 'ana/x.ts'), /no se puede firmar/);
+    assert.throws(() => r2.firmar('PUT', 'ana/x.ts', 'ana'), /no se puede firmar/);
   } finally {
     process.env.R2_SECRET_ACCESS_KEY = antes;
   }
 });
 
-test('con todo cargado menos la URL publica, se avisa de esa', () => {
+test('con todo cargado menos la URL publica, tampoco se sube', () => {
+  /* EL CASO QUE MUERDE, y hasta la Fase 3 estaba al reves: sin
+     R2_URL_PUBLICA `hayCredenciales()` decia que si, /api/subida
+     contestaba 200 con `urlPublica: "/ana/ep1/"` —sin host— y el
+     creador se enteraba despues de subir la pelicula entera, en el
+     `POST /api/videos` siguiente, con un `400 url invalida` que no
+     nombra ninguna variable.
+
+     Las dos funciones son la misma pregunta y ahora contestan lo
+     mismo: si `porQueNoHay()` tiene algo que decir, no se puede. */
   const antes = process.env.R2_URL_PUBLICA;
   try {
     delete process.env.R2_URL_PUBLICA;
-    assert.equal(r2.hayCredenciales(), true, 'firmar se puede igual');
-    assert.match(r2.porQueNoHay(), /R2_URL_PUBLICA/,
-      'pero sin ella la ficha del video apuntaria a ningun lado');
+    assert.equal(r2.hayCredenciales(), false);
+    assert.match(r2.porQueNoHay(), /R2_URL_PUBLICA/, 'y dice cual falta, con el nombre exacto');
+    assert.throws(() => r2.firmar('PUT', 'ana/x.ts', 'ana'), /R2_URL_PUBLICA/,
+      'firmar un PUT sin saber donde va a quedar el archivo no le sirve a nadie');
   } finally {
     process.env.R2_URL_PUBLICA = antes;
   }
+  assert.equal(r2.hayCredenciales(), true, 'y con las cinco cargadas se puede');
 });
 
 test('la base publica sale sin barra final, venga como venga', () => {

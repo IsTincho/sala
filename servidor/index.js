@@ -1410,16 +1410,23 @@ async function apiSubidaFirmar(url, req, res) {
     const firmadas = [];
     for (const archivo of lista) {
       const ruta = String(archivo?.ruta ?? '');
-      /* La clave se arma ACA con el slug de la cookie y el id ya
-         validado. El creador solo elige lo que va despues, y aun eso
-         pasa por `claveValida` y por `esDeLaSala`. Que el prefijo no
-         salga nunca de lo que manda el cliente es lo unico que separa
-         los videos de una sala de los de otra. */
+      /* La clave se arma ACA con el slug de la cookie (o de la clave de
+         subida) y el id ya validado. El creador solo elige lo que va
+         despues, y eso pasa por `claveValida`, que es la que rechaza
+         `..`, la barra inicial y los segmentos vacios: las cuatro
+         formas de escaparse del prefijo escribiendo una ruta.
+
+         Aca NO se vuelve a comprobar `esDeLaSala`: armada asi, la clave
+         empieza siempre con `${slug}/` y esa comprobacion no podria dar
+         false nunca, o sea que seria una guarda que ninguna prueba
+         puede alcanzar. La frontera del prefijo la exige `r2.firmar`,
+         que la comprueba para TODOS los call sites y tiene su propia
+         prueba. */
       const clave = `${slug}/${id}/${ruta}`;
-      if (!ruta || !r2.claveValida(clave) || !r2.esDeLaSala(clave, slug)) {
+      if (!ruta || !r2.claveValida(clave)) {
         return json(res, 400, { error: `ruta invalida: ${ruta.slice(0, 80)}` });
       }
-      firmadas.push({ ruta, url: r2.firmar('PUT', clave) });
+      firmadas.push({ ruta, url: r2.firmar('PUT', clave, slug) });
     }
 
     return json(res, 200, {
@@ -1452,13 +1459,21 @@ async function apiSubidaBorrar(url, req, res) {
     catch (e) { return json(res, 502, { error: `no se pudo listar R2: ${e.message}` }); }
 
     const firmadas = objetos.objetos
-      /* Cinturon de mas: R2 devolvio lo que hay bajo el prefijo, asi
-         que todo tendria que ser de esta sala. Se comprueba igual
-         porque firmar un DELETE es la operacion mas cara de deshacer
-         de todo el servicio. */
+      /* Estas claves NO las armo este servidor: las contesto R2, en un
+         XML. Se pidieron bajo el prefijo de esta sala, asi que todas
+         tendrian que ser suyas, pero "tendrian que" no alcanza cuando
+         lo que se firma es un DELETE: es la operacion mas cara de
+         deshacer de todo el servicio.
+
+         Es una guarda que SI se puede alcanzar (basta que R2 conteste
+         una clave de mas) y por eso tiene prueba: `multicanal`, "un
+         listado de R2 con una clave de otra sala no firma ese
+         borrado". Lo que caiga afuera se descarta en silencio: la
+         alternativa —fallar el pedido entero— dejaria al creador sin
+         poder borrar nada suyo por una clave que no es de el. */
       .filter(o => r2.esDeLaSala(o.clave, slug) && r2.claveValida(o.clave))
       .slice(0, TOPE_ARCHIVOS * 8)
-      .map(o => ({ clave: o.clave, url: r2.firmar('DELETE', o.clave) }));
+      .map(o => ({ clave: o.clave, url: r2.firmar('DELETE', o.clave, slug) }));
 
     return json(res, 200, { slug, id, archivos: firmadas });
   });

@@ -47,8 +47,8 @@ Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pu
 
 | Variable | Hace falta para | Si falta |
 |---|---|---|
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | **Firmar las URL de subida** de cada creador | Nadie puede subir un video: `/api/panel/subida` contesta 503 y dice cuál falta |
-| `R2_URL_PUBLICA` | Armar la URL pública del video (`https://pub-….r2.dev`) | La ficha del video apuntaría a ningún lado |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | **Firmar las URL de subida** de cada creador | Nadie puede subir un video: `POST /api/subida` contesta 503 y dice cuál falta |
+| `R2_URL_PUBLICA` | Armar la URL pública del video (`https://pub-….r2.dev`) | Lo mismo que las otras cuatro: 503 con el nombre de la variable, **antes** de subir un byte. Hasta la Fase 3 esta faltaba en la comprobación, así que la subida arrancaba igual y el error aparecía una hora después, al guardar la ficha, como un `400 url invalida` que no nombra ninguna variable |
 | `COBRO_PROVEEDOR` | Elegir la implementación de cobro | Se asume `paddle` |
 | `PADDLE_API_KEY`, `PADDLE_PRECIO_ID` | Crear el checkout | El botón de suscribirse lo dice y no rompe nada |
 | `PADDLE_CLAVE_WEBHOOK` | Verificar el aviso de pago | El plan nunca pasa a "pago": se cobra y no se habilita |
@@ -219,7 +219,9 @@ El creador no tiene el token de R2. Pide URL prefirmadas:
 2. El servidor comprueba el plan, mide **contra R2** cuánto ocupa ya esa sala, y firma un `PUT` por archivo sobre `<slug>/<id>/<ruta>`, válido diez minutos.
 3. El creador sube contra esas URL. Los bytes van del creador a R2, sin pasar por Railway.
 
-El prefijo se arma **en el servidor** con el slug de la cookie: lo único que elige el creador es lo que va después del `<id>/`, y aun eso pasa por `claveValida` y `esDeLaSala`. Es la única línea que separa los videos de una sala de los de otra.
+El prefijo se arma **en el servidor** con el slug de la cookie: lo único que elige el creador es lo que va después del `<id>/`, y aun eso pasa por `claveValida`, que rechaza `..`, la barra inicial, los segmentos vacíos y la barra invertida. Es la única línea que separa los videos de una sala de los de otra.
+
+Que la clave empiece con `<slug>/` lo vuelve a exigir **`r2.firmar`**, que no firma nada sin que le digan de qué sala es. Vive ahí y no en cada ruta porque el otro camino que firma —el `DELETE` de `--borrar`— trabaja con claves que **no arma este servidor**: se las contesta R2 en un XML.
 
 El tope de GB se compara contra lo que **R2 dice que hay**, no contra los bytes declarados en el pedido: esos los elige el mismo al que se le está poniendo el límite.
 

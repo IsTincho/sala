@@ -225,6 +225,33 @@ const fichaDe = (slug, id = 'ep1') => ({
   calidades: [720], subtitulos: [], bytes: 10,
 });
 
+/**
+ * Un webhook de Kick de verdad: firmado con el par de este archivo y
+ * entrando por `/kick/webhook`, no por una llamada a `chat.js`.
+ *
+ * Se hace el viaje entero porque lo que se quiere provocar es que el
+ * estado quede guardado EN LA SALA que le corresponde, y una llamada
+ * directa a `chat.recibirDeKick(slug, ...)` le estaria diciendo al
+ * modulo la respuesta que el test viene a comprobar.
+ */
+let nWebhook = 0;
+async function webhookDeKick(tipo, cuerpoObj) {
+  const cuerpo = JSON.stringify(cuerpoObj);
+  const id = `EV-${++nWebhook}`;
+  const ts = new Date().toISOString();
+  return pedir('/kick/webhook', {
+    metodo: 'POST', cuerpo,
+    cabeceras: {
+      'Content-Type': 'application/json',
+      'Kick-Event-Message-Id': id,
+      'Kick-Event-Message-Timestamp': ts,
+      'Kick-Event-Signature': firmarKick(id, ts, cuerpo),
+      'Kick-Event-Type': tipo,
+      'Kick-Event-Version': '1',
+    },
+  });
+}
+
 /* ------------------------------------------------------- arranque */
 
 test.before(async () => {
@@ -399,9 +426,47 @@ test('el catalogo por cookie es el de la cookie, no el del dueño', async () => 
 });
 
 test('la salud del chat es la de su propia sala', async () => {
-  const r = await pedir('/api/chat/salud', { cookie: sesionAna });
-  assert.equal(r.estado, 200);
-  assert.ok(!r.texto.includes(BETO));
+  /* POR QUE ESTE TEST NO PUEDE SER "y no dice beto".
+
+     Así estaba escrito hasta acá, y era una aserción vacua: `salud()`
+     no emite el slug de nadie —devuelve booleanos, fechas ISO y cuatro
+     estados—, así que la cadena "beto" no puede aparecer en esa
+     respuesta bajo ninguna implementación. Con el aislamiento intacto
+     daba verdadero, y con `chat.salud('beto')` cableado en la ruta
+     daba verdadero igual: Ana veía el estado de la suscripción de Kick
+     de Beto, su última llegada y el estado de su conexión de Twitch, y
+     el test seguía en verde.
+
+     La única forma de ver la diferencia es poner las dos salas en
+     estados DISTINTOS y exigir que cada una vea el suyo. Se ponen por
+     el camino de verdad (un webhook firmado) y se afirman los dos
+     lados, así que la ruta devolviendo la sala equivocada se cae
+     mirando para cualquiera de los dos lados. */
+  await webhookDeKick('livestream.status.updated', {
+    broadcaster: { user_id: 111, channel_slug: ANA }, is_live: true,
+  });
+  await webhookDeKick('livestream.status.updated', {
+    broadcaster: { user_id: 222, channel_slug: BETO }, is_live: false,
+  });
+  await webhookDeKick('chat.message.sent', {
+    message_id: 'm-salud-beto',
+    broadcaster: { user_id: 222, username: 'Beto', channel_slug: BETO },
+    sender: { user_id: 9, username: 'Fulana', identity: null },
+    content: 'un mensaje que llego a la sala de beto',
+    created_at: new Date().toISOString(),
+  });
+
+  const deAna = await pedir('/api/chat/salud', { cookie: sesionAna });
+  assert.equal(deAna.estado, 200);
+  assert.equal(deAna.datos.kick.vivo, true,
+    'Ana está al aire: si acá dice false, la ruta le contestó la salud de otra sala');
+  assert.equal(deAna.datos.kick.ultima, null,
+    'y a la sala de Ana todavía no llegó ningún mensaje');
+
+  const deBeto = await pedir('/api/chat/salud', { cookie: sesionBeto });
+  assert.equal(deBeto.estado, 200);
+  assert.equal(deBeto.datos.kick.vivo, false, 'Beto no está al aire');
+  assert.ok(deBeto.datos.kick.ultima, 'y a su sala sí le llegó un mensaje');
 });
 
 test('una sesion de una sala borrada no abre ningun panel', async () => {
@@ -882,6 +947,27 @@ test('sin sesion no se firma nada', async () => {
   assert.equal(r.estado, 401);
 });
 
+test('sin R2_URL_PUBLICA no se firma nada, y la respuesta dice cual falta', async () => {
+  /* Con las otras cuatro cargadas y ésta no, esto contestaba 200 con
+     `urlPublica: "/ana/ep1/"` —sin host—, el creador subía la película
+     entera contra URL que sí funcionaban, y el error aparecía recién en
+     el `POST /api/videos` siguiente como `400 url invalida`, que no
+     nombra ninguna variable. El dueño carga cinco variables de R2 en
+     Railway y olvidarse de una es lo más probable que le pase. */
+  const antes = process.env.R2_URL_PUBLICA;
+  try {
+    delete process.env.R2_URL_PUBLICA;
+    const r = await pedir('/api/subida', {
+      metodo: 'POST', cookie: sesionAna,
+      cuerpo: { id: 'ep7', archivos: [{ ruta: 'maestra.m3u8', bytes: 1 }] },
+    });
+    assert.equal(r.estado, 503, `contestó ${r.estado}: firmó sin saber dónde queda el archivo`);
+    assert.match(r.datos.error, /R2_URL_PUBLICA/);
+  } finally {
+    process.env.R2_URL_PUBLICA = antes;
+  }
+});
+
 /* ============================================ la clave de subida */
 
 test('cada creador genera SU clave y no la de otro', async () => {
@@ -1029,6 +1115,60 @@ test('los borrados se firman por el mismo camino', async () => {
       assert.ok(a.clave.startsWith(ANA + '/ep1/'));
       assert.ok(new URL(a.url).searchParams.get('X-Amz-Signature'));
     }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('un listado de R2 con una clave de otra sala no firma ese borrado', async () => {
+  /* LA FRONTERA DEL BUCKET, del único lado donde se puede alcanzar.
+
+     Las claves que se firman para borrar NO las arma este servidor: las
+     contesta R2 en un XML. Se piden bajo el prefijo de esta sala, así
+     que todas tendrían que ser suyas, y por eso el filtro parece de
+     más... hasta que R2 conteste una clave que no pidió: un prefijo mal
+     armado por un cambio de mañana, un bucket compartido, una respuesta
+     que no es la esperada. Lo que se firmaría es un DELETE sobre la
+     película de otro creador, que es la operación más cara de deshacer
+     de todo el servicio.
+
+     El listado de acá trae las tres formas de colarse: la sala de al
+     lado, el prefijo sin la barra (`anaconda` para `ana`) y una clave
+     con `..` adentro. */
+  const original = globalThis.fetch;
+  globalThis.fetch = async (entrada, opciones) => {
+    const url = String(typeof entrada === 'string' ? entrada : entrada?.url ?? '');
+    if (url.includes('r2.cloudflarestorage.com')) {
+      return new Response(
+        '<?xml version="1.0"?><ListBucketResult>' +
+        '<Contents><Key>' + ANA + '/ep1/maestra.m3u8</Key><Size>10</Size></Contents>' +
+        '<Contents><Key>' + BETO + '/ep1/maestra.m3u8</Key><Size>10</Size></Contents>' +
+        '<Contents><Key>' + ANA + 'conda/ep1/x.ts</Key><Size>10</Size></Contents>' +
+        '<Contents><Key>' + ANA + '/ep1/../' + BETO + '/x.ts</Key><Size>10</Size></Contents>' +
+        '<IsTruncated>false</IsTruncated></ListBucketResult>', { status: 200 });
+    }
+    return original(entrada, opciones);
+  };
+  try {
+    const { datos: clave } = await pedir('/api/panel/clave', { metodo: 'POST', cookie: sesionAna });
+    const r = await pedir('/api/subida/borrar', {
+      metodo: 'POST',
+      cabeceras: { 'X-Clave-Subida': clave.clave },
+      cuerpo: { id: 'ep1' },
+    });
+
+    /* Un 500 acá quiere decir que el filtro ya no está y que la clave
+       ajena llegó hasta `r2.firmar`, que la rechaza tirando. Está bien
+       que el cinturón de adentro muerda, pero el pedido tiene que
+       contestarse igual: sin el filtro, una sola clave que no es de él
+       deja al creador sin poder borrar NADA suyo. */
+    assert.equal(r.estado, 200, `contestó ${r.estado}: ${r.texto.slice(0, 120)}`);
+    assert.deepEqual(r.datos.archivos.map(a => a.clave), [ANA + '/ep1/maestra.m3u8'],
+      'se firmó un borrado que no era de esta sala');
+    /* Y el cinturón por afuera: ni el nombre de la otra sala puede
+       aparecer en la respuesta. La firma es hexadecimal, así que no hay
+       forma de que "beto" salga ahí por casualidad. */
+    assert.ok(!r.texto.includes(BETO), 'la respuesta nombra a la otra sala');
   } finally {
     globalThis.fetch = original;
   }

@@ -120,12 +120,15 @@ export const slugDelDueno = () => SLUG_DUENO;
 
 /* --------------------------------------------------------- cache */
 
-const CACHE_MS = 5000;
+/* Los dos numeros salen exportados porque los dos tienen prueba, y una
+   prueba que los repita a mano deja de probar el codigo el dia que
+   alguien cambie uno aca. */
+export const CACHE_MS = 5000;
 
 /* Tope del Map. Cada entrada es chica; 5.000 slugs distintos en 5
    segundos ya es trafico que no existe. Se sueltan los mas viejos
    (Map conserva el orden de insercion). */
-const TOPE_CACHE = 5000;
+export const TOPE_CACHE = 5000;
 
 const cache = new Map();      // slug -> { doc, hasta }
 

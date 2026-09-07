@@ -315,6 +315,65 @@ test('la cache guarda a los que sí existen', async () => {
   assert.equal(await creadores.planDe('ana'), 'amigo');
 });
 
+test('la cache se vence sola a los cinco segundos', async (t) => {
+  /* Los dos tests de arriba prueban que la cache GUARDA, y la
+     invalidación al escribir prueba que lo escrito por este módulo se
+     ve en el acto. Faltaba el tercer lado, y sacar el vencimiento
+     sobrevivía la suite entera: sin él, un documento que cambió por
+     fuera de este proceso —el otro contenedor de Railway el día que
+     haya dos, o el dueño tocando Mongo a mano— queda rancio PARA
+     SIEMPRE, no cinco segundos.
+
+     El reloj se mueve en vez de esperar cinco segundos de verdad: un
+     test que duerme cinco segundos es un test que alguien borra. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  assert.equal(await creadores.planDe('ana'), 'pendiente');   // deja la cache puesta
+
+  /* Derecho al almacén, salteando `creadores.js`: si se escribiera por
+     `ponerPlan` invalidaría su propia entrada y no habría nada rancio
+     que vencer. */
+  await almacen.poner('creadores', 'ana', { slug: 'ana', plan: 'amigo', vence: 0 });
+  assert.equal(await creadores.planDe('ana'), 'pendiente',
+    'todavía adentro de la ventana: tiene que salir de la cache');
+
+  t.mock.timers.tick(creadores.CACHE_MS + 1);
+
+  assert.equal(await creadores.planDe('ana'), 'amigo',
+    'pasada la ventana tiene que volver a mirar el almacén');
+});
+
+test('la cache no crece para siempre: pasado el tope suelta a los mas viejos', async () => {
+  /* La cache guarda TAMBIÉN a los que no existen, que es lo que hace
+     que `/eventos/<slug inventado>` no sea una consulta por pedido. Sin
+     tope, eso es el mismo ataque corrido un casillero: en vez de llenar
+     Mongo de consultas se llena este proceso de entradas, una por slug
+     inventado, hasta que el contenedor se queda sin memoria.
+
+     Que se suelte al MÁS VIEJO y no al recién llegado importa por lo
+     mismo que en `metricas`: el que acaba de entrar es el que está
+     hablando ahora.
+
+     La cache no se puede mirar desde afuera (no hay `cache.size`
+     exportado, y abrirle una costura al código de producción para uso
+     exclusivo de un test es peor que no tener el test). Se mide por lo
+     único observable: la ranciedad de la entrada más vieja. Si sigue
+     rancia después de llenar el Map, no se soltó. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+  assert.equal(await creadores.planDe('ana'), 'pendiente');   // 'ana' queda primera en el orden
+
+  await almacen.poner('creadores', 'ana', { slug: 'ana', plan: 'amigo', vence: 0 });
+  assert.equal(await creadores.planDe('ana'), 'pendiente', 'todavía rancia, como corresponde');
+
+  /* Un slug distinto por vuelta, como los que llegarían por
+     `/eventos/:slug`. Ninguno existe: entran igual, que es el punto. */
+  for (let i = 0; i <= creadores.TOPE_CACHE; i++) await creadores.existe(`inventado-${i}`);
+
+  assert.equal(await creadores.planDe('ana'), 'amigo',
+    'la entrada más vieja tenía que haberse soltado: si sigue rancia, el Map no tiene tope');
+});
+
 test('un slug con forma invalida se contesta false sin mirar nada', async () => {
   /* No es sólo higiene: de este slug sale el id del documento que se
      lee, así que uno raro que se colara leería la fila de otro. */

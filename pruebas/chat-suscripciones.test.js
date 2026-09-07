@@ -36,6 +36,14 @@ process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 process.env.KICK_CLIENT_ID = 'cliente-de-prueba';
 process.env.KICK_CLIENT_SECRET = 'secreto-de-prueba';
 
+/* Un tope chico para poder llegar a el con tres salas en vez de con
+   cincuenta y una, igual que `TOPE_CANALES` en los otros archivos.
+   Ningun otro test de aca abre mas de una conexion, asi que bajarlo no
+   cambia lo que prueban. El test del tope comprueba que este numero
+   sea el que llego a `chat.js`: si alguien borra esta linea, falla en
+   vez de ponerse a abrir cincuenta conexiones de mentira. */
+process.env.TOPE_TWITCH = '2';
+
 const chat = await import('../servidor/chat.js');
 const canales = await import('../servidor/canales.js');
 const kick = await import('../servidor/kick.js');
@@ -134,11 +142,11 @@ async function guardarVinculoKick() {
   });
 }
 
-async function guardarVinculoTwitch() {
-  await vinculos.guardar(CANAL, 'twitch', {
+async function guardarVinculoTwitch(sala = CANAL) {
+  await vinculos.guardar(sala, 'twitch', {
     usuarioId: '777',
     nombre: 'IsTincho',
-    login: CANAL,
+    login: sala,
     accessToken: 'token-twitch',
     refreshToken: 'refresco-twitch',
     venceEn: Date.now() + 3600_000,
@@ -424,4 +432,60 @@ test('nada de todo esto difunde la salud por el bus publico', async () => {
   assert.deepEqual([...new Set(oyente.tipos())], ['estado'],
     'el arranque no publica el estado de las cuentas del dueño en un bus que es publico');
   oyente.cerrar();
+});
+
+/* ------------------------------------------- el tope de conexiones
+
+   Va al final del archivo A PROPOSITO: deja vinculos de Twitch de
+   otras salas guardados, y `chat.arrancar()` levanta la conexion de
+   TODAS las salas vinculadas, asi que correr esto antes le sumaria
+   conexiones a los dos tests de arranque. Se limpia igual en el
+   `finally`; el orden es el cinturon. */
+
+test('el tope de conexiones de Twitch frena la que sobra, y dice que fue el tope', async () => {
+  /* La guarda sobrevivia la suite entera: sacarla no rompia nada.
+
+     No es una optimizacion, es lo que separa "este servidor llego a su
+     tope" de "Twitch esta cortado". Una conexion EventSub por creador
+     es legal (el limite de Twitch es por par client id / user id), lo
+     que no aguanta 900 es este contenedor: 900 sockets, 900 timers de
+     keepalive y 900 buffers. Sin el tope, el creador numero 900 no ve
+     un aviso: ve el servicio entero degradandose de a poco. Y sin el
+     campo `tope` en la salud, su panel diria "cortado", que es
+     exactamente lo que diria si el problema fuera de Twitch. */
+  assert.equal(chat.TOPE_TWITCH, 2, 'este archivo corre con un tope chico, puesto en la cabecera');
+
+  const salas = ['unasala', 'otrasala', 'lasobrante'];
+  try {
+    for (const s of salas) await guardarVinculoTwitch(s);
+
+    assert.deepEqual(await chat.conectarTwitch(salas[0]), { vinculado: true });
+    assert.deepEqual(await chat.conectarTwitch(salas[1]), { vinculado: true });
+    assert.equal(eventSubs.length, 2, 'las dos primeras entran');
+
+    const sobrante = await chat.conectarTwitch(salas[2]);
+    assert.deepEqual(sobrante, { vinculado: true, tope: true },
+      'la tercera no puede abrir conexion: ya hay dos');
+    assert.equal(eventSubs.length, 2, 'y sobre todo: NO se abrio una tercera conexion');
+
+    /* Lo que ve el creador en su panel. `vinculado` sigue en true —su
+       cuenta esta bien— y `tope` dice que el que no da mas es este
+       proceso. */
+    const salud = chat.salud(salas[2]).twitch;
+    assert.equal(salud.vinculado, true);
+    assert.equal(salud.tope, true, 'sin esto el panel dice "cortado" y nadie sabe por que');
+    assert.equal(salud.estado, 'cortado');
+
+    /* CONTROL, a proposito: sin esto, "no conectar nunca a nadie"
+       pasaria todo lo de arriba. Reconectar una sala que YA tenia
+       conexion no suma ninguna, asi que tiene que poder hacerse
+       aunque estemos en el tope: es lo que pasa cada vez que a un
+       creador que ya estaba se le refresca el token. */
+    assert.deepEqual(await chat.conectarTwitch(salas[0]), { vinculado: true },
+      'reconectar a una que ya estaba no puede chocar contra el tope');
+    assert.equal(eventSubs.length, 3, 'se abrio la conexion nueva de la que ya estaba');
+    assert.equal(chat.salud(salas[0]).twitch.tope, false);
+  } finally {
+    for (const s of salas) await vinculos.olvidar(s, 'twitch');
+  }
 });

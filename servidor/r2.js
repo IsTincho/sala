@@ -22,13 +22,26 @@
    R2 y de R2 al espectador, directo.
 
    ---------------------------------------------------------------
-   EL PREFIJO ES LA FRONTERA
+   EL PREFIJO ES LA FRONTERA, Y LA COMPRUEBA QUIEN FIRMA
 
-   Toda clave firmada tiene que empezar con `<slug>/`. Eso lo comprueba
-   quien llama (index.js) y lo vuelve a comprobar `firmar()`, porque es
-   la unica cosa que separa los videos de un creador de los de otro y
-   una invariante que se comprueba en un solo lado es una invariante
-   que se pierde en el segundo call site.
+   Toda clave firmada tiene que empezar con `<slug>/`: es la unica cosa
+   que separa los videos de un creador de los de otro.
+
+   Por eso `firmar()` PIDE EL SLUG y lo comprueba el mismo, en vez de
+   confiar en que lo haya hecho el que llama. Hasta la Fase 3 esto era
+   un comentario que prometia un segundo cinturon que el codigo no
+   tenia: `firmar()` no recibia el slug, asi que no podia comprobar
+   nada, y `r2.firmar('DELETE', 'otrocreador/loquesea.ts')` firmaba sin
+   una queja. Una invariante que se comprueba solo en el call site es
+   una invariante que se pierde en el call site siguiente, y firmar un
+   DELETE es la operacion mas cara de deshacer de todo el servicio.
+
+   El slug va como parametro POSICIONAL Y OBLIGATORIO, y no adentro de
+   `opciones`, por la misma razon que en `vinculos.js`: sin valor por
+   defecto, olvidarse tira. Un call site viejo que llame
+   `firmar(metodo, clave, { segundos })` pasa el objeto de opciones
+   donde va el slug, no pasa `esDeLaSala`, y explota en el acto en vez
+   de firmar sobre el prefijo de cualquiera.
 
    ---------------------------------------------------------------
    SIGV4 A MANO
@@ -69,12 +82,26 @@ export const bucket = () => leer('R2_BUCKET');
 /** La base publica del bucket (`https://pub-….r2.dev`), sin barra final. */
 export const urlPublicaBase = () => leer('R2_URL_PUBLICA').replace(/\/+$/, '');
 
+/**
+ * Si este servidor puede hacer su parte de la subida: firmar, medir y
+ * decir donde va a quedar el archivo.
+ *
+ * ES EXACTAMENTE LO CONTRARIO DE `porQueNoHay()`, y no una lista
+ * parecida. Las dos son la misma pregunta ("¿se puede?" y "¿por que
+ * no?") y hasta la Fase 3 no coincidian: `porQueNoHay()` nombraba
+ * R2_URL_PUBLICA y esta decia que si igual. Con las cuatro primeras
+ * cargadas y esa sin cargar, /api/subida contestaba 200 con
+ * `urlPublica: "/ana/ep1/"` —sin host— y el creador subia la pelicula
+ * entera para enterarse en el POST siguiente, como `400 url invalida`,
+ * que no nombra ninguna variable. Faltando cualquiera de las cinco se
+ * contesta 503 con el nombre de la que falta, antes de subir un byte.
+ */
 export function hayCredenciales() {
-  return Boolean(cuenta() && leer('R2_ACCESS_KEY_ID') && leer('R2_SECRET_ACCESS_KEY') && bucket());
+  return !porQueNoHay();
 }
 
 /**
- * Que falta para poder firmar, con el nombre exacto de la variable.
+ * Que falta para poder subir, con el nombre exacto de la variable.
  *
  * Nunca dice un valor: dice cual falta. Es la misma regla que
  * /api/estado, y existe porque el dia que la subida no ande hay que
@@ -172,16 +199,25 @@ const queryCanonica = pares =>
     .join('&');
 
 /**
- * Una URL prefirmada para una operacion sobre una clave.
+ * Una URL prefirmada para una operacion sobre una clave de UNA sala.
+ *
+ * El slug no es decorativo: sin el no se firma. Ver "EL PREFIJO ES LA
+ * FRONTERA" arriba.
  *
  * @param {'PUT'|'GET'|'DELETE'|'HEAD'} metodo
  * @param {string} clave     la clave completa en el bucket, con prefijo
+ * @param {string} slug      la sala que tiene que ser dueña de esa clave
  * @param {{segundos?:number, ahora?:number}} opciones
  * @returns {string} la URL, valida por `segundos`
  */
-export function firmar(metodo, clave, { segundos = VENCE_POR_DEFECTO, ahora = Date.now() } = {}) {
+export function firmar(metodo, clave, slug, { segundos = VENCE_POR_DEFECTO, ahora = Date.now() } = {}) {
   if (!hayCredenciales()) throw new Error(`no se puede firmar para R2: ${porQueNoHay()}`);
   if (!claveValida(clave)) throw new Error('clave de R2 invalida');
+  /* El cinturon de verdad. `esDeLaSala` contesta false con el slug
+     vacio, asi que olvidarse del argumento tampoco pasa. */
+  if (!esDeLaSala(clave, slug)) {
+    throw new Error('clave de R2 fuera de la sala: no se firma nada que no empiece con el prefijo');
+  }
 
   const vence = Math.min(VENCE_MAXIMO, Math.max(1, Math.floor(Number(segundos) || 0)));
   const { larga, corta } = fechas(ahora);

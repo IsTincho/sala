@@ -4,6 +4,289 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-07 — Fase 3: lo que encontró la verificación, cerrado
+
+Las cuatro fallas de la verificación independiente, cerradas, más tres guardas
+que no tenían una sola prueba y una variable que faltaba en el lugar donde se
+decide si la subida puede empezar. **616 pruebas en verde** (eran 607), la suite
+corrida **tres veces seguidas sobre el código final sin un solo flake**, y **13
+mutaciones nuevas aplicadas una por una, cada una tal como la describe su
+renglón: las 13 se caen.** Las 121 de Python siguen en verde y
+**`herramientas/` no se tocó**.
+
+### Las cuatro fallas eran la misma falla
+
+Ninguna era un bug de producción: las cuatro eran **aserciones que dan lo mismo
+con el código bueno y con el código roto**, que es peor que no tener la prueba,
+porque una prueba verde se lee como una promesa cumplida.
+
+Y las cuatro tienen la misma forma, que conviene poder reconocer de acá en
+adelante: **la prueba mira algo que la implementación no puede producir**. Una
+respuesta que no emite el slug jamás va a contener "beto". Una ruta que ya fue
+rechazada por `claveValida` nunca llega a la comprobación del prefijo. Un
+default que sale de una variable de entorno que ese proceso no tiene se resuelve
+al mismo `''` que la guarda ya atajaba. En los tres casos el test pasa, y pasa
+por una razón que no es la que dice el nombre del test.
+
+**F1 — `firmar()` recibe el slug y lo comprueba.** El encabezado de `r2.js`
+prometía que la frontera del prefijo se comprobaba en el call site *y de nuevo*
+al firmar; `firmar()` ni siquiera recibía el slug, así que
+`r2.firmar('DELETE', 'otrocreador/loquesea.ts')` devolvía una URL válida para
+borrarle la película a otro. Ahora el slug es **posicional y obligatorio**, la
+comprobación vive adentro, y el comentario dice lo que hace el código. Un call
+site viejo (`firmar(metodo, clave, { segundos })`) pasa el objeto de opciones
+donde va el slug y **explota en el acto**: eso también tiene su prueba, porque
+el encabezado lo promete.
+
+**F2 — la frontera del bucket, del lado donde se puede alcanzar.** La prueba
+vieja ("una ruta que se escapa del prefijo no se firma") usaba cuatro rutas
+—`../beto/…`, `../../otro.ts`, `/absoluta.ts`, `a//b.ts`— que **rechaza
+`claveValida` sola**: `esDeLaSala` no participaba, y sacarla no rompía nada.
+
+Al mirarlo de cerca, el problema no era la prueba: era la guarda. En el camino
+de la subida la clave se arma acá (`` `${slug}/${id}/${ruta}` ``), así que
+empieza siempre con el prefijo y `esDeLaSala` **no podía dar false nunca**. Era
+código muerto, y una mutación sobre código muerto no se cae jamás. Las dos
+salidas honestas eran hacerla alcanzable o correrla a donde sí lo es; se hizo lo
+segundo. Hoy:
+
+- la comprobación vive en **`r2.firmar`**, que la aplica a los dos call sites y
+  a los que se escriban mañana, con pruebas propias en `r2.test.js`;
+- el camino del **DELETE** conserva su filtro, y ahí sí es alcanzable: **esas
+  claves no las arma este servidor, las contesta R2 en un XML**. La prueba nueva
+  le hace contestar a R2 un listado con una clave de la sala de al lado, una con
+  el prefijo sin la barra (`anaconda` para `ana`) y una con `..` adentro, y
+  exige que lo único firmado sea el archivo propio.
+
+Los dos cinturones hacen falta y no son el mismo: sin el filtro, una sola clave
+ajena en la respuesta de R2 hace que `firmar` tire y el creador **no pueda
+borrar nada suyo** (la prueba lo ve como un 500 donde esperaba un 200).
+
+**F3 — la salud del chat: la quinta aserción vacua de esta familia.** Decía
+`assert.ok(!r.texto.includes(BETO))` sobre `/api/chat/salud`, y `chat.salud()`
+**no emite el slug de nadie**: devuelve booleanos, fechas ISO y cuatro estados.
+La cadena "beto" no podía aparecer bajo ninguna implementación. Con
+`chat.salud('beto')` cableado en la ruta —o sea Ana viendo el estado de la
+suscripción de Kick de Beto, su última llegada y su conexión de Twitch— el test
+seguía en verde.
+
+Ahora las dos salas se ponen en **estados distintos por el camino de verdad**
+(webhooks firmados que entran por `/kick/webhook`: Ana al aire, Beto no, y un
+mensaje que llega sólo a la sala de Beto) y se afirman **los dos lados**, así
+que la ruta devolviendo la sala equivocada se cae mirando para cualquier lado.
+
+Las otras cuatro de la familia se revisaron una por una y **no son vacuas**:
+`/api/panel` y `/api/videos` sí emiten el slug y el catálogo, y las cuatro
+tienen al lado una aserción positiva (`every(v => v.slug === …)`, un `deepEqual`
+de claves). Lo que se agregó es que ninguna quede sola: la de string es el
+cinturón contra un campo nuevo que traiga datos ajenos mañana, **nunca la única
+prueba del aislamiento**.
+
+**F4 — la promesa de `vinculos.js`, sostenida contra el bug que alguien
+escribiría.** El encabezado dice, con todas las letras, que "lo cómodo habría
+sido agregar el slug al final con el del dueño como default". Las ocho
+aserciones que lo sostenían cazaban un default **literal**
+(`slug || 'istincho'`) y no el que sale del entorno
+(`slug || process.env.KICK_SLUG`), que es exactamente el que describe el
+comentario. Motivo: `pruebas/vinculos.test.js` nunca seteaba `KICK_SLUG`, así
+que en ese proceso el default se resolvía a `''` y la guarda disparaba igual.
+**La mutación sobrevivía la suite entera.**
+
+El arreglo son tres palabras (`process.env.KICK_SLUG = 'istincho'` en la
+cabecera de ese archivo) y quince renglones de comentario explicando por qué
+están, porque sin el comentario el próximo que ordene imports las borra por
+inútiles. Con la variable puesta —como está en Railway y en cualquier proceso de
+verdad— `leer(undefined, 'kick')` devuelve el vínculo del dueño en vez de tirar,
+y las dos formas de la mutación se caen.
+
+### Tres guardas que sobrevivían la suite entera
+
+Ninguna es un bug: son tres topes que estaban puestos, bien argumentados en su
+comentario, y que **se podían borrar sin que nada se pusiera rojo**. El
+argumento de la bitácora anterior para el tope de métricas ("una cache negativa
+sin tope es el mismo problema corrido un casillero") valía igual para la cache
+de creadores, y esa no tenía ninguna prueba.
+
+- **`TOPE_TWITCH`** (`chat.js`). Es lo que separa "este servidor llegó a su
+  tope" de "Twitch está cortado", que es lo que vería el creador sin el campo
+  `tope` en su panel. `chat-suscripciones.test.js` corre con `TOPE_TWITCH=2`
+  —igual que `TOPE_CANALES=4` en `multicanal`— y prueba que la tercera sala no
+  abra conexión, que su salud diga `tope: true` con `vinculado: true`, y, como
+  control, que **reconectar una que ya estaba sí se pueda** aunque estemos en el
+  tope: es lo que pasa cada vez que se refresca un token, y sin ese control
+  "no conectar nunca a nadie" pasaría el resto del test.
+- **El vencimiento de la cache de creadores** (`creadores.js`). Sin él, un
+  documento cambiado por fuera de este proceso —el otro contenedor el día que
+  haya dos, o el dueño tocando Mongo a mano— queda rancio **para siempre** y no
+  cinco segundos. El test mueve el reloj con `mock.timers` en vez de dormir
+  cinco segundos: un test que duerme cinco segundos es un test que alguien
+  borra.
+- **El tope del Map de esa cache** (`creadores.js`). La cache guarda también a
+  los que no existen, que es lo que hace que `/eventos/<slug inventado>` no sea
+  una consulta por pedido; sin tope, eso es el mismo ataque corrido un
+  casillero, de la base a la memoria. El Map no se puede mirar desde afuera y
+  **no se le abrió una costura al código de producción para que un test lo
+  espíe**: se mide por lo único observable, la ranciedad de la entrada más
+  vieja. Si sigue rancia después de llenar el Map, no se soltó. Se caen las dos
+  mutaciones: sacar el tope, y soltar al recién llegado en vez de al más viejo.
+
+`CACHE_MS` y `TOPE_CACHE` salieron exportados: una prueba que repita el número a
+mano deja de probar el código el día que alguien lo cambie.
+
+### `R2_URL_PUBLICA` entra en `hayCredenciales()`
+
+`hayCredenciales()` miraba cuatro variables y `porQueNoHay()` nombraba cinco.
+Con las cuatro primeras cargadas y esa sin cargar, `/api/subida` contestaba
+**200** con `urlPublica: "/ana/ep1/"` —sin host—, el creador subía la película
+entera contra URL que sí funcionaban, y el error aparecía recién en el
+`POST /api/videos` siguiente como `400 "url invalida"`, **que no nombra ninguna
+variable**. Es el error más caro posible de la única tarea que tarda una hora.
+
+Ahora las dos funciones son la misma pregunta y contestan lo mismo
+(`hayCredenciales()` es literalmente `!porQueNoHay()`): faltando cualquiera de
+las cinco se contesta **503 con el nombre de la que falta, antes de subir un
+byte**. Hay prueba de las dos mitades, la unitaria y la de la ruta.
+
+**El precio, escrito con todas las letras:** sin `R2_URL_PUBLICA` tampoco se
+firman los **DELETE**, que no la necesitan. Se eligió igual porque la
+alternativa es una matriz de "qué se puede hacer con cuáles variables" que hay
+que mantener y probar, para un caso que casi no existe: con esa variable sin
+cargar no se pudo subir nada por este servidor, así que no hay casi nada que
+borrar. Y si aparece —el dueño la borra de Railway por accidente—, el 503 dice
+el nombre exacto de lo que hay que volver a poner.
+
+### Lo que se corrigió de la entrada de abajo
+
+Está marcado ⚠ ahí mismo, para que nadie la lea sin la corrección:
+
+1. **Dos filas de la tabla de "38 mutaciones, 38 cazadas" eran falsas** —las de
+   F2 y F4—: aplicadas como las describe su renglón, sobrevivían. Corregidas, y
+   con las mutaciones nuevas al lado.
+2. **La decisión 8** decía que la ruta que elige el creador pasa "por
+   `claveValida` y `esDeLaSala`". Ya no: en ese camino `esDeLaSala` no podía dar
+   false nunca. La frontera la exige `r2.firmar`.
+3. **La especificación de `subir.py`, punto A**, presentaba `--sala <slug>` como
+   trabajo por escribir. **Ya está escrito** desde `4f63d9e`, anterior a esta
+   fase: `subir.py:1271` declara el argumento, `prefijo_de()` lo resuelve,
+   `validar_slug()` lo valida —incluido el camino destructivo— y
+   `PruebaValidarSala` lo prueba. Quien tome el entregable 5 empieza por B.
+4. **Faltaba la regla que importa de las tandas.** La spec usaba el tope del
+   servidor (500 archivos) como tamaño de tanda, y ese es justo el número que no
+   funciona: 500 segmentos de 6 s a 720p y 2,5 Mbps son ~940 MB, que con una
+   subida hogareña de 10 Mbps son **12,5 minutos**, y las URL vencen a los
+   **600 segundos**. La última URL de cada tanda vence antes de llegar, y el
+   síntoma es un 403 de R2 sin explicación que además cambia en cada máquina
+   porque depende del ancho de banda de casa. **La tanda se corta por bytes, no
+   por cantidad** (o se vuelven a pedir las URL vencidas); la respuesta trae
+   `venceEn` justamente para poder decidir.
+5. **Faltaba el 403.** `conCreadorOClave` contesta
+   `403 "esa clave no corresponde a ninguna sala"` cuando la clave sobrevivió a
+   la sala. Es distinto del 401 —la clave es válida— y merece su propio mensaje:
+   decirle "generá otra" lo manda a un panel al que no puede entrar.
+
+### Las 13 mutaciones nuevas, y qué las caza
+
+Cada una se aplicó sobre el árbol de verdad con un arnés que compara en LF y
+restaura siempre, se corrió la suite contra el código roto, y se restauró. Cada
+renglón se aplicó **como está redactado**, no en la lectura más conveniente.
+
+| Mutación | Pruebas que se caen |
+|---|---|
+| `vinculos.validar` cae en `process.env.KICK_SLUG` cuando falta el slug | `vinculos`: "sin slug no se lee, no se guarda…" |
+| `vinculos.validar` cae en un slug literal | `vinculos`: la misma |
+| `/api/chat/salud` contesta `chat.salud('beto')` | `multicanal`: "la salud del chat es la de su propia sala" |
+| `/api/chat/salud` contesta `chat.salud('ana')` | `multicanal`: la misma |
+| `firmar()` no comprueba `esDeLaSala` | `r2`: "firmar no firma una clave que no es de la sala…", "el DELETE de una clave ajena…", "un call site viejo…" |
+| el camino del DELETE no filtra lo que contesta R2 | `multicanal`: "un listado de R2 con una clave de otra sala no firma ese borrado" |
+| la subida arma la clave con el slug que manda el cliente | `multicanal`: "el prefijo sale de la cookie…" y "la clave de una sala no firma nada de otra" |
+| la subida no comprueba `claveValida` | `multicanal`: "una ruta que se escapa del prefijo…" y "la clave de una sala no firma nada de otra" |
+| `hayCredenciales()` vuelve a mirar cuatro variables | `r2`: "con todo cargado menos la URL publica…" · `multicanal`: "sin R2_URL_PUBLICA no se firma nada…" |
+| no hay `TOPE_TWITCH` | `chat-suscripciones`: "el tope de conexiones de Twitch frena la que sobra…" |
+| la cache de creadores no vence | `creadores`: "la cache se vence sola a los cinco segundos" |
+| el Map de la cache no tiene tope | `creadores`: "la cache no crece para siempre…" |
+| el tope de la cache suelta al recién llegado | `creadores`: la misma |
+
+### Cuáles de las aserciones nuevas son controles, y por qué están
+
+Se revisó cada una preguntando *"¿esto sería verdad igual si el arreglo no
+existiera?"*. Estas contestan que sí y están puestas **a propósito**, con el
+motivo escrito al lado en el archivo:
+
+- `chat-suscripciones`: "reconectar a una que ya estaba no puede chocar contra
+  el tope" impide que el arreglo sea "no conectar a nadie más nunca".
+- `creadores`: "todavía adentro de la ventana: tiene que salir de la cache"
+  impide que el vencimiento se arregle borrando la cache entera.
+- `creadores`: "todavía rancia, como corresponde" (en el test del tope) impide
+  que el test pase porque no hay cache, en vez de porque hay tope.
+- `multicanal`: en el DELETE, `assert.equal(r.estado, 200)` impide que el filtro
+  se "arregle" fallando el pedido entero, que dejaría al creador sin poder
+  borrar nada suyo.
+- `r2`: "y la clave de su propia sala se firma igual que siempre" impide que el
+  arreglo sea no firmar nunca, que dejaría a todos sin poder subir.
+
+Ninguna se cae con ninguna de las 13 mutaciones, y ninguna se cuenta como
+cobertura en la tabla de arriba.
+
+### Anotado, no arreglado
+
+- **Un plan que vence en la mitad de la película tapa el reloj, no la
+  proyección.** Si el vencimiento cae mientras la sala está pasando algo, el
+  creador **no puede pausar ni detener** (402 sobre todas las acciones del
+  reloj) pero la película sigue: el reloj ya está corriendo y los espectadores
+  piden los segmentos directo a R2. Y el bucket es público, así que las URL son
+  legibles con o sin plan. Es coherente con "el servidor nunca sirve video" —lo
+  que se cobra es poder manejar la función, no el ancho de banda, que no es
+  nuestro— y **lo confirmó el dueño**. Queda escrito porque es lo primero que va
+  a sorprender el día que le pase a alguien.
+- **El webhook de Paddle no deduplica ni ordena.** Se aplica lo que llegue
+  último: dos eventos fuera de orden dentro de los 60 segundos de tolerancia —un
+  `subscription.canceled` viejo entregado después de un `activated` nuevo—
+  dejarían la sala en "vencido" con la suscripción activa. Riesgo bajo: Paddle
+  rara vez reordena y el `subscription.updated` siguiente lo corrige solo. El
+  arreglo, el día que se haga, es barato: el payload trae `event_id` y
+  `occurred_at`, así que alcanza con guardar el último aplicado por sala e
+  ignorar lo que sea más viejo.
+
+### Cómo verlo funcionando
+
+```bash
+npm test                                     # 616 en verde
+node --test pruebas/multicanal.test.js       # el aislamiento, por HTTP
+node --test pruebas/r2.test.js               # la frontera del bucket
+node --test pruebas/creadores.test.js        # la cache: guarda, vence y tiene tope
+node --test pruebas/chat-suscripciones.test.js
+python herramientas/pruebas_subir.py         # las 121 de Python, intactas
+```
+
+### Archivos tocados
+
+`servidor/`: `r2.js` (el slug obligatorio en `firmar`, `hayCredenciales` con las
+cinco variables), `index.js` (los dos call sites, el filtro del DELETE, la
+guarda muerta de la subida), `creadores.js` (`CACHE_MS` y `TOPE_CACHE`
+exportados; ni una línea de comportamiento).
+
+`pruebas/`: `r2.test.js`, `multicanal.test.js`, `vinculos.test.js`,
+`creadores.test.js`, `chat-suscripciones.test.js`.
+
+`README.md`: la fila de `R2_URL_PUBLICA` (decía que sin ella "la ficha del video
+apuntaría a ningún lado", y ahora la subida ni empieza) y el párrafo de la
+frontera del prefijo, que nombraba una comprobación que en ese camino no podía
+disparar.
+
+`BITACORA.md`: esta entrada y las cinco correcciones de la de abajo.
+
+Sin dependencias nuevas. **`herramientas/` no se tocó.**
+
+### Qué queda pendiente
+
+Lo mismo que dejó la entrada de abajo, sin cambios: el entregable 5 del lado de
+`herramientas/subir.py` (puntos B a F de esa especificación, ya sin el punto A y
+con la regla de las tandas), y todo lo que no se puede probar hasta que el dueño
+cargue las variables (Kick con un creador de verdad, R2 aceptando la firma,
+Paddle en sandbox, Twitch multi-creador contra el contenedor real).
+
+---
+
 ## 2026-09-07 — Fase 3: otros creadores
 
 Cualquier streamer de Kick entra por `/crear`, acepta los términos y tiene su
@@ -185,8 +468,15 @@ quiera justo cuando R2 está caído.
 **8. El prefijo se arma en el servidor.** La clave es
 `` `${slug}/${id}/${ruta}` `` con el slug de la cookie (o de la clave de subida) y
 el `id` ya validado; lo único que elige el creador es lo que va después, y aun eso
-pasa por `claveValida` y `esDeLaSala`. `esDeLaSala` exige la barra: sin ella, el
-slug `ana` firmaría claves de `anaconda`, que es el prefijo de otro creador.
+pasa por `claveValida`. `esDeLaSala` exige la barra: sin ella, el slug `ana`
+firmaría claves de `anaconda`, que es el prefijo de otro creador.
+
+> **Corregido el 2026-09-07:** este párrafo decía que la ruta pasaba "por
+> `claveValida` y `esDeLaSala`", y en el camino de la subida `esDeLaSala` no
+> podía dar false nunca: la clave se arma con el prefijo puesto. Era una guarda
+> que ninguna prueba podía alcanzar y un renglón de la tabla de mutaciones que
+> no se caía. Ahora la frontera la exige **`r2.firmar`**, que la comprueba para
+> todos los call sites y tiene pruebas propias. Ver la entrada de arriba.
 
 **9. Una conexión EventSub por creador es legal; lo que no escala es la RAM.**
 Verificado en la doc de Twitch: el límite de 3 WebSockets es **por par (client
@@ -273,9 +563,16 @@ pedir sus dos rutas.
 El servidor ya tiene todo lo necesario. Nada de esto necesita un cambio más del
 lado de `servidor/`.
 
-**A. El argumento `--sala <slug>`.** Por defecto, `SALA_SLUG` de
-`herramientas/.env` (que ya existe). Decide dos cosas: el campo `slug` de la
-ficha (que ya se manda) y el prefijo de R2.
+**A. El argumento `--sala <slug>`. YA ESTÁ ESCRITO: no hay nada que hacer acá.**
+
+> **Corregido el 2026-09-07.** Esta entrada lo presentaba como trabajo
+> pendiente y era un error de hecho. `--sala` entró en `4f63d9e`, anterior a
+> esta fase: `subir.py:1271` declara el argumento, `prefijo_de()`
+> (`subir.py:1014`) lo resuelve contra `SALA_SLUG` del `.env`, `validar_slug()`
+> lo valida —incluido el camino destructivo, `--borrar X --sala "../otro"`— y
+> `PruebaValidarSala` en `pruebas_subir.py` lo prueba. Decide las dos cosas que
+> decía: el campo `slug` de la ficha y el prefijo de R2. Quien tome el
+> entregable 5 empieza por B.
 
 **B. Un modo de subida nuevo: por URL prefirmada.** El de hoy (boto3 con el token
 de R2) sigue sirviendo para el dueño. El nuevo es el único que sirve para un
@@ -324,6 +621,23 @@ Para cada tanda de archivos:
   siguiente.
 - **El tope es de 500 archivos por pedido** (`TOPE_ARCHIVOS` en `index.js`). Un
   pedido con más contesta 400 y lo dice.
+- ⚠ **LA TANDA SE CORTA POR BYTES, NO POR CANTIDAD.** *(Agregado el 2026-09-07:
+  faltaba, y sin esto los dos renglones de arriba se leen juntos como "tandas de
+  500", que es justo el número que no funciona.)* 500 segmentos de 6 s a 720p y
+  2,5 Mbps son unos **940 MB**; con una subida hogareña de 10 Mbps eso son
+  **12,5 minutos**, y las URL vencen a los **600 segundos** (`VENCE_POR_DEFECTO`
+  en `r2.js`). O sea que usar el tope del servidor como tamaño de tanda hace que
+  la última URL de cada tanda venza antes de llegar, y el síntoma es un 403 de
+  R2 sin explicación a mitad de la subida, distinto en cada máquina porque
+  depende del ancho de banda de casa.
+
+  Las dos salidas, y las dos sirven: **(a)** cortar la tanda por un presupuesto
+  de bytes —tamaño de tanda ≈ subida medida × 300 s, la mitad de la ventana, con
+  un piso de un archivo y el tope de 500 como techo—, o **(b)** reintentar
+  pidiendo URL nuevas cuando una vence, que es más simple pero desperdicia la
+  subida ya hecha del archivo que falló. La respuesta trae `venceEn` justamente
+  para poder decidir: si falta menos de un minuto para esa marca, no empezar
+  otro archivo, pedir la tanda siguiente.
 - **La maestra se sube última y sola**, como ya hace el script. Mientras no
   exista, nadie puede empezar a mirar un video a medio subir aunque adivine la
   URL.
@@ -346,12 +660,13 @@ devuelve el catálogo de esa sala. **No** devuelve lo que hay en R2 (para eso ha
 falta el token), así que para un creador `--listar` pasa a ser "lo que el
 servidor sabe" en vez de "lo que hay en el bucket". Conviene que lo diga.
 
-**F. Cuatro errores nuevos que merecen un mensaje propio**, porque los cuatro son
+**F. Cinco errores nuevos que merecen un mensaje propio**, porque los cinco son
 "no es tu culpa, es esto":
 
 | Código | Qué pasó | Qué decir |
 |---|---|---|
 | 401 | La clave no sirve | "Generá una nueva en /panel y pegala en herramientas/.env" |
+| ⚠ 403 | La clave era buena pero su sala ya no está | "Esa clave es de una sala que ya no existe. Entrá a /panel y generá una nueva." *(Agregado el 2026-09-07: faltaba. `conCreadorOClave` contesta `403 "esa clave no corresponde a ninguna sala"` cuando la clave sobrevivió a la sala —el dueño la dio de baja, o el creador se borró—. Es distinto del 401: la clave es válida, y decirle "generá otra" sin más lo manda a un panel al que no puede entrar.)* |
 | 402 | El plan no deja subir | "Tu sala está en plan pendiente o vencido: no puede subir videos todavía" |
 | 409 | No entra en el tope de GB | Mostrar `usadoGb` y `topeGb`, que vienen en la respuesta |
 | 503 | El servidor no tiene credenciales de R2 | Mostrar el `error`, que dice el nombre de la variable que falta |
@@ -360,6 +675,13 @@ servidor sabe" en vez de "lo que hay en el bucket". Conviene que lo diga.
 
 Cada una se aplicó sobre una copia del árbol, se corrió la suite contra el código
 roto, y se restauró. Las 38 se caen.
+
+> **Corregido el 2026-09-07, después de la verificación.** Dos de estas filas
+> eran falsas: el verificador no pudo reproducirlas tal como estaban redactadas
+> porque, aplicadas en prosa y no en su lectura más estrecha, **sobrevivían**.
+> Están corregidas abajo, marcadas con ⚠, y lo que faltaba está escrito en la
+> entrada de arriba. La lección, que es la que importa: una mutación se aplica
+> como la describe el renglón, no como convenga para que caiga.
 
 | Mutación | Pruebas que se caen |
 |---|---|
@@ -376,7 +698,9 @@ roto, y se restauró. Las 38 se caen.
 | `/api/panel` se elige por query | `multicanal`: "no hay ningun parametro…" |
 | la clave de subida cae en la cookie cuando no sirve | `multicanal`: "una clave inventada no cae en la cookie…" |
 | la clave abre también el panel | `sala-http`: "la clave NO abre nada que no sean los videos de su sala" |
-| la subida no comprueba el prefijo | `multicanal`: "una ruta que se escapa del prefijo no se firma" |
+| ⚠ ~~la subida no comprueba el prefijo~~ → **la subida arma la clave con el slug que manda el cliente** | La fila vieja era falsa: sacar `esDeLaSala` del camino de la subida no rompía nada, porque las cuatro rutas de "una ruta que se escapa del prefijo no se firma" las rechaza `claveValida` sola. Hoy: `multicanal`: "el prefijo sale de la cookie…" y "la clave de una sala no firma nada de otra" |
+| `firmar()` no comprueba el prefijo (el cinturón que ahora sí existe) | `r2`: "firmar no firma una clave que no es de la sala que se le dice" y "el DELETE de una clave ajena tampoco se firma" |
+| el DELETE firma lo que conteste R2, sin filtrar | `multicanal`: "un listado de R2 con una clave de otra sala no firma ese borrado" |
 | el tope de GB mira los bytes declarados | `multicanal`: "el tope de GB se compara contra lo que hay en R2" |
 | `/api/admin` no pide ser el dueño | `multicanal`: "la lista de creadores es solo del dueño" |
 | el webhook de cobro aplica lo que no verificó | `multicanal`: "un webhook de cobro sin firma no cambia nada" |
@@ -396,7 +720,7 @@ roto, y se restauró. Las 38 se caen.
 | métricas sin tope | `metricas`: "el mapa de canales no crece para siempre" |
 | el tope de métricas suelta al recién llegado | `metricas`: "el tope suelta los más viejos…" |
 | el orden del guard: la cookie antes que la sala | `multicanal`: "una sala que no existe da 404 antes que 401" |
-| `vinculos` vuelve a tener el slug del dueño por defecto | `vinculos`: "sin slug no se lee, no se guarda…" |
+| ⚠ `vinculos` vuelve a tener el slug del dueño por defecto | `vinculos`: "sin slug no se lee, no se guarda…", pero **sólo desde que ese archivo carga `KICK_SLUG`**. La fila vieja valía para un default literal (`slug \|\| 'istincho'`); el default que alguien escribiría de verdad —`slug \|\| process.env.KICK_SLUG`, que es el que el propio comentario de `vinculos.js` describe— se resolvía a `''` en un proceso sin esa variable, la guarda disparaba igual y la mutación pasaba la suite entera |
 | volver a entrar le pisa el plan al que ya estaba | `creadores`: "volver a entrar NO le pisa el plan…" · `multicanal`: "volver a entrar no le baja el plan…" |
 | un proveedor de cobro desconocido cae en paddle | `cobro`: "cobro.js elige la implementacion por variable…" |
 | el vencimiento de una URL prefirmada no se recorta | `r2`: "el vencimiento se recorta a lo que acepta S3" |

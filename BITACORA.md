@@ -4,14 +4,251 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-07 — Fase 2: la segunda verificación, cerrada
+
+Las dos fallas de la segunda pasada adversarial y los tres puntos que el
+director agregó. **449 pruebas en verde** (eran 439), la suite corrida **tres
+veces seguidas sobre el código final sin un solo flake**, y **siete mutaciones
+aplicadas una por una: las siete se caen**, cada una verificada con la suite
+corriendo contra el código roto.
+
+**El código de servidor casi no se tocó, y eso es el titular.** El único archivo
+de producción con cambios es `servidor/videos.js`. Las otras cuatro cosas eran
+pruebas: en tres de ellas el código ya estaba bien y lo que estaba mal era que
+nada lo sostenía. Es la contracara exacta de la F1 de la entrada de abajo (ahí
+el comentario prometía lo que el código no hacía; acá el código hacía lo
+correcto y la prueba miraba para otro lado).
+
+### F-A. El loopback se esquivaba con la forma IPv4-mapeada de IPv6
+
+`videos.js` chequeaba "esta misma máquina" con una regex:
+
+```js
+const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0)$/i;
+```
+
+`POST /api/videos` con `url: https://[::ffff:127.0.0.1]/x.m3u8` contestaba **200
+y guardaba la ficha**. Lo mismo `[::]`, que es el `0.0.0.0` de IPv6 y sí estaba
+bloqueado en su forma IPv4. Equivalentes que también pasaban:
+`[0:0:0:0:0:ffff:127.0.0.1]`, `[::ffff:7f00:1]`, `[0:0:0:0:0:0:0:0]`.
+
+**La causa raíz no es "faltaban formas en la lista".** Es que se estaba
+respondiendo una pregunta *sobre la dirección* con una comparación *sobre el
+texto*. El parser de URL de Node canonicaliza las IPv6 a hexadecimal comprimido
+y **no** las vuelve a cuartetos decimales: `[::ffff:127.0.0.1]` sale como
+`[::ffff:7f00:1]`. Ninguna regex escrita sobre `127(\.\d{1,3}){3}` puede ver
+eso, y agregarle alternativas dejaba el mismo defecto de categoría esperando a
+la forma siguiente.
+
+Va `net.BlockList`, de `node:net` (builtin: no agrega una dependencia). Compara
+direcciones, no strings, y **entiende la forma IPv4-mapeada sola**:
+`check('::ffff:7f00:1', 'ipv6')` cae adentro de una regla `addSubnet('127.0.0.0',
+8, 'ipv4')` sin que haya que decodificar nada acá. Las cuatro reglas son todo
+127.0.0.0/8, `0.0.0.0`, `::1` y `::`. `localhost` se mira aparte, por nombre,
+porque no es una dirección.
+
+Se dejó **afuera a propósito** lo que no es esta máquina: una IP de LAN
+(`192.168.x`, `[::ffff:c0a8:1]`) o una link-local no son loopback, rechazarlas
+sería ampliar la invariante sin motivo, y hay una prueba que cuida que no se
+rechacen. Tampoco entra `[::7f00:1]`, la forma IPv4-*compatible* deprecada por
+RFC 4291: nadie la rutea a 127.0.0.1.
+
+**Lo que bloqueaba de verdad no era el daño** (chico: en producción `URL_BASE`
+está cargada y el chequeo 1 tapa el host público) **sino la afirmación falsa**.
+La entrada de abajo daba por verificado que Node "ya normaliza solo casi todas
+las formas raras" y que la del punto final era "la que no normaliza". Es falso
+para dos formas. Ese párrafo quedó corregido en su lugar, con un recuadro que
+dice qué decía y por qué estaba mal, y el comentario de `videos.js` se reescribió
+entero para que explique el defecto de categoría en vez de prometer completitud.
+
+### F-B. Entrar con la peli ya empezada no tenía una sola prueba
+
+La grande. Mutación de una línea en `servidor/reloj.js`:
+
+```js
+if (nuevo.estado === 'detenido') canales.olvidarReloj(s);   // original
+canales.olvidarReloj(s);                                     // mutado
+```
+
+Con esa mutación **las 439 pruebas seguían en verde** y cualquiera que abriera
+`/sala/istincho` con la película andando recibía `reloj: null` en el evento
+`estado` y veía *"Todavía no empezó la película"* para siempre.
+
+Por qué no la cazaba nada, que es lo que había que entender:
+
+1. **Todos** los tests de reloj de `sala-http` abren el SSE *antes* de
+   `reproducir`, así que el reloj siempre les llega como evento `reloj` en vivo.
+   Por ese camino la mutación no se nota. El camino que sí importa —el del
+   segundo navegador del criterio de aceptación (a), que entra *después* del
+   play— es otro: el reloj viaja adentro del `estado` inicial que manda
+   `canales.suscribir`, sacado de `canal.reloj`. **Nadie miraba ese campo.**
+2. En `pagina-sala` el único `estado` que se inyectaba traía `reloj: null`, así
+   que la rama `if (tipo === 'estado') { ...; aplicarReloj(datos.reloj) }` de
+   `sala.js` no la ejercitaba nadie con un reloj adentro.
+3. Y la prueba del arreglo anterior, `reloj.test.js`, asertaba
+   `canales.hayCanal(slug) === true` después de `reproducir`. **`hayCanal` sigue
+   siendo `true` con el reloj tirado**, porque hay un cliente conectado y
+   `soltarSiVacio` no borra un canal con gente. La aserción era verdad sin que
+   el `if` existiera. Es la **tercera** prueba de esta especie en esta fase.
+
+El arreglo es todo de pruebas; `reloj.js` y `sala.js` no se tocaron:
+
+- `reloj.test.js` ahora asierta `canales.canal(slug).reloj` (que esté, y que sea
+  el de `reproduciendo` con el `videoId` que corresponde) y, del otro lado, que
+  después de `detener` ese campo quede en `null`.
+- `sala-http.test.js` gana el camino de punta a punta: `reproducir` primero y el
+  SSE **después**, con el primer evento `estado` trayendo el reloj entero (ficha
+  del video incluida) y un `empezoEn` usable. Y su control negativo: abriendo
+  después de `detener`, `reloj` tiene que venir `null`.
+- `pagina-sala.test.js` gana el mismo camino del lado del navegador: el `estado`
+  llega por el bus (`p.llega('estado', …)`, no por la puerta de atrás
+  `aplicarReloj`), la pantalla de espera se va, se carga la playlist de r2.dev y
+  el player salta al segundo que corresponde —calculado con `empezoEn` y no con
+  el campo `posicion`, que en ese evento viene viejo—.
+
+### Los tres que entraron por decisión del director
+
+**`soloRuta()` no tenía ninguna prueba.** Devolver `String(u ?? '')` en vez del
+`pathname` dejaba las 439 en verde. Existe por una regla escrita con todas las
+letras en `index.js`: `/oauth/kick/volver` lleva el `code` de OAuth en la query,
+los logs de Railway no se borran, y una URL entera en un log lo deja ahí para
+siempre. Ahora hay una prueba que provoca un 413 contra
+`/kick/webhook?code=…&state=…` y mira la línea que sale: la ruta tiene que
+estar, la query no. Es la misma función que escribe la línea del 500 con el
+callback de OAuth (dos call sites, una implementación); el camino del 413 es el
+único que se puede provocar desde afuera sin romper nada a propósito.
+
+**`destinoSeguro()` (redirect abierto) no tenía ninguna prueba.** Aceptar
+cualquier `d` dejaba las 439 en verde. Para Kick queda medio tapado porque
+`kick.js` tiene su propia copia de la guarda, pero **para Twitch no**:
+`twitchEntrar` mete el `?destino=` crudo en `pendientesTwitch` y el filtro de
+`index.js` es lo único que hay entre eso y la cabecera `Location`.
+
+Archivo nuevo `pruebas/oauth-destino.test.js`, y hace **el viaje entero** de
+Twitch (entrar → sacar el `state` del `Location` → volver con la cookie del
+dueño) y no una llamada a la función suelta, a propósito: el `destino` cruza el
+servidor en dos tramos y un test de la función suelta pasaría con el filtro
+puesto en cualquier lado, incluso en ninguno. Nada sale a internet: el `fetch`
+global contesta como Twitch sólo para `id.twitch.tv` y `api.twitch.tv`, y las
+conexiones de chat se fijan con `chat.fijarConexiones` para que el WebSocket de
+EventSub no se abra de verdad.
+
+La tercera aserción no mira la forma del string: resuelve el `Location` contra
+`https://sala.example` y exige que el origen resultante siga siendo ése. Si
+mañana aparece una forma que la regex no previó, esa la ve igual.
+
+**El orden `limpiar` → `slice` estaba justificado mal.** La entrada de abajo
+decía que recortando primero "el tope podía dejar afuera el último carácter útil
+y adentro el control". No es así: `limpiar` después del `slice` saca los
+controles igual, y los dos órdenes dan un título sin controles. Lo que el orden
+actual evita es **desperdiciar el tope**. Corregido en los dos lugares donde
+estaba escrito: la bitácora y el comentario de `videos.js`.
+
+### Las siete mutaciones, y qué las caza
+
+| Mutación | Pruebas que se caen |
+|---|---|
+| `esLoopback` vuelve a la regex original | `videos`: "la forma IPv4-mapeada de IPv6 tampoco esquiva el chequeo" · `sala-http`: "una ficha que apunta a NUESTRO servidor se rechaza con 400" |
+| `addSubnet('127.0.0.0', 8)` → `addAddress('127.0.0.1')` | `videos`: "rechaza loopback aunque no haya URL_BASE cargada", "la forma IPv4-mapeada…" |
+| `canales.olvidarReloj(s)` sin el `if` de "detenido" | `reloj`: "detener libera el canal…" · `sala-http`: "el que abre la sala con la peli YA ANDANDO recibe el reloj en el `estado` inicial" |
+| borrar `canales.olvidarReloj(s)` del todo | `reloj`: "detener libera el canal…" · `sala-http`: "el que abre la sala después de detener recibe reloj: null" |
+| sacar `aplicarReloj(datos.reloj)` de la rama `estado` de `sala.js` | `pagina-sala`: "el `estado` inicial con la peli andando saca la espera y salta al segundo que va" |
+| `soloRuta` → `String(u ?? '')` | `servidor`: "en el log va la ruta y NO la query" |
+| `destinoSeguro` acepta cualquier `d` | `oauth-destino`: "un destino de otro sitio NUNCA llega al Location", "un destino que se pasa de vivo no puede volverse absoluto al resolverse" |
+
+### Cuáles de las aserciones nuevas son controles, y por qué están
+
+Esta vez se revisó una por una preguntando *"¿esto sería verdad igual si el
+arreglo no existiera?"*. Cuatro contestan que sí, y están puestas igual **a
+propósito**, cada una con el motivo escrito al lado en el archivo. Se anotan acá
+para que el próximo verificador no las lea como el vicio de siempre:
+
+- `videos`: "esLoopback no se lleva puesto lo que NO es esta máquina" es la
+  mitad que impide que el arreglo sea "rechazar todo".
+- `oauth-destino`: "el destino bueno se respeta" impide que el arreglo sea
+  "mandar siempre a /panel".
+- `servidor`: `assert.match(linea, /\/kick\/webhook/)` impide que el arreglo sea
+  loguear un string vacío.
+- `pagina-sala`: "el `estado` inicial sin reloj deja la espera puesta" es lo que
+  hace que el `dataset.espera === 'no'` de la prueba de al lado signifique algo.
+
+Las cuatro son controles negativos declarados, no cobertura: **ninguna de las
+cuatro se cae con ninguna de las siete mutaciones de arriba**, y ninguna se
+cuenta como cobertura en esa tabla. Están para que la aserción de al lado
+signifique algo.
+
+### Anotado, no arreglado
+
+- **El guard de Fase 3 del chat corre antes de `sesion.leer`**, al revés que
+  `conDuenoDeLaSala`: un POST sin cookie a la sala de otro creador da **503** y
+  a la del dueño da **401**. Hoy no importa (`creadores` está vacía y no hay más
+  sala que la del dueño), pero en la Fase 3 hay que decidir si ese orden es a
+  propósito. Argumento a favor de dejarlo: "esa sala no está vinculada" no
+  depende de quién pregunte, así que contestarlo antes de leer la cookie es más
+  barato y no filtra nada. Argumento en contra: dos rutas hermanas contestan
+  distinto al mismo pedido sin cookie, y eso se copia.
+- El verificador confirmó que la decisión del **503** (y no 403) del chat en
+  salas ajenas está bien argumentada y bien anotada en los tres lugares. Sin
+  cambios.
+
+### Archivos tocados
+
+Producción: **`servidor/videos.js`** y nada más (`esLoopback` con `net.BlockList`
+en lugar de la regex, el comentario de `hostnameDe`, y el del orden
+`limpiar`/`slice`).
+
+Pruebas: `pruebas/videos.test.js`, `pruebas/sala-http.test.js`,
+`pruebas/reloj.test.js`, `pruebas/pagina-sala.test.js`,
+`pruebas/servidor.test.js` y **`pruebas/oauth-destino.test.js` (nuevo)**.
+
+Documentación: `BITACORA.md` (esta entrada y los tres recuadros de corrección de
+la entrada de abajo).
+
+**`herramientas/` no se tocó**, como estaba pedido: quedó cerrado en la sesión
+anterior y el cambio de `esLoopback` no lo afecta (`subir.py` arma la URL con
+`R2_URL_PUBLICA`, que es un `pub-….r2.dev`).
+
+Sin dependencias nuevas: `node:net` es builtin.
+
+### Cómo verlo
+
+```
+npm test                                   # 449 en verde
+node --test pruebas/oauth-destino.test.js  # el redirect abierto, solo
+```
+
+Y a mano, con el servidor levantado y una clave de subida generada en `/panel`:
+
+```
+curl -X POST localhost:8778/api/videos -H "X-Clave-Subida: <la clave>" \
+     -H 'Content-Type: application/json' \
+     -d '{"id":"x","slug":"istincho","titulo":"x","duracion":10,
+          "url":"https://[::ffff:127.0.0.1]:8778/sala/x.m3u8"}'
+# 400: la url no puede apuntar a esta misma maquina
+```
+
+### Qué queda pendiente
+
+Nada de la verificación. Sigue en pie lo que la entrada de abajo dejó
+señalizado para la Fase 3 (rutear el chat al vínculo de Kick **de esa sala** y no
+al del dueño; cache corta para `canalPermitido`), más el orden del guard de
+arriba.
+
+---
+
 ## 2026-09-07 — Fase 2: lo que encontró la verificación, cerrado
 
 Las tres fallas y los cuatro puntos que el director sacó de las dudas de la
 entrada "Verificación de la Fase 2: NO PASA". **439 pruebas en verde** (eran
 411), la suite corrida **cinco veces seguidas sobre el código final sin un solo
 flake** (doce corridas en total durante el trabajo), y **doce mutaciones
-aplicadas una por una: las doce se caen.** Ninguna prueba nueva pasa contra el
-código roto.
+aplicadas una por una: las doce se caen.**
+
+> **CORREGIDO EL 2026-09-07.** Acá seguía la frase "Ninguna prueba nueva pasa
+> contra el código roto". Las doce mutaciones listadas abajo sí se caen, pero la
+> frase se leía como una garantía general y no lo era: la segunda verificación
+> encontró **dos** agujeros más, uno de ellos una prueba de esta misma entrada
+> que pasaba por el motivo equivocado. Ver la entrada de arriba.
 
 ### Las tres fallas
 
@@ -37,13 +274,19 @@ Van **dos** comparaciones y no una, porque cada una tapa lo que la otra deja:
    loopback apunta a la máquina del que mira, así que no puede servirle a nadie.
 
 Un detalle que salió de probar los bordes: el parser de URL de Node ya normaliza
-solo casi todas las formas raras de escribir la misma máquina —`127.1`,
-`0x7f.0.0.1`, `2130706433` y `[0:0:0:0:0:0:0:1]` llegan al chequeo ya como
-`127.0.0.1` y `[::1]`—, así que una regex sola alcanza. La que **no** normaliza
-es el punto final de la forma absoluta: `localhost.` y `sala.example.` resuelven
-al mismo lugar y se escapaban por un carácter. De ahí `hostnameDe()`, que baja a
-minúsculas y saca ese punto antes de comparar. Los diez casos están en la
-prueba.
+solo varias formas raras de escribir la misma máquina —`127.1`, `0x7f.0.0.1`,
+`2130706433` y `[0:0:0:0:0:0:0:1]` llegan al chequeo ya como `127.0.0.1` y
+`[::1]`—. No normaliza el punto final de la forma absoluta: `localhost.` y
+`sala.example.` resuelven al mismo lugar y se escapaban por un carácter. De ahí
+`hostnameDe()`, que baja a minúsculas y saca ese punto antes de comparar.
+
+> **CORREGIDO EL 2026-09-07.** Este párrafo decía que Node "ya normaliza solo
+> casi todas las formas raras" y que la del punto final era "la que no
+> normaliza", y de ahí sacaba que "una regex sola alcanza". **Las tres cosas son
+> falsas**, y la segunda verificación adversarial las cazó: Node deja
+> `[::ffff:127.0.0.1]` como `[::ffff:7f00:1]` y `[0:0:0:0:0:0:0:0]` como `[::]`,
+> ninguna de las dos matcheaba la regex, y `POST /api/videos` con esas URL
+> contestaba 200. La regex ya no está: ver la entrada del 2026-09-07 más arriba.
 
 De dónde sale "nuestro host": `hostPropio()` lee `URL_BASE`, **nunca el header
 `Host`**. El `Host` lo elige quien llama, y usarlo sería dejar que el que sube
@@ -59,9 +302,19 @@ C1 y los dos separadores de línea de Unicode, y colapsa los espacios.
 
 Se **reemplaza por un espacio y no se borra**: si se borrara, `"hola\nchau"`
 quedaría `"holachau"` y el título diría otra cosa. Y se limpia **antes** del
-corte a 200: recortando primero, el tope podía dejar afuera el último carácter
-útil y adentro el control. Los nombres de las pistas de subtítulos pasan por lo
-mismo: salen de los metadatos del mismo archivo y valen igual.
+corte a 200, aunque el orden no es lo que hace segura esa línea (ver el
+recuadro). Los nombres de las pistas de subtítulos pasan por lo mismo: salen de
+los metadatos del mismo archivo y valen igual.
+
+> **CORREGIDO EL 2026-09-07.** Acá decía que recortando primero "el tope podía
+> dejar afuera el último carácter útil y adentro el control". No es así:
+> `limpiar` después del `slice` saca los controles igual, así que los dos
+> órdenes dan un título sin controles y la seguridad no depende del orden. Lo
+> que el orden actual sí evita es **desperdiciar el tope**: recortando primero,
+> los 200 caracteres se los comen también los controles y los espacios de más,
+> que después se colapsan a nada, y un título con basura al principio llegaría
+> cortado mucho antes de sus 200 caracteres útiles. El comentario de
+> `videos.js` decía lo mismo mal y quedó corregido igual.
 
 **F3. Las cinco guardas sin prueba.** Las cinco tienen ahora la suya, y las
 cinco mutaciones se caen. Están listadas abajo con el nombre del test.

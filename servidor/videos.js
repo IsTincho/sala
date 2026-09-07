@@ -35,6 +35,7 @@
    ============================================================ */
 
 import crypto from 'node:crypto';
+import net from 'node:net';
 import * as almacen from './almacen.js';
 
 /* El mismo id que valida `herramientas/subir.py` (validar_id). Tienen
@@ -58,9 +59,15 @@ const TOPE_CALIDADES = 8;
    un titulo es una linea de log inventada. Ver `limpiar`. */
 const CONTROLES = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g;
 
-/* Hostnames que son SIEMPRE esta misma maquina. Ver el chequeo de la
-   URL en `revisarFicha`. */
-const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0)$/i;
+/* Las direcciones que apuntan SIEMPRE a la maquina del que mira: todo
+   127.0.0.0/8 y `0.0.0.0` del lado de IPv4, `::1` y `::` del lado de
+   IPv6. Ver `esLoopback`, que es donde esta el por que de que esto sea
+   un BlockList y no una regex. */
+const LOOPBACK = new net.BlockList();
+LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK.addAddress('0.0.0.0', 'ipv4');
+LOOPBACK.addAddress('::1', 'ipv6');
+LOOPBACK.addAddress('::', 'ipv6');
 
 /* Un video de 24 horas ya es absurdo; mas que eso es un dato roto que
    dejaria el reloj calculando posiciones sin sentido. */
@@ -88,15 +95,51 @@ export const slugValido = s => SLUG_VALIDO.test(String(s ?? ''));
 export const limpiar = s => String(s ?? '').replace(CONTROLES, ' ').replace(/\s+/g, ' ').trim();
 
 /**
- * Un hostname comparable.
+ * Un hostname comparable COMO TEXTO. Baja a minusculas y saca el punto
+ * final de la forma absoluta (`localhost.`, `sala.example.`), que
+ * resuelve al mismo lugar y se escapaba de la comparacion por un
+ * caracter: el parser de URL de Node no lo saca.
  *
- * El parser de URL de Node ya normaliza lo dificil solo: `127.1`,
- * `0x7f.0.0.1` y `2130706433` los devuelve los tres como `127.0.0.1`, y
- * `[0:0:0:0:0:0:0:1]` como `[::1]`. Lo que NO saca es el punto final de
- * la forma absoluta (`localhost.`, `sala.example.`), que resuelve al
- * mismo lugar y se escapaba de la comparacion por un caracter.
+ * Esto alcanza para comparar contra un nombre (el chequeo 1 de
+ * `revisarFicha`, contra URL_BASE) y NO alcanza para preguntar "¿esta
+ * direccion es esta maquina?", que es una pregunta sobre la direccion y
+ * no sobre como se escribio. Para eso esta `esLoopback`.
  */
 const hostnameDe = h => String(h ?? '').toLowerCase().replace(/\.$/, '');
+
+/**
+ * Si un hostname apunta SIEMPRE a la maquina del que mira.
+ *
+ * POR QUE NO UNA REGEX, con nombre y apellido. Aca hubo una: una lista
+ * de formas de escribir la misma direccion (`localhost`, `127.x.x.x`,
+ * `::1`, `0.0.0.0`) apoyada en que el parser de URL de Node normaliza
+ * el resto solo. Normaliza bastante —`127.1`, `0x7f.0.0.1` y
+ * `2130706433` salen los tres como `127.0.0.1`, y `[0:0:0:0:0:0:0:1]`
+ * como `[::1]`— pero NO convierte la forma IPv4-mapeada de IPv6 a
+ * cuartetos decimales: `[::ffff:127.0.0.1]` sale como `[::ffff:7f00:1]`
+ * y `[0:0:0:0:0:0:0:0]` como `[::]`. Ninguna de las dos matcheaba, asi
+ * que las dos pasaban. Escribir mas alternativas en la regex no arregla
+ * la categoria: la pregunta es sobre la DIRECCION, y la regex mira el
+ * texto.
+ *
+ * `net.BlockList` compara direcciones y entiende la forma mapeada solo:
+ * `check('::ffff:7f00:1', 'ipv6')` cae adentro de la regla de
+ * `127.0.0.0/8` sin que aca haya que decodificar nada. Es de `node:net`,
+ * asi que no agrega una dependencia.
+ *
+ * `localhost` se mira por nombre porque no es una direccion: es lo unico
+ * que queda del lado del texto.
+ */
+export function esLoopback(host) {
+  const h = hostnameDe(host);
+  if (h === 'localhost') return true;
+  /* `new URL(...).hostname` devuelve las IPv6 entre corchetes y `net`
+     las quiere sin ellos. */
+  const ip = h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
+  const familia = net.isIP(ip);
+  if (!familia) return false;
+  return LOOPBACK.check(ip, familia === 4 ? 'ipv4' : 'ipv6');
+}
 
 /**
  * El host de este mismo servidor, o '' si no se sabe.
@@ -186,8 +229,13 @@ export function revisarFicha(datos, opciones = {}) {
   const slug = String(d.slug ?? '').toLowerCase();
   if (!slugValido(slug)) return { error: 'slug invalido' };
 
-  /* `limpiar` ANTES del corte: si se recortara primero, el tope de 200
-     podria dejar afuera el ultimo caracter util y adentro el control. */
+  /* `limpiar` ANTES del corte. Al reves TAMBIEN quedaria sin controles
+     —limpiar despues del slice los saca igual—, asi que el orden no es
+     lo que hace segura esta linea: lo que hace es no desperdiciar el
+     tope. Recortando primero, los 200 caracteres se los comen tambien
+     los controles y los espacios de mas, que despues se colapsan a
+     nada; un titulo con basura al principio llegaria cortado mucho
+     antes de los 200 caracteres utiles. */
   const titulo = limpiar(d.titulo ?? id).slice(0, TOPE_TITULO);
   if (!titulo) return { error: 'falta el titulo' };
 
@@ -217,17 +265,17 @@ export function revisarFicha(datos, opciones = {}) {
         y la URL legitima vive en r2.dev, asi que no hay falso positivo
         posible por ignorar el puerto.
 
-     2. Contra los nombres de esta misma maquina. Vale AUNQUE URL_BASE no
-        este cargada, que es el caso de local y el que hizo que el
-        chequeo 1 solo no alcance. Ademas es cierto por si mismo: un
-        playlist en 127.0.0.1 apunta a la maquina del que mira, no a la
-        nuestra, asi que no le puede servir a nadie. */
+     2. Contra las direcciones de esta misma maquina (`esLoopback`).
+        Vale AUNQUE URL_BASE no este cargada, que es el caso de local y
+        el que hizo que el chequeo 1 solo no alcance. Ademas es cierto
+        por si mismo: un playlist en 127.0.0.1 apunta a la maquina del
+        que mira, no a la nuestra, asi que no le puede servir a nadie. */
   const propio = hostnameDe(opciones.hostPropio ?? hostPropio());
   const suyo = hostnameDe(parseada.hostname);
   if (propio && suyo === propio) {
     return { error: 'la url no puede apuntar a este mismo servidor: el video se sirve desde R2' };
   }
-  if (LOOPBACK.test(suyo)) {
+  if (esLoopback(suyo)) {
     return { error: 'la url no puede apuntar a esta misma maquina: el video se sirve desde R2' };
   }
 

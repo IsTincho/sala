@@ -328,7 +328,28 @@ test('detener libera el canal de la memoria si no quedo nadie mirando', async ()
      detener tenga a quien llegarle. */
   const { req, res } = conectar(slug);
   await reloj.aplicar(slug, 'reproducir', { videoId: 'ep1' });
-  assert.equal(canales.hayCanal(slug), true, 'con la peli puesta el canal existe');
+
+  /*
+   * LA ASERCION QUE ESTABA MAL, Y POR QUE.
+   *
+   * Aca decia `hayCanal(slug) === true`, y eso era verdad SIN QUE EL
+   * ARREGLO EXISTIERA: hay un cliente conectado, asi que `soltarSiVacio`
+   * no borra nada aunque el reloj este tirado. La mutacion que importa
+   * —llamar a `olvidarReloj` SIEMPRE y no solo al detener— pasaba
+   * entera: se lleva puesto el reloj de "reproduciendo" y la prueba
+   * seguia en verde.
+   *
+   * Lo que hay que mirar es el RELOJ del canal, que es lo que se le
+   * manda al que se conecta despues (`canales.estadoDe`). Si no esta,
+   * cualquiera que abra la sala con la peli andando recibe `reloj: null`
+   * y ve "todavia no empezo la pelicula" para siempre. Es el tercer test
+   * de esta fase que pasaba por el motivo equivocado.
+   */
+  assert.ok(canales.hayCanal(slug), 'con la peli puesta el canal existe');
+  const puesto = canales.canal(slug).reloj;
+  assert.ok(puesto, 'reproducir tiene que DEJAR el reloj puesto en el canal');
+  assert.equal(puesto.estado, 'reproduciendo');
+  assert.equal(puesto.videoId, 'ep1');
 
   await reloj.aplicar(slug, 'detener', {});
 
@@ -337,8 +358,11 @@ test('detener libera el canal de la memoria si no quedo nadie mirando', async ()
   const detenido = res.datos.filter(d => d.tipo === 'reloj' && d.estado === 'detenido');
   assert.equal(detenido.length, 1, 'el evento de detenido tiene que salir igual por el bus');
 
-  /* Todavia hay alguien conectado: el canal no se puede borrar. */
+  /* Todavia hay alguien conectado: el canal no se puede borrar. Pero el
+     reloj SI se solto, y eso es lo que hace que el que se conecte ahora
+     reciba `reloj: null` en el `estado` y vea la pantalla de espera. */
   assert.equal(canales.hayCanal(slug), true, 'con gente mirando el canal se queda');
+  assert.equal(canales.canal(slug).reloj, null, 'detenido es la AUSENCIA de reloj, no un reloj');
 
   /* Y cuando se va el ultimo, ahi si. */
   req.emit('close');

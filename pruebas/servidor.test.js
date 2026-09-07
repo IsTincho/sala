@@ -541,6 +541,49 @@ test('/kick/webhook da 413 a un cuerpo enorme, sin stack trace y sin cortar de p
   assert.deepEqual(errores, [], 'y no deja un stack trace en los logs');
 });
 
+test('en el log va la ruta y NO la query: el code de OAuth no queda en Railway', async () => {
+  /*
+   * LA REGLA DE LA CASA QUE NO SOSTENIA NADA.
+   *
+   * `soloRuta()` existe por un motivo escrito con todas las letras
+   * arriba del `console.error` de index.js: /oauth/kick/volver lleva el
+   * `code` de OAuth en la query, los logs de Railway no se borran, y una
+   * URL entera en un log lo deja ahi para siempre. No tenia una sola
+   * prueba: devolver `String(u ?? '')` en vez del `pathname` dejaba las
+   * 439 en verde.
+   *
+   * Se ejercita por el camino del 413 porque es el unico que se puede
+   * provocar desde afuera sin romper nada a proposito, y es la MISMA
+   * funcion que escribe la linea del 500 con el callback de OAuth: hay
+   * dos call sites y una sola implementacion.
+   *
+   * El `code` de aca es inventado y no sale de este proceso.
+   */
+  const grande = Buffer.alloc(1_200_000, 0x61);
+
+  const avisos = [];
+  const warnOriginal = console.warn;
+  console.warn = (...args) => avisos.push(args.join(' '));
+  let codigo;
+  try {
+    codigo = await postGrande('/kick/webhook?code=UN-CODE-DE-OAUTH&state=EL-STATE', grande);
+  } finally {
+    console.warn = warnOriginal;
+  }
+
+  assert.equal(codigo, 413);
+
+  const linea = avisos.find(a => a.includes('cuerpo demasiado grande'));
+  assert.ok(linea, `no se logueo la linea: ${JSON.stringify(avisos)}`);
+  /* La ruta SI tiene que estar: un log que no dice donde paso no sirve
+     de nada, y esta es la mitad que impide que el arreglo sea loguear
+     un string vacio. */
+  assert.match(linea, /\/kick\/webhook/, 'sin la ruta el log no sirve');
+  assert.ok(!linea.includes('UN-CODE-DE-OAUTH'), `el code quedo en el log: ${linea}`);
+  assert.ok(!linea.includes('EL-STATE'), `el state quedo en el log: ${linea}`);
+  assert.ok(!linea.includes('?'), `la query entera quedo en el log: ${linea}`);
+});
+
 test('/kick/webhook descarta un evento viejo aunque este bien firmado', async () => {
   /* Una firma RSA no vence: quien capture un webhook valido lo puede
      reenviar cuando quiera y va a verificar igual. Lo unico que lo

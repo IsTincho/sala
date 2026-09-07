@@ -209,21 +209,92 @@ test('revisarFicha rechaza loopback aunque no haya URL_BASE cargada', () => {
     'https://[::1]:8821/sala/x.m3u8',
     'https://0.0.0.0/sala/x.m3u8',
 
-    /* Las formas raras de escribir lo mismo. Las cuatro primeras las
-       normaliza sola la URL de Node (127.1, el hexadecimal, el entero
-       de 32 bits y el IPv6 largo dan todas el mismo `hostname`); el
-       punto final de la forma absoluta NO lo saca, y se escapaba de la
-       comparacion por un caracter. */
+    /* Las formas raras de escribir lo mismo. Estas cuatro las normaliza
+       sola la URL de Node (127.1, el hexadecimal, el entero de 32 bits
+       y el IPv6 largo dan todas el mismo `hostname`). */
     'https://127.1/sala/x.m3u8',
     'https://0x7f.0.0.1/sala/x.m3u8',
     'https://2130706433/sala/x.m3u8',
     'https://[0:0:0:0:0:0:0:1]/sala/x.m3u8',
+
+    /* El punto final de la forma absoluta NO lo saca, y se escapaba de
+       la comparacion por un caracter. */
     'https://LocalHost/sala/x.m3u8',
     'https://localhost./sala/x.m3u8',
+
+    /* Y todo 127.0.0.0/8, que es loopback entero y no solo el .1. */
+    'https://127.1.2.3/sala/x.m3u8',
+    'https://127.255.255.255/sala/x.m3u8',
   ]) {
     const r = videos.revisarFicha({ ...fichaCompleta(), url }, { hostPropio: '' });
     assert.ok(r.error, `${url} tendria que dar error`);
     assert.match(r.error, /esta misma maquina/);
+  }
+});
+
+test('la forma IPv4-mapeada de IPv6 tampoco esquiva el chequeo', () => {
+  /*
+   * LA SEGUNDA VERIFICACION ADVERSARIAL. La lista de arriba tenia diez
+   * casos y ninguno era el que fallaba.
+   *
+   * La entrada de la bitacora decia que el parser de Node "ya normaliza
+   * solo casi todas las formas raras" y que la unica que no era el punto
+   * final. Es falso: la forma IPv4-mapeada de IPv6 NO vuelve a
+   * cuartetos decimales, sale en hexadecimal comprimido
+   * (`[::ffff:127.0.0.1]` -> `[::ffff:7f00:1]`) y no matcheaba una regex
+   * escrita sobre `127(\.\d{1,3}){3}`. Lo mismo `[::]`, que es el
+   * `0.0.0.0` de IPv6 y si estaba bloqueado en su forma IPv4.
+   *
+   * Estos son los cinco que contestaban 200. Que esten aparte y no
+   * mezclados arriba es a proposito: son el repro, y borrar
+   * `esLoopback` tiene que hacerlos caer a los cinco.
+   */
+  for (const url of [
+    'https://[::ffff:127.0.0.1]/sala/x.m3u8',
+    'https://[::ffff:7f00:1]/sala/x.m3u8',
+    'https://[0:0:0:0:0:ffff:127.0.0.1]/sala/x.m3u8',
+    'https://[::]/sala/x.m3u8',
+    'https://[0:0:0:0:0:0:0:0]/sala/x.m3u8',
+
+    /* Y los que caen del mismo lado por comparar direcciones y no
+       texto: el 0.0.0.0 mapeado, el resto de 127/8 mapeado, y las
+       mayusculas del hexadecimal. */
+    'https://[::ffff:0:0]/sala/x.m3u8',
+    'https://[::ffff:7f01:203]/sala/x.m3u8',
+    'https://[::FFFF:127.0.0.1]/sala/x.m3u8',
+    'https://[::0.0.0.0]/sala/x.m3u8',
+  ]) {
+    const r = videos.revisarFicha({ ...fichaCompleta(), url }, { hostPropio: '' });
+    assert.ok(r.error, `${url} tendria que dar error y devolvio una ficha`);
+    assert.match(r.error, /esta misma maquina/);
+  }
+});
+
+test('esLoopback no se lleva puesto lo que NO es esta maquina', () => {
+  /* La mitad que cuida que el arreglo no sea "rechazar todo". Una
+   * direccion de la LAN o una IPv6 publica no son esta maquina, y
+   * `::7f00:1` (la forma IPv4-compatible, deprecada por RFC 4291)
+   * tampoco: nadie la rutea a 127.0.0.1.
+   */
+  for (const host of [
+    'pub-abc123.r2.dev',
+    '8.8.8.8',
+    '128.0.0.1',
+    '1.0.0.127',
+    '192.168.1.10',
+    '127.0.0.1.nip.io',
+    '[2606:4700::1]',
+    '[fe80::1]',
+    '[::ffff:c0a8:1]',
+    '[::7f00:1]',
+    '[64:ff9b::7f00:1]',
+  ]) {
+    assert.equal(videos.esLoopback(host), false, `${host} no es esta maquina`);
+    const r = videos.revisarFicha(
+      { ...fichaCompleta(), url: `https://${host}/sala/x.m3u8` },
+      { hostPropio: '' },
+    );
+    assert.ok(r.ficha, `${host} tendria que pasar y dio: ${r.error}`);
   }
 });
 

@@ -216,6 +216,82 @@ test('con el reloj detenido no hay objetivo', async () => {
   p.cerrar();
 });
 
+/* ================================ entrar con la película ya empezada
+
+   LA CONDUCTA CENTRAL DE LA FASE, Y LA QUE NO TENÍA UNA SOLA PRUEBA.
+
+   Todo lo de arriba entra por `p.api().aplicarReloj(...)`, que es la
+   puerta de atrás. El camino de verdad del que llega tarde —o sea, el
+   del SEGUNDO navegador del criterio de aceptación (a), que casi
+   siempre abre la sala después del play— es otro: el reloj no le llega
+   como un evento `reloj`, le llega ADENTRO del `estado` que el bus
+   manda al conectar. Esa rama del `if (tipo === 'estado')` no la
+   ejercitaba nadie: el único `estado` que se inyectaba en este archivo
+   traía `reloj: null`.
+
+   Con lo cual una mutación de una línea en `servidor/reloj.js` (soltar
+   el reloj del canal SIEMPRE y no sólo al detener) dejaba a todo el que
+   entrara con la peli andando mirando "Todavía no empezó la película"
+   para siempre, y las 439 pruebas seguían en verde. */
+
+test('el `estado` inicial con la peli andando saca la espera y salta al segundo que va', async () => {
+  const p = abrir();
+  await arrancada();
+  p.api().fijarDesfase(0);
+
+  /* Así arranca la página antes de que llegue nada: `iniciar()` hace
+     `aplicarReloj(null)`. Es el punto de partida y, además, el control
+     negativo de las aserciones de abajo. */
+  assert.equal(p.el('sala').dataset.espera, 'si', 'sin reloj se ve la espera');
+  assert.equal(p.hls(), null, 'y no se carga ningún video');
+
+  /* El evento tal cual sale de `canales.estadoDe`: conectados y reloj,
+     con la ficha del video adentro. */
+  const empezoEn = Date.now() - 300_000;
+  p.llega('estado', {
+    tipo: 'estado',
+    slug: 'istincho',
+    conectados: 3,
+    reloj: relojReproduciendo({ empezoEn, offsetInicial: 0, posicion: 7 }),
+    desde: empezoEn,
+  });
+
+  assert.equal(p.el('sala').dataset.espera, 'no',
+    'con la peli andando no puede quedar la pantalla de espera');
+  assert.equal(p.el('columna-video').hidden, false);
+  assert.equal(p.hls()?.cargada, URL_VIDEO, 'tiene que cargar la playlist de r2.dev');
+
+  /* Y el salto: 300 s desde `empezoEn`, NO los 7 del campo `posicion`,
+     que en este evento viene viejo a propósito. */
+  const donde = p.el('video-peli').currentTime;
+  assert.ok(Math.abs(donde - 300) < 2, `saltó al segundo ${donde} y tendría que ser ~300`);
+  assert.notEqual(Math.round(donde), 7, 'usó el campo posicion, que viene viejo');
+
+  /* La otra mitad del mismo evento sigue funcionando. */
+  assert.equal(p.el('contador-espectadores').textContent, '3');
+
+  p.cerrar();
+});
+
+test('el `estado` inicial sin reloj deja la espera puesta', async () => {
+  /* El control negativo de la prueba de arriba: que `dataset.espera`
+     quede en 'no' tiene que depender de que el `estado` TRAIGA un reloj.
+     Es el camino del que entra con la sala detenida, y también el del
+     que entra después de un "detener", que recibe `reloj: null` porque
+     detenido es la ausencia de reloj y no un reloj. */
+  const p = abrir();
+  await arrancada();
+
+  p.llega('estado', { tipo: 'estado', slug: 'istincho', conectados: 5, reloj: null });
+
+  assert.equal(p.el('sala').dataset.espera, 'si');
+  assert.match(p.el('texto-espera').textContent, /Todavía no empezó/);
+  assert.equal(p.hls(), null);
+  assert.equal(p.el('contador-espectadores').textContent, '5');
+
+  p.cerrar();
+});
+
 /* -------------------------------------------------- la corrección */
 
 /* `aplicarReloj` sincroniza forzando, y eso arranca los cinco segundos

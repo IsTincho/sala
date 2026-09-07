@@ -345,6 +345,15 @@ test('una ficha que apunta a NUESTRO servidor se rechaza con 400', async () => {
     ['https://sala.example/sala/x.m3u8', /este mismo servidor/],
     ['https://localhost:8821/sala/x.m3u8', /esta misma maquina/],
     ['https://127.0.0.1:8821/sala/x.m3u8', /esta misma maquina/],
+
+    /* LA SEGUNDA VERIFICACIÓN. Estas dos contestaban 200 y guardaban la
+       ficha: el parser de Node deja `[::ffff:127.0.0.1]` como
+       `[::ffff:7f00:1]` y `[0:0:0:0:0:0:0:0]` como `[::]`, y la regex
+       de loopback estaba escrita sobre cuartetos decimales. Se miran
+       por HTTP y no sólo en `revisarFicha` porque lo que se prometía
+       era el 400. */
+    ['https://[::ffff:127.0.0.1]:8821/sala/x.m3u8', /esta misma maquina/],
+    ['https://[::]:8821/sala/x.m3u8', /esta misma maquina/],
   ];
 
   for (const [url, esperado] of casos) {
@@ -355,7 +364,7 @@ test('una ficha que apunta a NUESTRO servidor se rechaza con 400', async () => {
     assert.match(datos.error, esperado, url);
   }
 
-  /* Y no quedó nada guardado con ninguna de las tres. */
+  /* Y no quedó nada guardado con ninguna de las cinco. */
   assert.equal(await videos.obtener(SLUG, 'propia'), null,
     'una ficha rechazada no puede haber quedado en el catálogo');
 });
@@ -562,6 +571,75 @@ test('borrar el video que se está pasando DETIENE el reloj', async () => {
 
   const panel = await pedirJson('/api/panel', { cookie: sesionDueno });
   assert.equal(panel.datos.reloj.estado, 'detenido');
+});
+
+/* ============================== entrar con la película ya empezada
+
+   EL CAMINO SIN RED, Y EL QUE MÁS SE USA.
+
+   Todos los tests de reloj de acá arriba abren el SSE ANTES de tocar
+   play, así que el reloj siempre les llega como un evento `reloj` en
+   vivo. El segundo navegador del criterio de aceptación (a) —"dos
+   navegadores muestran el mismo segundo"— entra casi siempre DESPUÉS
+   del play, y por ese camino el reloj no viaja como evento: viaja
+   adentro del `estado` que `canales.suscribir` manda al conectar,
+   sacado de `canal.reloj`.
+
+   Nadie miraba ese campo. Una mutación de una línea en `reloj.js`
+   —soltar el reloj del canal SIEMPRE y no sólo al detener— lo dejaba en
+   `null` y las 439 pruebas seguían en verde: cualquiera que abriera
+   /sala/istincho con la peli andando veía "Todavía no empezó la
+   película" para siempre. */
+
+test('el que abre la sala con la peli YA ANDANDO recibe el reloj en el `estado` inicial', async () => {
+  const puesto = await pedirJson(`/api/sala/${SLUG}/reloj`, {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { accion: 'reproducir', videoId: 'ep1' },
+  });
+  assert.equal(puesto.estado, 200);
+
+  /* Y RECIÉN AHORA se abre el SSE. El orden es todo el test. */
+  const sse = abrirSse(SLUG);
+  await sse.primero;
+
+  const primero = sse.eventos[0].datos;
+  assert.equal(primero.tipo, 'estado', 'lo primero que se recibe es el estado');
+  assert.ok(primero.reloj, 'el `estado` inicial tiene que traer el reloj del canal');
+  assert.equal(primero.reloj.estado, 'reproduciendo');
+  assert.equal(primero.reloj.videoId, 'ep1');
+
+  /* Con la ficha adentro: el navegador arranca a cargar sin un pedido
+     más, que es para lo que `paraElCable` la mete. */
+  assert.match(primero.reloj.url, /maestra\.m3u8$/);
+  assert.equal(primero.reloj.duracion, 1200.5);
+
+  /* Y con `empezoEn`, que es lo ÚNICO de lo que la página saca la
+     posición: el campo `posicion` de este objeto es la foto del momento
+     del play y para el que llega tarde está viejo. */
+  assert.ok(Number(primero.reloj.empezoEn) > 0, 'sin empezoEn no hay a qué segundo saltar');
+
+  sse.cerrar();
+});
+
+test('el que abre la sala después de "detener" recibe reloj: null', async () => {
+  /* El control negativo del test de arriba: que el `estado` traiga un
+     reloj tiene que depender de que HAYA película puesta, no de que el
+     campo esté siempre lleno.
+     Y de paso fija el contrato del otro lado: "detenido" es la AUSENCIA
+     de reloj, que es lo que deja que el canal se libere de memoria
+     cuando se va el último. */
+  const parado = await pedirJson(`/api/sala/${SLUG}/reloj`, {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { accion: 'detener' },
+  });
+  assert.equal(parado.estado, 200);
+
+  const sse = abrirSse(SLUG);
+  await sse.primero;
+
+  const primero = sse.eventos[0].datos;
+  assert.equal(primero.tipo, 'estado');
+  assert.equal(primero.reloj, null, 'sin peli puesta el estado no puede traer un reloj');
+
+  sse.cerrar();
 });
 
 /* ======================================= el chat del espectador */

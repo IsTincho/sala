@@ -39,7 +39,9 @@ let seq = 0;                 // id incremental de evento, global
 function nuevoCanal(slug) {
   return {
     slug,
-    clientes: new Set(),
+    /* res -> { redes }. Es un Map y no un Set porque cada conexion
+       tiene su propio filtro: ver `leDaEl` mas abajo. */
+    clientes: new Map(),
     /* null = no hay nada puesto. La forma del reloj la define la
        Fase 2; aca solo se guarda y se reparte. */
     reloj: null,
@@ -101,6 +103,32 @@ function escribir(res, id, tipo, datos) {
   res.write(`id: ${id}\ndata: ${JSON.stringify({ ...datos, tipo: t })}\n\n`);
 }
 
+/* --------------------------------------------- el filtro por red
+
+   EL BUS DE UN CANAL ES PUBLICO: `/eventos/:slug` no pide sesion, y
+   desde la Fase 2 lo escucha cualquiera que abra la Sala a ver la
+   peli. Pero por ese mismo bus viaja tambien el chat de TWITCH del
+   dueño (`chat.js` recuerda las dos redes en el canal de su slug),
+   que es la comunidad de otra plataforma y no tiene nada que hacer en
+   la sala de la pelicula.
+
+   Por eso cada conexion declara que redes quiere, y el filtro se
+   aplica ACA y no en el navegador: si filtrara el cliente, el chat de
+   Twitch igual saldria por el cable hacia todas las pestañas, y un
+   `curl /eventos/istincho` lo veria entero. Filtrar donde se decide
+   es lo unico que hace la regla verdad.
+
+   `redes` null = todas (es lo que pide /chat, con la cookie del
+   dueño). Los eventos sin `red` —estado, reloj, presencia— pasan
+   siempre: no son de ninguna red. */
+const leDaEl = (opciones, evento) => {
+  const redes = opciones?.redes;
+  if (!redes) return true;
+  const red = evento?.red;
+  if (typeof red !== 'string') return true;
+  return redes.includes(red);
+};
+
 /** El estado que recibe alguien apenas se conecta. */
 export const estadoDe = c => ({
   slug: c.slug,
@@ -117,9 +145,16 @@ export const estadoDe = c => ({
  * sirven del mismo servidor, y abrir el stream a cualquier origen
  * seria regalarle el chat en vivo a cualquier sitio que lo quiera
  * embeber.
+ *
+ * @param {{redes?:string[]}} [opciones]  que redes quiere esta
+ *        conexion. Sin `redes` llega todo; con `['kick']` llega solo
+ *        Kick. Quien decide es la ruta, no este modulo: ver `leDaEl`.
  */
-export function suscribir(slug, req, res) {
+export function suscribir(slug, req, res, opciones = {}) {
   const c = canal(slug);
+  /* Se copia la lista: quien llama no puede cambiarle el filtro a una
+     conexion ya abierta modificando el array que paso. */
+  const suyo = { redes: Array.isArray(opciones.redes) ? [...opciones.redes] : null };
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -132,7 +167,7 @@ export function suscribir(slug, req, res) {
   /* si se corta, que el navegador espere 3s antes de volver */
   res.write('retry: 3000\n\n');
 
-  c.clientes.add(res);
+  c.clientes.set(res, suyo);
 
   /* Lo primero que ve el que llega: donde esta parado. Sin esto, una
      pestaña recien abierta no sabe si el servidor la escucha hasta que
@@ -141,8 +176,15 @@ export function suscribir(slug, req, res) {
 
   /* Y despues, lo que se perdio. Con el chat vacio no manda nada, asi
      que en la Fase 0 esto no se nota; existe aca porque el buffer vive
-     aca y partirlo en dos lugares seria peor. */
-  for (const m of c.mensajes) escribir(res, ++seq, m.tipo ?? 'chat', m);
+     aca y partirlo en dos lugares seria peor.
+
+     El buffer pasa por el MISMO filtro que lo que llega en vivo: sin
+     esto, una sala que no recibe Twitch en vivo se comeria igual los
+     ultimos 200 mensajes de Twitch al conectarse, que es la mitad del
+     problema y la mas visible. */
+  for (const m of c.mensajes) {
+    if (leDaEl(suyo, m)) escribir(res, ++seq, m.tipo ?? 'chat', m);
+  }
 
   /* `soltar` se engancha a dos eventos que pueden llegar los dos, y
      tarde: primero el close y despues un error, o al reves. Sin la
@@ -186,7 +228,8 @@ export function difundir(slug, evento) {
   const tipo = evento?.tipo ?? 'mensaje';
   const id = ++seq;
   let llegaron = 0;
-  for (const res of c.clientes) {
+  for (const [res, suyo] of c.clientes) {
+    if (!leDaEl(suyo, evento)) continue;
     try { escribir(res, id, tipo, evento); llegaron++; }
     catch { c.clientes.delete(res); }
   }
@@ -224,7 +267,7 @@ export function arrancarPings() {
   if (latido) return latido;
   latido = setInterval(() => {
     for (const c of canales.values()) {
-      for (const res of c.clientes) {
+      for (const res of c.clientes.keys()) {
         try { res.write(': ping\n\n'); }
         catch { c.clientes.delete(res); }
       }
@@ -244,7 +287,7 @@ export function pararPings() {
 /** Cierra todo. Lo usan los tests y el apagado ordenado. */
 export function cerrarTodo() {
   for (const c of canales.values()) {
-    for (const res of c.clientes) {
+    for (const res of c.clientes.keys()) {
       try { res.end(); } catch { /* ya estaba cerrada */ }
     }
     c.clientes.clear();

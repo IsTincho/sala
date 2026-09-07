@@ -49,10 +49,10 @@ class ResFalsa {
 }
 
 /** Engancha un cliente nuevo a un canal y devuelve { req, res }. */
-function conectar(slug) {
+function conectar(slug, opciones) {
   const req = new EventEmitter();
   const res = new ResFalsa();
-  canales.suscribir(slug, req, res);
+  canales.suscribir(slug, req, res, opciones);
   return { req, res };
 }
 
@@ -234,4 +234,83 @@ test('un cliente que ya no acepta escrituras se saca solo', () => {
 
   assert.equal(canales.difundir('roto', { tipo: 'chat' }), 1, 'solo llega al que sigue vivo');
   assert.equal(canales.conectados('roto'), 1);
+});
+
+/* ------------------------------------------------ el filtro por red
+
+   LA DECISION DE LA FASE 2. Por el canal del dueño viaja tambien su
+   chat de Twitch, porque /chat las muestra juntas. Pero
+   `/eventos/:slug` no pide sesion y desde la Sala lo escucha cualquiera
+   que este mirando la peli.
+
+   Se filtra ACA, por conexion, y no en el navegador: filtrando en el
+   navegador el chat de Twitch igual saldria por el cable hacia
+   trescientas pestañas y un `curl` lo veria entero. Quien decide que
+   redes pide cada conexion es la ruta (`index.js`), no este modulo. */
+
+test('sin filtro llega todo, que es lo que pide /chat', () => {
+  const { res } = conectar('sin-filtro');
+  canales.difundir('sin-filtro', { tipo: 'chat', red: 'kick', texto: 'de kick' });
+  canales.difundir('sin-filtro', { tipo: 'chat', red: 'twitch', texto: 'de twitch' });
+
+  assert.deepEqual(res.datos.slice(1).map(m => m.texto), ['de kick', 'de twitch']);
+});
+
+test('con redes: ["kick"] el chat de Twitch no sale por el cable', () => {
+  const { res } = conectar('solo-kick', { redes: ['kick'] });
+  canales.difundir('solo-kick', { tipo: 'chat', red: 'twitch', texto: 'de twitch' });
+  canales.difundir('solo-kick', { tipo: 'chat', red: 'kick', texto: 'de kick' });
+
+  const textos = res.datos.slice(1).map(m => m.texto);
+  assert.deepEqual(textos, ['de kick']);
+  /* No alcanza con que el cliente no lo muestre: no tiene que estar
+     escrito en el stream. */
+  assert.ok(!res.escrito.includes('de twitch'), 'el mensaje viajo igual');
+});
+
+test('lo que no es de ninguna red pasa siempre', () => {
+  /* El estado, el reloj y la presencia no llevan `red`: son del canal,
+     no de una plataforma. Un filtro que los tirara dejaria a la Sala
+     sin saber en que segundo va la peli. */
+  const { res } = conectar('sin-red', { redes: ['kick'] });
+  canales.ponerReloj('sin-red', { estado: 'reproduciendo', videoId: 'ep1' });
+  canales.difundir('sin-red', { tipo: 'presencia', conectados: 3 });
+
+  const tipos = res.datos.map(m => m.tipo);
+  assert.deepEqual(tipos, ['estado', 'reloj', 'presencia']);
+});
+
+test('difundir cuenta solo a los que de verdad lo recibieron', () => {
+  const todos = conectar('mixto');
+  const soloKick = conectar('mixto', { redes: ['kick'] });
+
+  assert.equal(canales.difundir('mixto', { tipo: 'chat', red: 'twitch', texto: 'x' }), 1,
+    'el que filtra Twitch no cuenta como que le llego');
+  assert.equal(canales.difundir('mixto', { tipo: 'chat', red: 'kick', texto: 'y' }), 2);
+
+  assert.deepEqual(todos.res.datos.slice(1).map(m => m.texto), ['x', 'y']);
+  assert.deepEqual(soloKick.res.datos.slice(1).map(m => m.texto), ['y']);
+});
+
+test('el buffer que recibe el que llega tarde tambien viene filtrado', () => {
+  /* Sin esto, una sala que no recibe Twitch en vivo se comeria igual
+     los ultimos 200 mensajes de Twitch al conectarse: la mitad del
+     problema, y la mas visible. */
+  canales.recordar('tarde-filtrado', { tipo: 'chat', red: 'twitch', texto: 'viejo de twitch' });
+  canales.recordar('tarde-filtrado', { tipo: 'chat', red: 'kick', texto: 'viejo de kick' });
+
+  const { res } = conectar('tarde-filtrado', { redes: ['kick'] });
+  assert.deepEqual(res.datos.slice(1).map(m => m.texto), ['viejo de kick']);
+});
+
+test('el filtro es de cada conexion y no se puede cambiar desde afuera', () => {
+  /* La lista se copia al suscribir: si se guardara la referencia, quien
+     llamo podria abrirle el bus entero a una conexion ya conectada
+     empujando un elemento al array. */
+  const redes = ['kick'];
+  const { res } = conectar('inmutable', { redes });
+  redes.push('twitch');
+
+  canales.difundir('inmutable', { tipo: 'chat', red: 'twitch', texto: 'colado' });
+  assert.equal(res.datos.slice(1).length, 0);
 });

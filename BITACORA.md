@@ -4,6 +4,578 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-07 — Fase 3: otros creadores
+
+Cualquier streamer de Kick entra por `/crear`, acepta los términos y tiene su
+Sala en `/sala/<su-slug>`, con su panel, sus videos, su chat y su plan.
+**607 pruebas en verde** (eran 449), la suite corrida **tres veces seguidas
+sobre el código final sin un solo flake**, y **38 mutaciones aplicadas una por
+una: las 38 se caen.** Las 121 pruebas de Python de `herramientas/` siguen en
+verde y esa carpeta **no se tocó**.
+
+Lo que cambia de verdad no es que haya páginas nuevas: es que **el slug dejó de
+ser una constante**. Todo lo que antes decía "el dueño" ahora dice "esta sala",
+y las tres minas que la Fase 2 dejó marcadas eran exactamente los lugares donde
+esa diferencia todavía no existía.
+
+### Las tres minas de la Fase 2, cerradas
+
+**1. El chat del espectador ruteaba por el dueño, no por la sala.**
+`apiSalaChat` mandaba el mensaje a `vinculos.identidad('kick')` —sin slug—, o
+sea al canal del dueño del servicio, escribiera el espectador en la sala que
+escribiera. La Fase 2 lo tapó con un 503 para las salas ajenas y su propio autor
+lo llamó *"un cartel de obra, no la solución"*.
+
+Ahora se rutea: `vinculos.identidad(slug, 'kick')`, con el slug del camino de la
+URL, que ya pasó por `canalPermitido`. **El guard del 503 se sacó**, y el 503
+que queda es el de siempre: esta sala todavía no vinculó Kick.
+
+La prueba que lo cuida no mira un código de estado sino **a dónde fue el
+mensaje**: abre el cuerpo que salió hacia Kick y exige que el
+`broadcaster_user_id` sea el del otro creador (7777) y no el del dueño (4242).
+Con el ruteo roto el pedido contesta 200 igual; la única forma de ver la
+diferencia es abrir el pedido. Al lado va su control negativo, una sala que
+existe y no vinculó Kick, para que "no salió nada" y "salió al lugar
+equivocado" no se vean iguales desde afuera.
+
+**2. El orden del guard, decidido.** La Fase 2 preguntó si era a propósito que
+el chat contestara antes de leer la cookie y el reloj después. La respuesta es
+que sí, y ahora **las dos rutas lo hacen igual: primero la sala, después la
+cookie.**
+
+El argumento: *"¿existe esta sala?"* es un hecho sobre la sala y no sobre quien
+pregunta, y ya se puede averiguar sin ninguna cookie pidiendo `GET /sala/<slug>`,
+que contesta 404. Contestarlo primero no cuenta nada que no se sepa, y evita el
+caso raro de contestar 401 sobre una sala inexistente, que manda a buscar una
+cookie para una puerta que no está. **El precio, escrito con todas las letras:
+un POST sin cookie a una sala que no existe ahora da 404 y antes daba 401.** Hay
+una prueba que fija las dos rutas hermanas contestando lo mismo.
+
+**3. `canalPermitido` salía a `creadores` en cada `/eventos/:slug`.** Ahora pasa
+por una cache de 5 segundos en `creadores.js`, con invalidación en cada
+escritura (lo que hace que marcar a alguien como amigo desde `/admin` se sienta
+instantáneo, sin depender del TTL).
+
+La cache guarda **también los que no existen**, y eso no es un detalle de
+rendimiento: sin la cache negativa, `/eventos/<slug inventado distinto cada vez>`
+sigue siendo una consulta a Mongo por pedido, que es exactamente el modo barato
+de voltear el servicio que `canalPermitido` vino a cerrar. Y por eso mismo el
+Map tiene tope: una cache negativa sin tope es el mismo problema corrido un
+casillero, de la base a la memoria.
+
+**4. `metricas.js` tenía un Map sin tope.** Estaba a salvo por casualidad (todos
+sus llamadores pasaban slugs ya validados). Ahora los slugs entran por el webhook
+y por cada `/eventos/:slug`, así que tiene tope de 2.000 y suelta los más viejos.
+Hay dos pruebas: que no crezca, y que el que se suelte sea el viejo y no el
+recién llegado —soltar el nuevo dejaría el contador de la sala que está hablando
+*ahora* siempre en cero—.
+
+**5. La carrera de `/eventos/:slug`, confirmada con I/O de verdad.** El arreglo
+de la Fase 2 anota la bandera de cerrado **antes** de los dos `await`, y la
+ventana que preocupaba se abría justo cuando `canalPermitido` sale a Mongo, o
+sea en esta fase. Sigue sin haber un solo `await` entre el `if (cerrado)` y el
+`suscribir`, y ahora el primer `await` hace trabajo real (o cortocircuita en la
+cache). El arreglo aguanta porque no depende de cuánto tarde lo de arriba, sino
+de que no haya nada en el medio; la prueba de la Fase 2 sigue verde.
+
+### Lo que quedó funcionando
+
+- **`/crear`**: los términos con casilla obligatoria y "Entrar con Kick"
+  (`rol=creador`, scopes `user:read channel:read chat:write events:subscribe`).
+  Crea el creador en `creadores` con plan `pendiente`, guarda su vínculo de Kick
+  cifrado, suscribe `chat.message.sent` de su canal con **su** token, y lo manda
+  a `/panel`. **Tope de 900 canales**, con el motivo escrito: la app de Kick sin
+  verificar admite 1.000, y pasado eso las suscripciones fallan y el chat de los
+  que entren queda mudo sin ningún error visible.
+- **`/terminos`**: texto en castellano claro, sin JavaScript. El contenido es del
+  creador y responde por él; el servicio puede bajar contenido ante un reclamo;
+  no hay garantía de disponibilidad.
+- **Multi-canal de punta a punta.** El webhook de Kick se rutea a la sala del
+  `broadcaster_user_id` (con el `channel_slug` de respaldo) y **descarta lo que
+  no se pueda atribuir a una sala que existe**. `chat.js` pasó a tener un juego
+  de estado por sala: conexión de Twitch, plan B, dedupe y salud, todo adentro de
+  un Map por slug.
+- **Twitch por creador**, opcional, desde su panel, con su token y su propia
+  conexión EventSub. Con tope de conexiones simultáneas (ver abajo).
+- **Planes** `pendiente | amigo | pago | vencido` en `creadores`, con `/admin`
+  para el dueño del servicio. Un creador sin plan activo ve su panel en modo
+  sólo lectura, con el botón de suscribirse.
+- **`servidor/cobro.js`**: dos funciones y un registro de proveedores, con
+  `servidor/cobro-paddle.js` (Paddle Billing, checkout alojado, webhook con firma
+  verificada) como única implementación. Precio y moneda por variable.
+- **`servidor/r2.js`**: SigV4 escrito a mano (sin dependencias) para firmar las
+  URL de subida y de borrado de cada creador, y para medir cuánto ocupa cada sala
+  en el bucket.
+- **Aislamiento**, con pruebas: `pruebas/multicanal.test.js` levanta el servidor
+  de verdad con dos creadores y prueba que no exista ninguna forma, por HTTP, de
+  pedir los datos de otra sala.
+
+### Las decisiones que importan, y por qué
+
+**1. El slug va primero y es obligatorio, sin valor por defecto.** Es la decisión
+más importante de la fase. `vinculos.leer('kick')` pasó a ser
+`vinculos.leer(slug, 'kick')`, y lo cómodo habría sido agregar el slug al final
+con el del dueño como default. No se hizo: **el bug que la Fase 2 dejó anotado
+era exactamente ese**, y con un default cualquier call site nuevo que se olvide
+lo repite y anda "bien" hasta el día que haya dos creadores hablando a la vez.
+Sin default, olvidarse tira.
+
+Esa promesa está escrita en el encabezado de `vinculos.js`, y **la mutación que
+la rompe sobrevivía la suite entera** hasta que se le escribieron pruebas
+propias: hoy todos los call sites pasan el slug, así que el default no cambiaba
+nada observable. Un comentario que promete algo que ninguna prueba sostiene es
+la falla que este proyecto ya cometió dos veces; ahora hay ocho aserciones que lo
+sostienen.
+
+**2. El plan del dueño del servicio NO sale de la base.** `planDe()` compara el
+slug contra `KICK_SLUG` y contesta `'dueno'` **antes** de leer el documento, y
+`existe()` contesta `true` para él sin tocar el almacén. Lo segundo no es sólo
+seguridad: es lo que hace que su Sala funcione con la colección vacía, que es
+como está hoy y como va a estar el primer día de producción.
+
+Hay una prueba que le escribe a mano la fila con el peor valor posible
+(`plan: 'vencido', vence: 1`) y exige que siga pudiendo reproducir.
+
+**3. Un vencimiento que ya pasó baja el plan solo**, aunque el campo siga
+diciendo "pago". El webhook de cobro es lo único del sistema que llega de afuera
+y puede no llegar —se cayó el proveedor, cambió la clave, se desconfiguró la
+notificación—. Si no llega, el servicio tiene que cortarse; lo contrario es el
+error que no se descubre nunca. `/admin` muestra **los dos** planes cuando no
+coinciden, porque esa diferencia es lo único que explica por qué alguien con
+"pago" en la base no puede reproducir.
+
+**4. Quién puede poner qué plan lo exige el modelo, no la ruta.**
+`creadores.ponerPlan(slug, plan, { quien })` rechaza que el dueño ponga "pago" o
+"vencido" y que el cobro ponga "amigo" o "pendiente". Vive ahí y no en `/admin`
+para que valga también para el call site que se escriba mañana. Si el dueño
+pudiera poner "pago" a mano, la base y el proveedor se irían separando y no
+habría forma de saber cuál manda.
+
+**5. El plan tapa el reloj entero, no sólo "reproducir".** Si sólo se tapara el
+play, un plan vencido podría seguir pausando y saltando una película que ya
+estaba andando, que es la misma función por otro nombre. Se contesta **402**, que
+es el código que existe para esto.
+
+**El chat NO pasa por el plan**, a propósito: es un proxy al chat de Kick del
+propio creador, no cuesta ancho de banda y el creador lo podría hacer sin
+nosotros. Lo que se cobra es pasar la película.
+
+**6. El token de R2 pasó a Railway, y es el único cambio de reglas de la fase.**
+Hasta la Fase 2 vivía sólo en la PC del dueño, y estaba bien: el único que subía
+era él. A un creador no se le puede dar el token del bucket —con él leería,
+pisaría y borraría los videos de todos, incluidos los del dueño—, así que el
+servidor tiene que poder firmar URL acotadas, y **firmar es, por definición,
+tener el secreto**.
+
+Lo que **no** cambia, y es lo que importa: el video no pasa por Railway. El
+servidor firma una URL de unos cientos de bytes; los gigas van del creador a R2 y
+de R2 al espectador. Está en `TAREAS-DUENO.md` como tarea 17, con la recomendación
+de que sea un token distinto del de la PC.
+
+**7. El tope de GB se compara contra lo que dice R2, no contra lo declarado.**
+Los bytes que manda el que sube los elige el mismo al que se le está poniendo el
+límite. Por eso `r2.js` sabe listar: antes de firmar, se mide el prefijo de esa
+sala contra el bucket. Hay una prueba que declara **un byte** con 2 GB ya usados
+y exige un 409.
+
+Cuando R2 no contesta se usa la última foto guardada, que es la dirección segura:
+si un fallo se leyera como "no usa nada", el tope dejaría subir todo lo que se
+quiera justo cuando R2 está caído.
+
+**8. El prefijo se arma en el servidor.** La clave es
+`` `${slug}/${id}/${ruta}` `` con el slug de la cookie (o de la clave de subida) y
+el `id` ya validado; lo único que elige el creador es lo que va después, y aun eso
+pasa por `claveValida` y `esDeLaSala`. `esDeLaSala` exige la barra: sin ella, el
+slug `ana` firmaría claves de `anaconda`, que es el prefijo de otro creador.
+
+**9. Una conexión EventSub por creador es legal; lo que no escala es la RAM.**
+Verificado en la doc de Twitch: el límite de 3 WebSockets es **por par (client
+id, user id)**, y leer el chat propio con el token propio cuesta 0 del
+presupuesto de 10. O sea que N creadores son N presupuestos independientes.
+
+Lo que no aguanta 900 es este contenedor: 900 sockets, 900 timers de keepalive y
+900 buffers. Va un tope propio (`TOPE_TWITCH`, 50) **visible en el panel**: el
+creador que quede afuera ve "este servidor llegó a su tope" y no "cortado", que
+es lo que diría sin ese campo y no se distinguiría de Twitch caído. Kick, que es
+lo que la Sala necesita, entra por webhook y no gasta ninguna conexión.
+
+**10. `/admin` da 404 y no 403 a quien no es el dueño.** Una dirección que
+contesta distinto ya anuncia que existe un panel de administración y cómo se
+llama. Es la única página del proyecto que se protege del lado del servidor; las
+demás son HTML sin datos y lo que se cuida es la API.
+
+**11. La ventana de la firma de Paddle es de 60 segundos y no de 5.** Paddle
+documenta 5 y sus SDK usan ese número. Con 5, un contenedor con el reloj corrido
+diez segundos rechaza **todos** los webhooks: el plan de todos los que pagan deja
+de actualizarse y el síntoma es "pagué y no anda", el peor de todos.
+
+Fallar cerrado sirve cuando algo se pierde al fallar abierto, y acá no se pierde
+nada: **todos los campos de un evento de Paddle son absolutos** —el estado de la
+suscripción y su `next_billed_at` vienen adentro—, así que reprocesar un evento
+repetido escribe exactamente lo mismo. Un repetido no regala un mes porque el
+vencimiento se copia del payload y no se calcula desde "ahora". Lo que la ventana
+sigue atajando es un evento capturado hace meses, y 60 segundos alcanzan de
+sobra. Se cambia con `PADDLE_TOLERANCIA_S`.
+
+**12. `past_due` sigue como "pago".** Es un cobro que falló y que Paddle va a
+reintentar durante días; cortarle el servicio en el primer rechazo a alguien cuya
+tarjeta se venció es perder al cliente por un trámite. No queda abierto para
+siempre: el `next_billed_at` que ya estaba guardado se pasa y `planDe` lo baja
+solo.
+
+**13. El precio que se muestra y el que se cobra son dos cosas.** El brief pide
+precio y moneda por variable; lo que se cobra es lo que esté cargado en Paddle, y
+este servidor no lo consulta. **Es lo único del cobro que puede quedar
+desincronizado**, y está escrito arriba de `precio()` en `cobro.js` y en el
+README en vez de dejarlo para que alguien lo descubra.
+
+**14. La cookie `sala_dueno` no cambió de nombre.** Sigue queriendo decir lo
+mismo que decía —"el dueño de esta sala"—; lo que cambió es que ahora hay más de
+una sala. Lo que sí se separó, y está escrito en el encabezado de `index.js` y en
+el README, es que **"dueño" quiere decir dos cosas**: dueño de *una sala* (la
+cookie) y dueño del *servicio* (`KICK_SLUG`). `conDuenoDeLaSala` ya tenía el
+nombre correcto desde la Fase 2.
+
+**15. La atribución del evento salió de `chat.js`.** La guarda que decidía si un
+evento del webhook entraba —el `if (slug !== slugDueno)` que devolvía
+`canal ajeno`— era la forma de un solo inquilino de preguntar "¿de qué sala es
+esto?". Ahora eso vive en `creadores.salaDelEvento()` y `chat.js` recibe una sala
+ya resuelta. Es lo que hace que agregar un creador no toque el archivo del chat.
+
+Se rutea por `broadcaster.user_id` antes que por `channel_slug`: los dos viajan
+adentro del cuerpo que Kick firmó con RSA, así que ninguno es "más seguro"; el
+número es el que **no cambia** si el streamer se renombra en Kick.
+
+### Un cambio deliberado sobre una decisión de la Fase 2
+
+**La clave de subida ahora también puede LEER el catálogo de su sala.** El test
+de la Fase 2 decía que servía para escribir y no para leer.
+
+Con un solo creador esa restricción no costaba nada; con la Fase 3 sí, porque
+`subir.py --listar` de un creador no tiene otra forma de saber qué hay del lado
+del servidor: no tiene cookie ni token de R2. Y la restricción **dejó de ser
+coherente**: desde que la misma clave firma los `DELETE` de R2 de su prefijo (que
+es lo que necesita `--borrar`), poder leer el catálogo es estrictamente menos que
+lo que ya podía hacer.
+
+La regla que queda es más simple de enunciar: **la clave puede todo sobre los
+videos de SU sala, y nada más.** Hay una prueba para cada mitad, y la segunda
+—que la clave no abre `/api/panel`, no genera otra clave, no toca el reloj y no
+lee la salud del chat— es la que impide que "la clave puede leer" se estire hasta
+"la clave es una sesión".
+
+### Qué tiene que cambiar en `herramientas/subir.py`
+
+**No se tocó `herramientas/`**, como estaba pedido. Esto es lo que hay que
+escribir ahí para cerrar el entregable 5, con la precisión que la Fase 2 usó para
+pedir sus dos rutas.
+
+El servidor ya tiene todo lo necesario. Nada de esto necesita un cambio más del
+lado de `servidor/`.
+
+**A. El argumento `--sala <slug>`.** Por defecto, `SALA_SLUG` de
+`herramientas/.env` (que ya existe). Decide dos cosas: el campo `slug` de la
+ficha (que ya se manda) y el prefijo de R2.
+
+**B. Un modo de subida nuevo: por URL prefirmada.** El de hoy (boto3 con el token
+de R2) sigue sirviendo para el dueño. El nuevo es el único que sirve para un
+creador. Regla sugerida: **prefirmado si no hay `R2_ACCESS_KEY_ID` en el `.env`**,
+forzable con `--prefirmado`.
+
+Para cada tanda de archivos:
+
+1. `POST {URL_SERVIDOR}/api/subida` con la cabecera `X-Clave-Subida: {CLAVE_SUBIDA}`
+   y el cuerpo
+
+   ```json
+   { "id": "s01e03",
+     "archivos": [ { "ruta": "720p/lista.m3u8", "bytes": 1234 },
+                   { "ruta": "720p/000.ts",     "bytes": 5678 } ] }
+   ```
+
+   `ruta` es **relativa a la carpeta del video**, con barras normales y sin `..`,
+   sin barra inicial y sin segmentos vacíos. Ojo con Windows: `clave_r2()` ya
+   evita `os.path.join`, y acá vale lo mismo.
+
+2. La respuesta:
+
+   ```json
+   { "slug": "ana", "id": "s01e03",
+     "urlPublica": "https://pub-….r2.dev/ana/s01e03/",
+     "archivos": [ { "ruta": "720p/lista.m3u8", "url": "https://….r2.cloudflarestorage.com/…?X-Amz-…" } ],
+     "venceEn": 1788782400000 }
+   ```
+
+3. Subir cada archivo con un **PUT** contra su `url`, con el cuerpo del archivo y
+   nada más.
+
+**Cinco cosas que van a morder si no se anotan:**
+
+- **Nada de `Authorization`.** La autenticación va adentro de la URL. Mandar un
+  header de autorización además hace que R2 conteste 400.
+- **El `Content-Type` y el `Cache-Control` NO están firmados** (sólo se firma
+  `host`), así que se mandan libremente y se guardan igual. Hay que seguir
+  mandando los que ya manda el script (`application/vnd.apple.mpegurl`,
+  `video/mp2t`, `text/vtt`, y `public, max-age=31536000, immutable`): si van como
+  `application/octet-stream`, hls.js no reproduce.
+- **Las URL vencen a los 10 minutos.** No pedirlas todas al principio: una peli
+  de dos horas en segmentos de 6 s son más de mil archivos por calidad y la
+  última URL estaría vencida antes de llegar. Pedir una tanda, subirla, pedir la
+  siguiente.
+- **El tope es de 500 archivos por pedido** (`TOPE_ARCHIVOS` en `index.js`). Un
+  pedido con más contesta 400 y lo dice.
+- **La maestra se sube última y sola**, como ya hace el script. Mientras no
+  exista, nadie puede empezar a mirar un video a medio subir aunque adivine la
+  URL.
+
+**C. `boto3` deja de ser obligatorio en este camino.** Un PUT se hace con
+`urllib.request` de la biblioteca estándar. Conviene que el `import boto3` pase a
+ser perezoso: un creador que sólo usa URL prefirmadas no tiene por qué instalar
+nada.
+
+**D. `--borrar <id>`**, para un creador:
+
+1. `POST /api/subida/borrar` con `X-Clave-Subida` y `{ "id": "s01e03" }`.
+2. La respuesta trae `archivos: [{ clave, url }]` con un DELETE firmado por
+   objeto: mandarlos todos.
+3. Después, el `DELETE /api/videos/:id` que ya existe. Un 404 ahí sigue sin ser
+   un error.
+
+**E. `--listar`**, para un creador: `GET /api/videos` con `X-Clave-Subida`
+devuelve el catálogo de esa sala. **No** devuelve lo que hay en R2 (para eso hace
+falta el token), así que para un creador `--listar` pasa a ser "lo que el
+servidor sabe" en vez de "lo que hay en el bucket". Conviene que lo diga.
+
+**F. Cuatro errores nuevos que merecen un mensaje propio**, porque los cuatro son
+"no es tu culpa, es esto":
+
+| Código | Qué pasó | Qué decir |
+|---|---|---|
+| 401 | La clave no sirve | "Generá una nueva en /panel y pegala en herramientas/.env" |
+| 402 | El plan no deja subir | "Tu sala está en plan pendiente o vencido: no puede subir videos todavía" |
+| 409 | No entra en el tope de GB | Mostrar `usadoGb` y `topeGb`, que vienen en la respuesta |
+| 503 | El servidor no tiene credenciales de R2 | Mostrar el `error`, que dice el nombre de la variable que falta |
+
+### Las 38 mutaciones, y qué las caza
+
+Cada una se aplicó sobre una copia del árbol, se corrió la suite contra el código
+roto, y se restauró. Las 38 se caen.
+
+| Mutación | Pruebas que se caen |
+|---|---|
+| el plan del dueño sale de la base | `creadores`: "escribirle pendiente al dueño…" · `multicanal`: "el dueño del servicio entra por la misma puerta…" |
+| un vencimiento pasado no baja el plan | `creadores`: "un vencimiento que ya paso baja el plan…" · `multicanal`: "un creador VENCIDO tampoco reproduce" |
+| cualquiera puede poner cualquier plan | `creadores`: "el dueño no puede poner pago…" · `multicanal`: "el dueño NO puede poner pago ni vencido a mano" |
+| `existe()` del dueño sale del almacén | `creadores`: "el dueño existe sin tocar el almacen…" · `sala-http` |
+| `salaDelEvento` cree en el `channel_slug` sin comprobar | `creadores`: "un evento de un canal que no es de nadie NO se atribuye" · `multicanal`: "un webhook de un canal que no es de nadie no crea ninguna sala" |
+| la cache no guarda los que no existen | `creadores`: "la cache guarda TAMBIEN los que no existen" |
+| el chat del espectador vuelve a rutear por el dueño | `sala-http`: "escribir en la sala de OTRO creador va al canal de ESE creador" |
+| "tuya" se compara contra `KICK_SLUG` y no contra la cookie | `multicanal`: "un creador PENDIENTE no puede reproducir" y tres más |
+| el reloj no mira el plan | `multicanal`: los tres del plan |
+| el catálogo se elige por query | `multicanal`: "no hay ningun parametro…" · `sala-http`: "el catálogo del panel…" |
+| `/api/panel` se elige por query | `multicanal`: "no hay ningun parametro…" |
+| la clave de subida cae en la cookie cuando no sirve | `multicanal`: "una clave inventada no cae en la cookie…" |
+| la clave abre también el panel | `sala-http`: "la clave NO abre nada que no sean los videos de su sala" |
+| la subida no comprueba el prefijo | `multicanal`: "una ruta que se escapa del prefijo no se firma" |
+| el tope de GB mira los bytes declarados | `multicanal`: "el tope de GB se compara contra lo que hay en R2" |
+| `/api/admin` no pide ser el dueño | `multicanal`: "la lista de creadores es solo del dueño" |
+| el webhook de cobro aplica lo que no verificó | `multicanal`: "un webhook de cobro sin firma no cambia nada" |
+| la firma de Paddle se da por buena | `cobro` + `multicanal`: los dos de la firma |
+| Paddle firma sólo el cuerpo, sin el `ts` | `cobro`: "la firma se calcula sobre ts:cuerpo…" |
+| el vencimiento de Paddle se calcula desde ahora | `cobro`: "una suscripcion activa pasa el plan a pago con el vencimiento del payload" |
+| `codificar` usa `encodeURIComponent` | `r2`: "un nombre de archivo con parentesis…" |
+| el método no entra en la firma de R2 | `r2`: "un DELETE firma distinto que un PUT" |
+| el chat vuelve a sacar el slug del payload | `chat-cabos`: "el slug que manda es el que se le pasa" |
+| `/admin` se sirve a cualquiera | `multicanal`: "/admin no existe para quien no es el dueño" |
+| `/crear` no frena el click sin aceptar | `pagina-crear`: "un click con la casilla sin marcar no navega" |
+| el panel no apaga los controles | `pagina-panel`: "un plan pendiente apaga los controles" |
+| el alta no exige los términos | `multicanal`: "sin aceptar los terminos no se crea ninguna sala" |
+| el alta no mira el tope de canales | `multicanal`: "llegado el tope no entran mas salas" |
+| la clave de subida vale para cualquier sala | `sala-http` + `multicanal`: los dos de la clave |
+| `existe()` dice que sí a cualquier slug | `creadores` + `multicanal` + `servidor` + `sala-http` |
+| métricas sin tope | `metricas`: "el mapa de canales no crece para siempre" |
+| el tope de métricas suelta al recién llegado | `metricas`: "el tope suelta los más viejos…" |
+| el orden del guard: la cookie antes que la sala | `multicanal`: "una sala que no existe da 404 antes que 401" |
+| `vinculos` vuelve a tener el slug del dueño por defecto | `vinculos`: "sin slug no se lee, no se guarda…" |
+| volver a entrar le pisa el plan al que ya estaba | `creadores`: "volver a entrar NO le pisa el plan…" · `multicanal`: "volver a entrar no le baja el plan…" |
+| un proveedor de cobro desconocido cae en paddle | `cobro`: "cobro.js elige la implementacion por variable…" |
+| el vencimiento de una URL prefirmada no se recorta | `r2`: "el vencimiento se recorta a lo que acepta S3" |
+| suscribirse no mira si el cobro está configurado | `multicanal`: "sin el cobro configurado se avisa…" |
+
+### Cuáles de las aserciones nuevas son controles, y por qué están
+
+Se revisaron una por una preguntando *"¿esto sería verdad igual si el arreglo no
+existiera?"*. Estas contestan que sí, y están puestas **a propósito**, cada una
+con el motivo al lado en el archivo. Se anotan acá para que el próximo
+verificador no las lea como el vicio de siempre. **Ninguna se cae con ninguna de
+las 38 mutaciones, y ninguna se cuenta como cobertura en la tabla de arriba.**
+
+- `creadores`: "un vencimiento futuro deja el plan como esta" impide que el
+  arreglo sea "bajar todo a vencido".
+- `creadores`: "un pendiente con vencimiento viejo sigue siendo pendiente"
+  impide que "vencido" se coma un estado que quiere decir otra cosa.
+- `multicanal`: "una sala sin Kick vinculado contesta 503 y no manda nada"
+  impide que "no rutear nada" pase por "rutear bien".
+- `multicanal`: "con el tope lleno, la que ya tenía sala entra" impide que el
+  tope sea "no entra nadie".
+- `pagina-crear`: "con la casilla marcada el click pasa derecho" impide que el
+  arreglo sea "frenar siempre", que dejaría a nadie poder darse de alta.
+- `pagina-admin`: "cuando coinciden se muestra uno solo, sin paréntesis" impide
+  que el arreglo sea mostrar siempre los dos.
+- `pagina-admin`: "con pocas salas el aviso del tope no está" impide que un
+  aviso permanente deje de significar nada.
+- `pagina-panel`: "con plan activo los controles se pueden tocar" impide que el
+  arreglo sea apagarlos siempre.
+- `r2`: "esDeLaSala" y "claveValida" con casos válidos impiden que el arreglo
+  sea rechazar todo.
+- `vinculos`: "una sala sin vínculo no hereda el del vecino" impide que
+  "devolver siempre el primero que haya" pase el test de aislamiento.
+
+### Tres trampas que costaron y quedan anotadas
+
+**A. Un `finally` que restaura el `fetch` antes de que la promesa lo use.** Los
+tres tests de `listarPrefijo` estaban escritos como `return r2.listarPrefijo(…).then(…)`
+adentro de un `try/finally`. El `finally` corre apenas se crea la promesa, así que
+para cuando el pedido salía, el `fetch` de mentira ya no estaba: **el test salía a
+internet de verdad** y fallaba con un error de TLS contra un host que no existe.
+Se `await`ea adentro del `try`, siempre. Lo cazó el propio test, que es lo único
+bueno del asunto.
+
+**B. Los caracteres de control se escriben con escapes, y las herramientas de
+edición no siempre colaboran.** Una regex de `r2.js` quedó con bytes de control
+literales adentro del archivo fuente —exactamente lo que la Fase 2 dejó anotado
+como prohibido— y `grep` empezó a tratar el archivo como binario. Se arregló
+armando la línea por código desde un script, y quedó verificado con un contador:
+cero caracteres de control literales en `r2.js` y en `r2.test.js`.
+
+**C. Los editores de Python convierten a CRLF en Windows.** `io.open(p, 'w')` sin
+`newline=''` pasó media docena de archivos de LF a CRLF. Git lo normaliza al
+commitear (`core.autocrlf=true`), así que el diff salió limpio y no cambia nada
+del repo, pero **el arnés de mutaciones dejó de encontrar cuatro anclas
+multilínea y las reportó como "no se pudo aplicar"**. Si eso se hubiera leído
+como "cazadas", habrían quedado cuatro mutaciones sin verificar. El arnés ahora
+compara en LF, y los archivos de código volvieron a LF.
+
+### Cómo verlo funcionando
+
+```bash
+npm test                                # 607 en verde
+node --test pruebas/multicanal.test.js  # la Fase 3 de punta a punta
+node --test pruebas/r2.test.js          # SigV4 contra los vectores de boto3
+python herramientas/pruebas_subir.py    # las 121 de Python, intactas
+```
+
+Sin ninguna credencial, con el servidor levantado a mano:
+
+```bash
+MODO=local KICK_SLUG=istincho node servidor/index.js
+curl -s localhost:8778/api/estado      # dice qué falta, incluidas subida y cobro
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8778/crear      # 200
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8778/terminos   # 200
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8778/admin      # 404 sin ser el dueño
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8778/sala/nadie # 404
+```
+
+### Qué queda sin verificar contra lo real
+
+Lo mismo que la Fase 2, más lo de esta fase. **Nada de esto se probó contra un
+servicio de verdad**, y no se puede hasta que el dueño cargue las variables.
+
+- **Kick.** Falta comprobar que el login con `rol=creador` devuelva el `scope`
+  con esos nombres, que `channel:read` alcance para que `/channels` devuelva el
+  slug de un creador que no es el dueño, y que `events/subscriptions` con el
+  token de un tercero suscriba **su** canal y no el nuestro. Todo el camino está
+  ejercitado con un `fetch` que contesta como la API.
+- **R2.** La firma SigV4 está verificada contra **boto3** —byte por byte, con el
+  reloj congelado, tres vectores— y eso es una implementación independiente, no la
+  nuestra. Lo que **no** está verificado es que R2 la acepte igual que S3, ni que
+  el CORS del bucket deje hacer PUT desde donde el script lo va a hacer (la
+  política de la tarea 9 sólo abre `GET, HEAD`: **muy probablemente haya que
+  agregarle `PUT` y `DELETE`** para que un creador pueda subir desde el navegador;
+  desde el script no hace falta porque no hay origen).
+- **Paddle.** Falta comprobar que `POST /transactions` acepte este cuerpo, que
+  `data.checkout.url` sea el campo, y que los `event_type` se llamen así. La firma
+  del webhook está implementada contra la documentación y probada con vectores
+  propios.
+- **Twitch multi-creador.** Una conexión por creador está probada con dobles. Con
+  creadores de verdad falta medir cuánto aguanta el contenedor: `TOPE_TWITCH=50`
+  es una estimación, no una medición.
+- **Mongo.** Todo corrió en modo archivo. El índice inverso
+  `broadcaster_user_id → slug` se arma con un `listar('creadores')` cada minuto:
+  con 900 documentos chicos es una consulta barata, pero no está medida contra
+  Atlas.
+
+### Anotado, no arreglado
+
+- **El índice inverso y la cache viven en memoria, y hay una sola instancia.** Con
+  dos instancias en Railway, cada una tendría su copia y un alta hecha en una
+  tardaría hasta un minuto en aparecer en la otra. Hoy hay una sola instancia;
+  el día que haya dos, esto es lo primero que hay que mirar.
+- **No hay forma de borrar un creador desde `/admin`.** Se puede ponerlo en
+  "pendiente", que es lo que hace falta para cortarle el servicio. Borrar de
+  verdad —sus videos en R2, sus tokens, su fila— es un trámite con más filos
+  (¿qué pasa con la gente mirando?) y no entró en esta fase.
+- **`/admin` no pagina.** Con 900 creadores la tabla es larga. Se arregla el día
+  que haya cincuenta.
+- **La aceptación de términos se registra en el callback de OAuth**, con la
+  versión que viajó del lado del servidor en el Map de logins pendientes. Eso
+  prueba que el flujo pasó por `/crear` con la casilla marcada en la interfaz; no
+  prueba que la persona haya leído nada, que es lo que ninguna casilla prueba
+  nunca.
+- **La medición de uso de R2 no se hace en la subida de cada archivo**, sino al
+  pedir cada tanda de URL. Entre que se firma una tanda y se sube, un creador
+  puede pasarse del tope por el tamaño de esa tanda. El tope es un tope de costo,
+  no una cuota dura, y con tandas de 500 archivos el margen es chico.
+
+### Lo que necesita el dueño
+
+Además de lo que ya estaba pendiente (tareas 2 a 13):
+
+1. **Tarea 17: un token de R2 para Railway.** Sin esto ningún creador puede subir.
+2. **Tarea 14: la cuenta de Paddle en sandbox** y sus cuatro variables. Sin
+   `PADDLE_CLAVE_WEBHOOK` el plan nunca pasa a "pago": se cobra y no se habilita.
+3. **Tarea 16: leer `/terminos`** y decir si va así.
+4. **Tarea 18: decidir cuántos GB regala cada plan.** El bucket gratis son 10 GB
+   en total y es el primer gasto real del proyecto.
+5. **Tarea 19: pedirle a Kick la verificación de la app** antes de llegar a 500
+   salas. `/admin` avisa a partir de la mitad, pero el trámite lleva tiempo.
+6. **Probablemente, agregarle `PUT` y `DELETE` al CORS del bucket** (tarea 9) si
+   alguna vez se sube desde el navegador. Desde el script no hace falta.
+
+### Archivos tocados
+
+Nuevos en `servidor/`: `creadores.js`, `cobro.js`, `cobro-paddle.js`, `r2.js`.
+
+Nuevos en `paginas/`: `crear.html`, `terminos.html`, `admin.html`,
+`crear/{crear.js,crear.css}`, `admin/{admin.js,admin.css}`.
+
+Nuevos en `pruebas/`: `creadores.test.js`, `cobro.test.js`, `r2.test.js`,
+`multicanal.test.js`, `pagina-crear.test.js`, `pagina-admin.test.js`.
+
+Editados en `servidor/`: `index.js` (rutas de alta, admin, cobro y subida; el
+ruteo por sala; el orden del guard; el plan en el reloj), `chat.js` (estado por
+sala), `vinculos.js` (el slug primero y obligatorio), `kick.js` (el rol
+`creador` y la versión de términos), `metricas.js` (el tope).
+
+Editados en `paginas/`: `panel.html`, `panel/panel.js`, `panel/panel.css` (el
+plan, el modo sólo lectura, el uso y la suscripción).
+
+Editados en `pruebas/`: `vinculos`, `sala-http`, `metricas`, `pagina-panel`,
+`chat`, `chat-cabos`, `chat-planb`, `chat-suscripciones`, `chat-http`,
+`oauth-destino`, y `fijos/dom-falso.js` (`focus()`/`blur()` y el desescapado de
+entidades en los atributos, que es lo que hace un navegador de verdad).
+
+Documentación: `README.md`, `TAREAS-DUENO.md`, `servidor/.env.ejemplo`,
+`BITACORA.md`.
+
+**`herramientas/` no se tocó.** Sus 121 pruebas de Python se corrieron igual, y
+lo que hay que cambiar ahí está especificado más arriba.
+
+Sin dependencias nuevas: `node:net`, `node:crypto` y `fetch` son todo lo que usan
+los módulos nuevos.
+
+---
+
 ## 2026-09-07 — Fase 2: la segunda verificación, cerrada
 
 Las dos fallas de la segunda pasada adversarial y los tres puntos que el

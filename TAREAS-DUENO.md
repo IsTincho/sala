@@ -70,7 +70,11 @@ Valores que NO son secretos y sí se anotan acá abajo, en "Datos públicos": do
     ```
     Sin esto, hls.js no puede cargar el video desde la página.
 
-- [ ] **10. Token de R2 para tu PC.** R2 → Manage R2 API Tokens → Create → permisos Object Read & Write, sólo bucket `sala-video`. Te da Access Key ID, Secret Access Key y el Account ID. Van a `herramientas/.env` en esta carpeta (el agente de Fase 2 deja `herramientas/.env.ejemplo` con los nombres exactos). Nunca a Railway, nunca al chat.
+- [ ] **10. Token de R2 para tu PC.** R2 → Manage R2 API Tokens → Create → permisos Object Read & Write, sólo bucket `sala-video`. Te da Access Key ID, Secret Access Key y el Account ID. Van a `herramientas/.env` en esta carpeta (el agente de Fase 2 deja `herramientas/.env.ejemplo` con los nombres exactos). Nunca al chat.
+
+  > **Esto cambió en la Fase 3, y es el único cambio de reglas que trajo.** Hasta la Fase 2 el token de R2 no iba a Railway, y estaba bien: el único que subía eras vos. Desde que sube cualquier creador, no se le puede dar el token del bucket (con él leería, pisaría y borraría los videos de todos), así que el **servidor** tiene que poder firmar URL de subida acotadas, y firmar es tener el secreto. Ver la tarea 17.
+  >
+  > Lo que **no** cambió: el video no pasa por Railway. El servidor firma una URL de unos cientos de bytes y los gigas van del creador a R2 y de R2 al espectador.
 
 - [ ] **10.b Clave de subida.** Entrá a `/panel` con Kick y tocá **Generar una nueva** en "Clave de subida", después **Copiar**, y pegala en `herramientas/.env` como `CLAVE_SUBIDA`. Es lo que le permite al script avisarle al servidor que subiste una película. Se muestra una sola vez y el panel la copia al portapapeles **sin mostrarla**: si estás transmitiendo, no toques "Mostrar igual". Si la perdés, generás otra (la vieja deja de servir en el acto).
 
@@ -87,11 +91,47 @@ Valores que NO son secretos y sí se anotan acá abajo, en "Datos públicos": do
 
 - [ ] **13. Cuenta secundaria de Kick** (otro mail) para entrar a la Sala como espectador, escribir, y ver que aparece en kick.com/istincho con esa cuenta.
 
-## Bloque 5 — Para otros creadores (Fase 3, más adelante)
+## Bloque 5 — Para otros creadores (Fase 3)
 
-- [ ] **14. Decidir el cobro.** Paddle (recomendado desde Argentina) o Stripe si tenés entidad afuera. Crear la cuenta en modo sandbox y cargar claves en Railway cuando el agente de Fase 3 diga cuáles.
-- [ ] **15. Lista de amigos gratis** (slugs de Kick).
-- [ ] **16. Qué contenido va a pasar por la Sala** y aceptar el texto de términos que proponga el agente.
+La Fase 3 está construida. Todo esto es lo que falta para encenderla; sin nada de esto el servicio sigue funcionando igual para vos, y `/crear` deja crear salas que no van a poder reproducir hasta que las marques como amigo.
+
+- [ ] **14. Decidir el cobro.** Paddle (recomendado desde Argentina: es merchant of record, acepta vendedores argentinos y liquida en USD) o Stripe si tenés entidad afuera. **Está construido contra Paddle**; cambiar a Stripe es un archivo nuevo, no una cirugía.
+
+  Cuando tengas la cuenta en **sandbox**, en paddle.com:
+  - Catalog → Products → crear el producto y un **precio recurrente mensual**. Copiá el id del precio (empieza con `pri_`).
+  - Developer tools → Authentication → **API key**.
+  - Developer tools → Notifications → **New destination**, URL `https://<dominio>/cobro/webhook`, y suscribila a los eventos `subscription.*`. Copiá su **secret key** (empieza con `pdl_ntfset_`).
+
+  En Railway, **directo al dashboard**:
+  ```
+  PADDLE_ENTORNO=sandbox
+  PADDLE_API_KEY=<la api key>
+  PADDLE_PRECIO_ID=<pri_...>
+  PADDLE_CLAVE_WEBHOOK=<pdl_ntfset_...>
+  PRECIO_MENSUAL=5
+  MONEDA=USD
+  ```
+  Cuando pruebes de verdad, `PADDLE_ENTORNO=produccion`. **Sin `PADDLE_CLAVE_WEBHOOK` el plan nunca pasa a "pago": se cobra y no se habilita.** Es el paso que más caro sale olvidarse de este bloque, igual que el 4 bis lo era del otro.
+
+- [ ] **15. Lista de amigos gratis** (slugs de Kick). No hace falta cargarla en ningún lado: entrás a `/admin` con tu cuenta y le tocás **Amigo** a cada uno. Sólo aparecen ahí los que ya se dieron de alta por `/crear`.
+
+- [ ] **16. Leer el texto de términos** que quedó en `/terminos` y decir si va así. Está escrito en castellano claro y dice tres cosas: el contenido es del creador y responde por él, el servicio puede bajar contenido ante un reclamo, y no hay garantía de disponibilidad. Si cambia de fondo, hay que subir el número de versión (`TERMINOS_VERSION` en `servidor/creadores.js`) para que se lo vuelvan a aceptar.
+
+- [ ] **17. Token de R2 para el servidor.** El de la tarea 10 se queda en tu PC. Este es **otro**, para Railway, y es lo que le permite al servidor firmar las subidas de cada creador sin darles el token del bucket.
+
+  R2 → Manage R2 API Tokens → Create → permisos **Object Read & Write**, sólo bucket `sala-video`. En Railway, directo al dashboard:
+  ```
+  R2_ACCOUNT_ID=<el Account ID>
+  R2_ACCESS_KEY_ID=<Access Key ID>
+  R2_SECRET_ACCESS_KEY=<Secret Access Key>
+  R2_BUCKET=sala-video
+  R2_URL_PUBLICA=<la URL pública del bucket, la de "Datos públicos">
+  ```
+  Sin esto nadie puede subir un video: el panel lo dice con el nombre de la variable que falta.
+
+- [ ] **18. Cuánto espacio regalás.** El bucket gratis son **10 GB en total**, así que la suma de lo que se reparte es lo que de verdad entra. Por defecto: 2 GB por amigo, 5 GB por creador que paga. Se cambia en Railway con `GB_AMIGO` y `GB_PAGO`. Pasado el bucket gratis son USD 0,015 por GB por mes: es el **primer gasto real del proyecto**.
+
+- [ ] **19. Pedirle a Kick la verificación de la app, antes de llegar a 500 salas.** La app sin verificar admite 1.000 canales suscriptos a `chat.message.sent`. Pasado ese número, las suscripciones nuevas fallan y **el chat de los que entren queda mudo sin ningún error visible**. `/crear` corta solo en 900 y `/admin` te avisa a partir de la mitad, pero el trámite con Kick lleva tiempo: conviene empezarlo cuando el aviso aparezca, no cuando el tope llegue.
 
 ---
 

@@ -43,6 +43,28 @@ Se cargan **desde el dashboard de Railway**, nunca desde la terminal ni desde un
 | `MONGODB_URI` | Guardar de verdad | Guarda en archivos, que en Railway se borran en cada deploy |
 | `SALA_DATOS` | Sólo local: dónde deja los archivos JSON cuando no hay Mongo | `servidor/datos/` |
 
+Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pueda subir y pagar:
+
+| Variable | Hace falta para | Si falta |
+|---|---|---|
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | **Firmar las URL de subida** de cada creador | Nadie puede subir un video: `/api/panel/subida` contesta 503 y dice cuál falta |
+| `R2_URL_PUBLICA` | Armar la URL pública del video (`https://pub-….r2.dev`) | La ficha del video apuntaría a ningún lado |
+| `COBRO_PROVEEDOR` | Elegir la implementación de cobro | Se asume `paddle` |
+| `PADDLE_API_KEY`, `PADDLE_PRECIO_ID` | Crear el checkout | El botón de suscribirse lo dice y no rompe nada |
+| `PADDLE_CLAVE_WEBHOOK` | Verificar el aviso de pago | El plan nunca pasa a "pago": se cobra y no se habilita |
+| `PADDLE_ENTORNO` | `sandbox` o `produccion` | Se asume `sandbox`: el descuido rompe una prueba, no cobra de verdad |
+| `PRECIO_MENSUAL`, `MONEDA` | El precio que se **muestra** en el panel | El botón dice "Suscribirme" sin número |
+| `GB_AMIGO`, `GB_PAGO` | Cuánto espacio da cada plan | 2 GB y 5 GB |
+| `TOPE_CANALES` | Cuántas salas se admiten (tope de Kick) | 900 |
+| `TOPE_TWITCH` | Cuántas conexiones EventSub sostiene el proceso | 50 |
+
+> **El token de R2 pasó a ser una variable de Railway, y hasta la Fase 2 no lo era.**
+> Hasta acá el único que subía era el dueño, con su script y su token en `herramientas/.env`. Desde que sube cualquier creador, no se le puede dar el token del bucket: con él leería, pisaría y borraría los videos de todos. La forma de dar permiso acotado es una **URL prefirmada**, y firmar es, por definición, tener el secreto. Lo que **no** cambia es que el video no pasa por Railway: el servidor firma una URL de unos cientos de bytes y los gigas van del creador a R2 y de R2 al espectador, directo.
+>
+> Conviene que el token de Railway sea **otro**, con permiso *Object Read & Write* sobre el bucket y nada más. El de la PC del dueño puede quedar como está.
+
+**El precio que se muestra y el que se cobra son dos cosas.** `PRECIO_MENSUAL` y `MONEDA` son la etiqueta del botón; lo que se cobra es lo que esté cargado en Paddle. Es lo único del cobro que puede quedar desincronizado, y está anotado también arriba de `precio()` en `servidor/cobro.js`.
+
 ### Generar `CLAVE_CIFRADO`
 
 Son 32 bytes al azar en base64. En PowerShell, sin que aparezcan en pantalla:
@@ -81,7 +103,11 @@ servidor/
   almacen.js    Mongo si hay MONGODB_URI, archivos JSON si no
   cifrado.js    AES-256-GCM para los tokens, HMAC para las cookies
   sesion.js     sala_dueno y sala_espectador, dos cosas separadas
-  vinculos.js   los tokens del dueño en cada red, cifrados, y su refresh
+  vinculos.js   los tokens de cada sala en cada red, cifrados, y su refresh
+  creadores.js  quién tiene sala, con qué plan, y de qué sala es cada evento
+  cobro.js      la interfaz de cobro (dos funciones) y el registro de proveedores
+  cobro-paddle.js  Paddle Billing: checkout alojado y webhook firmado
+  r2.js         SigV4 a mano: firma las URL de subida y borrado de cada creador
   kick.js       OAuth 2.1 + PKCE, chat, suscripción a eventos
   twitch.js     OAuth, Helix, y el cliente EventSub por WebSocket
   irc.js        IRC anónimo de Twitch: el plan B cuando EventSub se cae
@@ -95,10 +121,15 @@ servidor/
 paginas/
   chat.html     el Chat Global, instalable como app
   sala.html     la Sala: cámara, película y chat
-  panel.html    el panel del dueño
+  panel.html    el panel de cada creador (el dueño incluido)
+  crear.html    el alta: los términos y el botón de entrar con Kick
+  terminos.html el texto que se acepta al crear la sala
+  admin.html    la lista de creadores. Sólo la sirve el dueño del servicio
   chat/         css y js del chat, más demo.js para ?demo=1
   sala/         css y js de la Sala, más demo.js para ?demo=1
   panel/        css y js del panel
+  crear/        css y js de /crear
+  admin/        css y js de /admin
   comun/        base.css, bus.js (cliente SSE) y mensajes.js (el render)
   manifest.webmanifest, sw.js, icono-*.png   lo que hace la PWA instalable
 pruebas/        node --test, sin librerías
@@ -108,7 +139,9 @@ herramientas/   scripts que corren en la PC del dueño (Fase 2)
 Reglas que no se negocian:
 
 - **El servidor nunca sirve video.** El navegador le pide los segmentos directo a R2. Si una ruta devolviera un `.m3u8` o un `.ts`, el egreso de Railway se comería el presupuesto del mes en una noche. La otra mitad de la regla la hace cumplir `revisarFicha`: una ficha cuya `url` apunte a nuestro propio dominio (el de `URL_BASE`) o a esta misma máquina se rechaza con 400, porque mandaría a trescientos navegadores a pedirle los segmentos a Railway sin que ninguna ruta tenga la culpa.
-- **Login identifica, no autoriza.** Quién es dueño, amigo o pago se decide en la colección `creadores`, no en el login.
+- **Login identifica, no autoriza.** Quién es amigo, pago o pendiente se decide en la colección `creadores`, no en el login. Y **quién es el dueño del servicio no se decide ahí tampoco**: se compara el slug contra `KICK_SLUG`, una variable de entorno, así que ni un volcado de Mongo ni un bug de escritura pueden degradarlo ni ascender a nadie.
+- **"Dueño" quiere decir dos cosas y no se mezclan.** *Dueño de una sala* es cualquier creador en la suya, y es lo que identifica la cookie `sala_dueno`. *Dueño del servicio* es el de `KICK_SLUG`: el único que entra a `/admin` y el único que regala el plan "amigo".
+- **Cada sala es un inquilino.** El slug con el que se lee o se escribe sale **siempre de la cookie o del camino de la URL**, nunca de un parámetro. No hay ninguna ruta de `/api/panel` que acepte un slug, y las de `/api/sala/:slug` comprueban que la sesión sea la de *esa* sala.
 - **Todo webhook de Kick se verifica con RSA y se deduplica** por `Kick-Event-Message-Id`.
 - Cookies `HttpOnly`, `Secure`, `SameSite=Lax`.
 - Sin frameworks ni bundlers. Única dependencia: `mongodb`.
@@ -122,28 +155,85 @@ Reglas que no se negocian:
 |---|---|
 | `/` | Página de estado: si el servidor está vivo y conectado al bus |
 | `/chat` | **Chat Global**: Kick y Twitch juntos, con caja para escribir a los dos. Se instala como app |
-| `/panel` | Panel del dueño: entrar con Kick, vincular Twitch, ver la salud, manejar la película y la clave de subida |
+| `/panel` | Panel de **cada creador**: entrar con Kick, vincular Twitch, ver la salud, manejar la película, la clave de subida y el plan. Con un plan sin reproducción se ve en modo sólo lectura, con el botón de suscribirse |
+| `/crear` | El alta. Aceptar los términos y entrar con Kick: crea la sala con plan "pendiente" |
+| `/terminos` | El texto que se acepta al crear la sala |
+| `/admin` | La lista de creadores, su plan y su uso. **Da 404 a todo el que no sea el dueño del servicio**: un 403 ya anunciaría que existe |
 | `/sala/:slug` | **La Sala**: cámara, película en HLS y chat de Kick. Da 404 si el canal no existe |
 | `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404 |
 | `/api/estado` | JSON con modo, almacén, canales y qué variables faltan |
 | `/oauth/kick/entrar` · `/oauth/kick/volver` | Login con Kick (OAuth 2.1 + PKCE) |
 | `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch |
-| `/kick/webhook` | Eventos de Kick. 401 si la firma no da |
-| `/api/chat/salud` | Cómo está cada red. Pide cookie de dueño |
-| `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos. Pide cookie de dueño |
-| `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick. Pide cookie de dueño |
+| `/kick/webhook` | Eventos de Kick. 401 si la firma no da. **Se rutea a la sala del `broadcaster_user_id`** (y en su defecto del `channel_slug`); lo que no se pueda atribuir a una sala que existe se descarta |
+| `/cobro/webhook` | Los avisos del proveedor de cobro, con la firma verificada. Es lo único que pone los planes "pago" y "vencido" |
+| `/api/chat/salud` | Cómo está cada red **de la sala de quien pregunta**. Pide cookie de creador |
+| `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos, con la cuenta de quien pide. Pide cookie de creador |
+| `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick de su sala. Pide cookie de creador |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
-| `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. `GET` lista **siempre el catálogo del dueño**: no hay parámetro que lo cambie |
+| `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie |
 | `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script |
-| `/api/sala/:slug/reloj` | Play, pausa, reanudar, saltar y detener. Cookie de dueño |
-| `/api/sala/:slug/chat` | El mensaje de un espectador, que sale en kick.com con SU cuenta. Cookie de espectador. Hasta la Fase 3, sólo la sala del dueño: cualquier otra da 503, porque el mensaje se rutea al canal vinculado y ése es el suyo |
+| `/api/sala/:slug/reloj` | Play, pausa, reanudar, saltar y detener. Cookie del dueño **de esa sala**, y **402 si su plan no reproduce** |
+| `/api/sala/:slug/chat` | El mensaje de un espectador, que sale en kick.com con SU cuenta, **en el canal de esa sala**. Cookie de espectador. 503 sólo si esa sala todavía no vinculó Kick |
 | `/api/sala/:slug/yo` | Si esta persona entró y si puede escribir. Nunca la lista de quién está en la sala |
 | `/api/sala/:slug/salir` | Cierra la sesión del espectador y **olvida su token**: el refresh token es de esa persona, no del dueño |
 
-Las cuatro rutas de `/api/sala/:slug/` dan 404 si el slug no es el del dueño ni el de un creador dado de alta, igual que `/eventos/:slug` y `/sala/:slug`.
-| `/api/panel` | Todo lo que muestra `/panel` en un pedido: salud, reloj, videos, métricas, clave. Cookie de dueño |
-| `/api/panel/clave` | `POST` genera la clave de subida (se devuelve una sola vez), `DELETE` la revoca |
+| `/api/panel` | Todo lo que muestra `/panel` en un pedido: plan, salud, reloj, videos, métricas, clave y uso de R2. Cookie de creador |
+| `/api/panel/clave` | `POST` genera la clave de subida de su sala (se devuelve una sola vez), `DELETE` la revoca |
+| `/api/panel/twitch` | `DELETE` desvincula Twitch de su sala: cierra la conexión y borra el token |
+| `/api/panel/suscribirse` | `POST` devuelve la URL del checkout del proveedor de cobro |
+| `/api/subida` | `POST` firma las URL de subida a R2 de su prefijo `<slug>/<id>/`. **402 si su plan no sube, 409 si no entra en su tope de GB.** Acepta la cookie **o** la cabecera `X-Clave-Subida`: el script corre en una terminal |
+| `/api/subida/borrar` | `POST` firma los DELETE de todo lo que haya bajo `<slug>/<id>/`. Misma autenticación |
+| `/api/admin/creadores` | La lista con plan, vencimiento y uso. Sólo el dueño del servicio |
+| `/api/admin/plan` | `POST {slug, plan}`. **Sólo acepta "amigo" y "pendiente"**: los otros dos los pone el webhook de cobro |
 | `/api/prueba/webhook` | **Sólo con `MODO=local`.** Inyecta un evento sin firma, para desarrollar sin webhooks reales. Con `?tipo=chat.message.sent` entra por el mismo camino que uno real y sale traducido como `chat` |
+
+Las cuatro rutas de `/api/sala/:slug/` dan 404 si el slug no es el del dueño del servicio ni el de un creador dado de alta, igual que `/eventos/:slug` y `/sala/:slug`. Y las cuatro contestan **la sala primero y la cookie después**: un pedido sin sesión a una sala que no existe da 404 y no 401, porque "¿existe esta sala?" es un hecho sobre la sala y ya se puede averiguar con un `GET /sala/<slug>`.
+
+---
+
+## Otros creadores
+
+Cualquier streamer de Kick entra por `/crear`, acepta los términos y se loguea. Su sala queda en `/sala/<su-slug>` con plan **pendiente**: se abre, se lee el chat, y no reproduce.
+
+| Plan | Quién lo pone | Reproduce | GB |
+|---|---|---|---|
+| `pendiente` | El alta | No | 0 |
+| `amigo` | El dueño, desde `/admin` | Sí | `GB_AMIGO` |
+| `pago` | El webhook de cobro | Sí | `GB_PAGO` |
+| `vencido` | El webhook de cobro | No | 0 |
+
+Dos cosas que no se ven en la tabla:
+
+- **El plan del dueño del servicio no está en la lista.** Sale de `KICK_SLUG` y no de la base: `planDe()` lo contesta antes de leer el documento, y `/admin` no le ofrece ningún botón.
+- **Un vencimiento que ya pasó baja el plan solo**, aunque el campo siga diciendo "pago". El webhook de cobro es lo único del sistema que llega de afuera y puede no llegar; si no llega, el servicio tiene que cortarse, no seguir dando.
+
+### El tope de canales
+
+La app de Kick sin verificar admite **1.000 canales suscriptos** a `chat.message.sent`. Pasado ese número las suscripciones fallan y el chat de los que entren queda mudo sin ningún error visible. `/crear` corta en `TOPE_CANALES` (900) y `/admin` avisa a partir de la mitad: **antes de los 500 hay que pedirle a Kick la verificación de la app.**
+
+### La subida de un creador
+
+El creador no tiene el token de R2. Pide URL prefirmadas:
+
+1. `POST /api/subida` con `{ id, archivos: [{ ruta, bytes }] }`, autenticado con la cookie del panel **o** con `X-Clave-Subida` (el script corre en una terminal y no tiene cookie).
+2. El servidor comprueba el plan, mide **contra R2** cuánto ocupa ya esa sala, y firma un `PUT` por archivo sobre `<slug>/<id>/<ruta>`, válido diez minutos.
+3. El creador sube contra esas URL. Los bytes van del creador a R2, sin pasar por Railway.
+
+El prefijo se arma **en el servidor** con el slug de la cookie: lo único que elige el creador es lo que va después del `<id>/`, y aun eso pasa por `claveValida` y `esDeLaSala`. Es la única línea que separa los videos de una sala de los de otra.
+
+El tope de GB se compara contra lo que **R2 dice que hay**, no contra los bytes declarados en el pedido: esos los elige el mismo al que se le está poniendo el límite.
+
+### El cobro
+
+`servidor/cobro.js` expone dos funciones —`crearCheckout(creador)` y `procesarWebhook(pedido)`— y elige la implementación con `COBRO_PROVEEDOR`. Hoy hay una: Paddle Billing, con checkout alojado y webhook `HMAC-SHA256` sobre `{ts}:{cuerpo crudo}`.
+
+Para cambiar a Stripe: escribir `servidor/cobro-stripe.js` con las mismas funciones, agregarlo al registro de `cobro.js` y poner `COBRO_PROVEEDOR=stripe`. Ninguna ruta ni ninguna página se entera.
+
+El slug vuelve del proveedor en `custom_data`. Es el punto delicado: sin él, el pago entra y el plan no cambia. `crearCheckout` falla ruidoso antes de crear una transacción que después no se pueda atribuir.
+
+---
+
+## El bus y los mensajes
 
 ### Cómo sale un evento por SSE
 

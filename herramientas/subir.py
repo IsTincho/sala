@@ -47,10 +47,23 @@ from pathlib import Path
 SEGMENTO_SEGUNDOS = 6
 
 # (altura, bitrate de video, maxrate, bufsize). El audio va aparte, 128k.
+# Los numeros no son decorativos: son el presupuesto del bucket de 10 GB. Una
+# peli de 2 h a 5000k pesa 4,5 GB; a 8000k, 7,2 GB, y entran dos en vez de
+# tres. Si alguna vez cambian, rehacer la cuenta en BITACORA.md.
 CALIDADES = (
     (720, "2500k", "2675k", "3750k"),
     (1080, "5000k", "5350k", "7500k"),
 )
+
+# Debajo de esto la imagen se cae a pedazos y ahorrar deja de tener sentido.
+TASA_MINIMA_KBPS = 400
+
+# Los segmentos MPEG-TS no arrancan en cero: el muxer de ffmpeg les pone un
+# colchon de aproximadamente 1,4 s para no emitir DTS negativos (medido:
+# 1,445 / 1,459 / 1,480 / 1,512 segun el archivo). El WebVTT que sacamos
+# aparte esta en tiempos de 0, asi que hay que atarlo a ese reloj con un
+# X-TIMESTAMP-MAP o los subtitulos salen adelantados esa misma cantidad.
+RELOJ_MPEGTS = 90000
 
 PREFIJO_POR_DEFECTO = "istincho"
 BUCKET_POR_DEFECTO = "sala-video"
@@ -160,6 +173,23 @@ def hacer_id(nombre):
     return base[:60]
 
 
+def sanear_etiqueta(texto, por_defecto="und"):
+    """Deja un tag de idioma seguro para una carpeta y para una URI.
+
+    El `language` de un mkv es texto libre: `es MX (Latino)` es un valor
+    real. Sin esto, la clave de R2 sale `subtitulos/es mx (latino)/` y la
+    maestra queda con `URI="subtitulos/es mx (latino)/lista.m3u8"`: espacios
+    y parentesis sin percent-encoding en una URI de playlist son un 404 mudo
+    que no dice por que. El id lo valida `validar_id`; el idioma no tenia
+    ninguna guarda.
+    """
+    base = unicodedata.normalize("NFKD", str(texto or ""))
+    base = "".join(c for c in base if not unicodedata.combining(c)).lower()
+    base = re.sub(r"[^a-z0-9]+", "-", base)
+    base = re.sub(r"-{2,}", "-", base).strip("-")
+    return base[:30] or por_defecto
+
+
 def validar_id(identificador):
     """Un id malo borraria o pisaria objetos de otro video. Se valida siempre."""
     if not identificador or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,59}", str(identificador)):
@@ -171,14 +201,52 @@ def validar_id(identificador):
     return identificador
 
 
+def validar_slug(slug):
+    """El slug es el prefijo dentro del bucket, o sea entrada sin validar en
+    el camino destructivo: `--borrar s01e03 --sala "../otro"` opera bajo
+    `../otro/s01e03/`. Mismo formato que `slugValido` en servidor/videos.js,
+    para que no exista un slug que uno acepte y el otro no."""
+    if not slug or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,49}", str(slug)):
+        raise Aviso(
+            "Sala invalida: " + repr(slug)
+            + ". Solo minusculas, numeros, guiones y guiones bajos, hasta 50 "
+            "caracteres, empezando por letra o numero."
+        )
+    return str(slug)
+
+
+def kbps(texto):
+    """De `2500k` saca 2500."""
+    return int(re.sub(r"[^0-9]", "", str(texto)) or 0)
+
+
+def escalar_calidad(base, altura):
+    """Baja el bitrate de un escalon para una fuente mas chica.
+
+    Los bits van con los pixeles y los pixeles van con el cuadrado de la
+    altura: un 480p tiene (480/720)^2 = 0,44 de los pixeles de un 720p. Sin
+    esta cuenta, una fuente de 480p hereda los 2500 kbps del escalon de 720p
+    y gasta mas del doble de lo que necesita en un bucket de 10 GB. Es la
+    misma idea que "nunca agrandar", aplicada al bitrate en vez de al tamano.
+    """
+    altura_base, bitrate, maxrate, bufsize = base
+    factor = (float(altura) / float(altura_base)) ** 2
+    tasa = max(TASA_MINIMA_KBPS, int(round(kbps(bitrate) * factor / 100.0)) * 100)
+    return (
+        altura,
+        "%dk" % tasa,
+        "%dk" % int(round(tasa * kbps(maxrate) / float(kbps(bitrate)))),
+        "%dk" % int(round(tasa * kbps(bufsize) / float(kbps(bitrate)))),
+    )
+
+
 def calidades_aplicables(altura_fuente, calidades=CALIDADES):
     """Nunca agrandar: un 1080p inventado a partir de un 720p ocupa el doble
     en un bucket de 10 GB y no se ve mejor."""
     aplicables = [c for c in calidades if c[0] <= altura_fuente]
     if aplicables:
         return aplicables
-    altura, bitrate, maxrate, bufsize = calidades[0]
-    return [(max(2, (int(altura_fuente) // 2) * 2), bitrate, maxrate, bufsize)]
+    return [escalar_calidad(calidades[0], max(2, (int(altura_fuente) // 2) * 2))]
 
 
 def tipo_de_contenido(nombre):
@@ -199,7 +267,12 @@ def unir_url(base, clave):
 def nombre_de_idioma(codigo, titulo=None):
     if titulo:
         return titulo
-    return IDIOMAS.get((codigo or "und").lower(), (codigo or "und").upper())
+    codigo = (codigo or "und").lower()
+    if codigo in IDIOMAS:
+        return IDIOMAS[codigo]
+    # `es-mx-latino` sigue siendo espanol: se prueba con la raiz antes de
+    # rendirse y mostrar el codigo crudo.
+    return IDIOMAS.get(codigo.split("-", 1)[0], codigo.upper())
 
 
 def formatear_bytes(cantidad):
@@ -338,7 +411,7 @@ def analizar_ffprobe(datos):
         pista = {
             "indice": numero,
             "codec": codec,
-            "idioma": (tags.get("language") or "und").lower(),
+            "idioma": sanear_etiqueta(tags.get("language")),
             "titulo": tags.get("title") or None,
             "predeterminado": (flujo.get("disposition") or {}).get("default", 0) == 1,
         }
@@ -450,32 +523,116 @@ def segundos_de_linea_de_progreso(linea):
     return int(horas) * 3600 + int(minutos) * 60 + float(segundos)
 
 
-def correr_ffmpeg_con_progreso(comando, duracion, etiqueta="convirtiendo"):
-    barra = Barra(etiqueta, max(1.0, duracion))
-    proceso = subprocess.Popen(
-        comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", bufsize=1,
-    )
-    for linea in proceso.stdout:
-        segundos = segundos_de_linea_de_progreso(linea)
-        if segundos is not None:
-            barra.poner(segundos)
-    proceso.stdout.close()
-    error = proceso.stderr.read()
-    proceso.stderr.close()
-    codigo = proceso.wait()
+def correr_ffmpeg_con_progreso(comando, duracion, etiqueta="convirtiendo", salida=None):
+    """Corre ffmpeg leyendo el progreso por stdout, con stderr a un archivo.
+
+    stderr NO puede ser un pipe mas. Con los dos en pipe y un solo lector se
+    arma un abrazo mortal: ffmpeg llena el buffer del pipe de stderr (4 KB
+    medidos en Windows; con 8 KB ya cuelga), se bloquea escribiendo, deja de
+    emitir `-progress` por stdout, y el padre se queda esperando stdout para
+    siempre, sin timeout y con la barra congelada. No hace falta un caso
+    raro: un rip de 2 h con ruido de decodificacion pasa los 8 KB con unas
+    cien lineas de aviso.
+
+    Un archivo temporal lo resuelve sin hilos: el sistema operativo absorbe
+    todo lo que ffmpeg escriba y al final se lee entero.
+    """
+    barra = Barra(etiqueta, max(1.0, duracion), salida=salida)
+    with tempfile.TemporaryFile() as ruido:
+        proceso = subprocess.Popen(
+            comando, stdout=subprocess.PIPE, stderr=ruido,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+        )
+        for linea in proceso.stdout:
+            segundos = segundos_de_linea_de_progreso(linea)
+            if segundos is not None:
+                barra.poner(segundos)
+        proceso.stdout.close()
+        codigo = proceso.wait()
+        ruido.seek(0)
+        error = ruido.read().decode("utf-8", "replace")
     if codigo != 0:
         raise Aviso("ffmpeg fallo (codigo %d):\n%s" % (codigo, (error or "").strip()[-2000:]))
     barra.terminar()
 
 
-def extraer_subtitulos(entrada, destino, pistas, correr=None):
-    """Una carpeta por pista: subtitulos/<idioma>/subtitulos.vtt."""
+# --------------------------------------------------------------------------
+# Subtitulos atados al reloj del MPEG-TS
+# --------------------------------------------------------------------------
+
+def medir_desfase_ts(carpeta, correr=None):
+    """Segundos en los que arranca el primer segmento MPEG-TS.
+
+    Se mide, no se adivina: el colchon del muxer depende de la version de
+    ffmpeg y del archivo de entrada. Devuelve None si no se pudo medir, para
+    que el que llama avise en vez de inventar un numero.
+    """
+    correr = correr or subprocess.run
+    segmentos = sorted(Path(carpeta).rglob("seg*.ts"))
+    if not segmentos:
+        return None
+    resultado = correr(
+        ["ffprobe", "-v", "error", "-print_format", "json",
+         "-show_format", "-show_streams", str(segmentos[0])],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if resultado.returncode != 0:
+        return None
+    try:
+        datos = json.loads(resultado.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    tiempos = []
+    for origen in [datos.get("format") or {}] + list(datos.get("streams") or []):
+        try:
+            tiempos.append(float(origen.get("start_time")))
+        except (TypeError, ValueError):
+            continue
+    if not tiempos:
+        return None
+    # hls.js toma como origen el menor PTS del fragmento (video o audio), que
+    # es justo lo que ffprobe informa como format.start_time.
+    return max(0.0, min(tiempos))
+
+
+def encabezado_timestamp_map(desfase):
+    """El encabezado que ata el tiempo del WebVTT al reloj de 90 kHz del TS.
+
+    RFC 8216 seccion 3.5 dice que SHOULD estar. hls.js
+    (src/utils/webvtt-parser.ts), que es el reproductor de la Sala, sin este
+    encabezado mapea la cue 0 al MPEGTS 0: como el TS arranca en ~1,5 s,
+    todas las cues salen adelantadas esa cantidad y la primera desaparece
+    (queda en tiempo negativo). Lo escribe el muxer HLS de ffmpeg cuando los
+    subtitulos van en el var_stream_map; como aca salen aparte, nos toca a
+    nosotros.
+    """
+    return "X-TIMESTAMP-MAP=MPEGTS:%d,LOCAL:00:00:00.000" % int(
+        round(max(0.0, float(desfase or 0.0)) * RELOJ_MPEGTS))
+
+
+def poner_timestamp_map(texto, desfase):
+    """Mete el encabezado justo despues de la linea WEBVTT, que es donde va."""
+    lineas = str(texto).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if not lineas or not lineas[0].lstrip("\ufeff").startswith("WEBVTT"):
+        lineas.insert(0, "WEBVTT")
+    # Los encabezados van pegados al WEBVTT, antes de la primera linea en
+    # blanco. Si ya habia uno, se reemplaza en vez de duplicarlo.
+    resto = [l for l in lineas[1:] if not l.strip().startswith("X-TIMESTAMP-MAP")]
+    return "\n".join([lineas[0], encabezado_timestamp_map(desfase)] + resto)
+
+
+def extraer_subtitulos(entrada, destino, pistas, correr=None, desfase=0.0):
+    """Una carpeta por pista: subtitulos/<idioma>/subtitulos.vtt.
+
+    `desfase` son los segundos en los que arranca el MPEG-TS (lo mide
+    medir_desfase_ts). Va al X-TIMESTAMP-MAP de cada WebVTT: sin el, los
+    subtitulos salen adelantados y la primera linea no se ve nunca.
+    """
     correr = correr or subprocess.run
     hechas = []
     usados = set()
     for pista in pistas:
-        etiqueta = pista["idioma"] or "und"
+        etiqueta = sanear_etiqueta(pista["idioma"])
         sufijo = etiqueta
         numero = 2
         while sufijo in usados:
@@ -495,10 +652,13 @@ def extraer_subtitulos(entrada, destino, pistas, correr=None):
         if resultado.returncode != 0 or not archivo.is_file() or archivo.stat().st_size == 0:
             print("   (no pude convertir la pista de subtitulos %s, la salteo)" % etiqueta)
             continue
+        archivo.write_text(
+            poner_timestamp_map(archivo.read_text(encoding="utf-8-sig"), desfase),
+            encoding="utf-8")
         hechas.append({
             "carpeta": "subtitulos/" + sufijo,
-            "idioma": pista["idioma"],
-            "nombre": nombre_de_idioma(pista["idioma"], pista["titulo"]),
+            "idioma": etiqueta,
+            "nombre": nombre_de_idioma(etiqueta, pista["titulo"]),
             "predeterminado": pista["predeterminado"],
         })
     return hechas
@@ -593,10 +753,14 @@ def crear_cliente(config, fabrica=None, fabrica_config=None):
     """R2 habla S3, pero no es S3.
 
     Dos particularidades que cuestan una tarde si no se saben:
-    - boto3 >= 1.36 manda un checksum CRC32 en cada PutObject y UploadPart, y
-      R2 no implementa esos encabezados: la subida falla. Se apaga con
-      request_checksum_calculation / response_checksum_validation en
-      `when_required`.
+    - boto3 >= 1.36 calcula y manda un CRC32 en cada PutObject y UploadPart
+      aunque nadie se lo pida. R2 hoy SI soporta CRC-32 (la pagina "S3 API
+      compatibility" de Cloudflare, actualizada el 31/07/2026, lo lista en
+      modo COMPOSITE), asi que no rompe nada; se deja igual en `when_required`
+      porque es menos trabajo y menos bytes por objeto, y porque es lo que
+      esta probado. Ojo: `when_required` NO apaga los checksums de las
+      operaciones que el modelo de S3 marca como obligatorias, y DeleteObjects
+      es una de ellas: ahi el CRC32 viaja igual. Medido, no supuesto.
     - la region es siempre "auto" y el endpoint es del account id, no del
       bucket.
     """
@@ -678,6 +842,70 @@ def subir_carpeta(cliente, bucket, prefijo, identificador, carpeta,
     return {"claves": claves, "bytes": total, "archivos": len(items)}
 
 
+def limpiar_sobrantes(cliente, bucket, previas, nuevas, salida=None):
+    """Borra lo que quedo de una subida anterior del mismo id.
+
+    `subir_carpeta` pisa, no limpia. Si el video nuevo tiene menos segmentos
+    que el viejo (otra fuente, otro corte, otra duracion), los sobrantes se
+    quedan ocupando los 10 GB sin aparecer en ninguna playlist y sin que nada
+    los nombre. Corre DESPUES de la subida y despues de la maestra: recien
+    ahi las claves que sobran son las que no referencia nadie.
+    """
+    salida = salida or sys.stdout
+    puestas = set(nuevas)
+    sobrantes = [c for c in previas if c not in puestas]
+    if not sobrantes:
+        return []
+    try:
+        borrar_objetos(cliente, bucket, sobrantes)
+    except Exception as error:
+        # El video ya esta arriba y anda: una limpieza fallida avisa, no
+        # tumba la corrida ni impide avisarle al servidor.
+        salida.write("   (no pude borrar %d archivo(s) viejos: %s)\n"
+                     % (len(sobrantes), type(error).__name__))
+        return []
+    salida.write("   %d archivo(s) de la version anterior, borrados\n" % len(sobrantes))
+    return sobrantes
+
+
+def leer_maestra(cliente, bucket, clave):
+    """Baja la playlist maestra de R2. Es la ficha de lo que se subio."""
+    try:
+        return cliente.get_object(Bucket=bucket, Key=clave)["Body"].read().decode(
+            "utf-8", "replace")
+    except Exception as error:
+        raise Aviso(
+            "No pude leer %s de R2 (%s).\n"
+            "Si el video no esta subido, corre el script sin --avisar."
+            % (clave, type(error).__name__))
+
+
+def datos_de_maestra(texto):
+    """De la maestra saca las calidades y las pistas de subtitulo.
+
+    Es lo que le falta a `--avisar` para mandar el cuerpo completo: en un
+    reintento el script ya no tiene el archivo original, pero la maestra en
+    R2 dice exactamente que se subio.
+    """
+    calidades = []
+    subtitulos = []
+    for linea in str(texto).splitlines():
+        pelada = linea.strip()
+        if pelada.startswith("#EXT-X-MEDIA:") and "TYPE=SUBTITLES" in pelada:
+            idioma = re.search(r'LANGUAGE="([^"]*)"', pelada)
+            nombre = re.search(r'NAME="([^"]*)"', pelada)
+            etiqueta = idioma.group(1) if idioma else "und"
+            subtitulos.append({
+                "idioma": etiqueta,
+                "nombre": nombre.group(1) if nombre else nombre_de_idioma(etiqueta),
+            })
+        elif pelada and not pelada.startswith("#"):
+            encontrado = re.match(r"^(\d+)p/", pelada)
+            if encontrado:
+                calidades.append(int(encontrado.group(1)))
+    return {"calidades": sorted(set(calidades)), "subtitulos": subtitulos}
+
+
 def listar_objetos(cliente, bucket, prefijo):
     """Devuelve [{clave, tamano}] de todo lo que hay bajo el prefijo.
 
@@ -687,8 +915,12 @@ def listar_objetos(cliente, bucket, prefijo):
     """
     objetos = []
     testigo = None
+    # Un prefijo vacio es el bucket entero (lo usa --listar para saber cuanto
+    # queda de los 10 GB de verdad). "/" no seria vacio: no matchearia nada.
+    raiz = str(prefijo).strip("/")
     while True:
-        argumentos = {"Bucket": bucket, "Prefix": prefijo.strip("/") + "/", "MaxKeys": 1000}
+        argumentos = {"Bucket": bucket, "Prefix": (raiz + "/") if raiz else "",
+                      "MaxKeys": 1000}
         if testigo:
             argumentos["ContinuationToken"] = testigo
         respuesta = cliente.list_objects_v2(**argumentos)
@@ -776,6 +1008,12 @@ def avisar_borrado(config, identificador, abrir=None):
 # Acciones
 # --------------------------------------------------------------------------
 
+def prefijo_de(args, config):
+    """El prefijo dentro del bucket, siempre validado. Es entrada del usuario
+    y arma la clave de R2, incluida la del camino que borra."""
+    return validar_slug(getattr(args, "sala", None) or config["SALA_SLUG"])
+
+
 def accion_subir(args, config):
     entrada = Path(args.archivo)
     if not entrada.is_file():
@@ -790,7 +1028,7 @@ def accion_subir(args, config):
 
     identificador = validar_id(args.id or hacer_id(entrada.name))
     titulo = args.titulo or entrada.stem
-    prefijo = args.sala or config["SALA_SLUG"]
+    prefijo = prefijo_de(args, config)
 
     paso(1, 5, "Revisando el archivo")
     fuente = probar_fuente(entrada)
@@ -819,7 +1057,16 @@ def accion_subir(args, config):
         paso(3, 5, "Subtitulos")
         pistas = []
         if fuente["subtitulos"]:
-            pistas = extraer_subtitulos(entrada, trabajo, fuente["subtitulos"])
+            # Los segmentos MPEG-TS no arrancan en cero y los WebVTT si: sin
+            # este numero los subtitulos salen adelantados y la primera linea
+            # no aparece nunca.
+            desfase = medir_desfase_ts(trabajo)
+            if desfase is None:
+                print("   (no pude medir donde arranca el MPEG-TS: los "
+                      "subtitulos pueden quedar corridos)")
+                desfase = 0.0
+            pistas = extraer_subtitulos(
+                entrada, trabajo, fuente["subtitulos"], desfase=desfase)
             for pista in pistas:
                 (trabajo / pista["carpeta"] / "lista.m3u8").write_text(
                     escribir_playlist_de_subtitulo(fuente["duracion"]), encoding="utf-8")
@@ -839,6 +1086,12 @@ def accion_subir(args, config):
         if args.solo_preparar:
             destino = Path.cwd() / ("hls-" + identificador)
             if destino.exists():
+                # Borrar una carpeta del dueno sin preguntar es de mal gusto:
+                # puede tener ahi la corrida anterior que estaba mirando.
+                if not args.si:
+                    raise Aviso(
+                        "Ya existe %s.\nBorrala vos o corre de nuevo con --si "
+                        "para reemplazarla." % destino)
                 shutil.rmtree(destino)
             shutil.move(str(trabajo), str(destino))
             trabajo = None
@@ -848,8 +1101,17 @@ def accion_subir(args, config):
         paso(4, 5, "Subiendo a R2 (bucket %s, %s/%s/)"
              % (config["R2_BUCKET"], prefijo, identificador))
         cliente = crear_cliente(config)
+        entero = prefijo + "/" + identificador
+        previas = [o["clave"] for o in
+                   listar_objetos(cliente, config["R2_BUCKET"], entero)]
+        if previas:
+            # Dos capitulos distintos con el mismo nombre de archivo dan el
+            # mismo id. Que se entere ahora y no cuando falte un video.
+            print("   OJO: ya habia %d archivo(s) en %s/. Este video los reemplaza."
+                  % (len(previas), entero))
         resultado = subir_carpeta(
             cliente, config["R2_BUCKET"], prefijo, identificador, trabajo, hilos=args.hilos)
+        limpiar_sobrantes(cliente, config["R2_BUCKET"], previas, resultado["claves"])
 
         url = unir_url(config["R2_URL_PUBLICA"],
                        clave_r2(prefijo, identificador, "maestra.m3u8"))
@@ -885,29 +1147,38 @@ def accion_subir(args, config):
 
 def accion_listar(args, config):
     exigir(config, VARIABLES_R2, "listar lo que hay en R2")
-    prefijo = args.sala or config["SALA_SLUG"]
+    prefijo = prefijo_de(args, config)
     cliente = crear_cliente(config)
     objetos = listar_objetos(cliente, config["R2_BUCKET"], prefijo)
     grupos = agrupar_por_video(objetos, prefijo)
     if not grupos:
         print("No hay nada en %s bajo %s/" % (config["R2_BUCKET"], prefijo))
-        return 0
-    print("%-32s %9s %10s" % ("id", "archivos", "peso"))
-    for grupo in grupos:
-        print("%-32s %9d %10s" % (grupo["id"], grupo["archivos"], formatear_bytes(grupo["bytes"])))
-    total = sum(g["bytes"] for g in grupos)
-    print("%-32s %9d %10s" % ("total", sum(g["archivos"] for g in grupos), formatear_bytes(total)))
-    libre = 10 * 1024 ** 3 - total
-    print("Quedan %s de los 10 GB gratis." % formatear_bytes(max(0, libre)))
+    else:
+        print("%-32s %9s %10s" % ("id", "archivos", "peso"))
+        for grupo in grupos:
+            print("%-32s %9d %10s"
+                  % (grupo["id"], grupo["archivos"], formatear_bytes(grupo["bytes"])))
+        print("%-32s %9d %10s"
+              % ("total " + prefijo + "/", sum(g["archivos"] for g in grupos),
+                 formatear_bytes(sum(g["bytes"] for g in grupos))))
+
+    # Los 10 GB gratis son del bucket entero, no de este prefijo. Contando
+    # solo `istincho/` el numero miente en cuanto haya otro prefijo (otra
+    # sala, una prueba, lo que sea) y el aviso llegaria tarde: cuando R2
+    # empiece a cobrar.
+    todo = sum(o["tamano"] for o in listar_objetos(cliente, config["R2_BUCKET"], ""))
+    print("En el bucket %s hay %s en total. Quedan %s de los 10 GB gratis."
+          % (config["R2_BUCKET"], formatear_bytes(todo),
+             formatear_bytes(max(0, 10 * 1024 ** 3 - todo))))
     return 0
 
 
 def accion_borrar(args, config):
     identificador = validar_id(args.borrar)
     exigir(config, VARIABLES_R2, "borrar de R2")
-    prefijo = args.sala or config["SALA_SLUG"]
+    prefijo = prefijo_de(args, config)
     cliente = crear_cliente(config)
-    entero = prefijo.strip("/") + "/" + identificador
+    entero = prefijo + "/" + identificador
     objetos = listar_objetos(cliente, config["R2_BUCKET"], entero)
     claves = [o["clave"] for o in objetos]
     bytes_totales = sum(o["tamano"] for o in objetos)
@@ -935,19 +1206,44 @@ def accion_borrar(args, config):
 
 
 def accion_avisar(args, config):
-    """Reintento del paso 5 cuando el video ya esta en R2 y el aviso fallo."""
+    """Reintento del paso 5 cuando el video ya esta en R2 y el aviso fallo.
+
+    Manda el MISMO cuerpo que la subida normal, no uno recortado. El servidor
+    pisa la ficha entera con lo que llega: un cuerpo a medias dejaria el video
+    sin calidades, sin subtitulos y con 0 bytes en el panel, o directamente
+    daria 400 si algun dia esos campos pasan a ser obligatorios.
+
+    Lo que falta (calidades, subtitulos, peso) sale de R2, que es donde quedo:
+    en un reintento el archivo original ya no esta a mano, y la maestra dice
+    exactamente que se subio. De paso, si en R2 no hay nada, avisa en vez de
+    registrar un video que no existe.
+    """
     identificador = validar_id(args.avisar)
-    exigir(config, VARIABLES_SERVIDOR + ("R2_URL_PUBLICA",), "avisarle al servidor")
+    exigir(config, VARIABLES_SERVIDOR + ("R2_URL_PUBLICA",) + VARIABLES_R2,
+           "avisarle al servidor de un video ya subido")
     if args.duracion is None:
         raise Aviso("--avisar necesita tambien --duracion (en segundos).")
-    prefijo = args.sala or config["SALA_SLUG"]
+    prefijo = prefijo_de(args, config)
+    cliente = crear_cliente(config)
+    entero = prefijo + "/" + identificador
+    objetos = listar_objetos(cliente, config["R2_BUCKET"], entero)
+    if not objetos:
+        raise Aviso(
+            "En R2 no hay nada bajo %s/, asi que no hay nada que avisar.\n"
+            "Corre el script con el archivo de video, sin --avisar." % entero)
+
+    clave_maestra = clave_r2(prefijo, identificador, "maestra.m3u8")
+    ficha = datos_de_maestra(
+        leer_maestra(cliente, config["R2_BUCKET"], clave_maestra))
     datos = {
         "id": identificador,
         "slug": prefijo,
         "titulo": args.titulo or identificador,
-        "duracion": float(args.duracion),
-        "url": unir_url(config["R2_URL_PUBLICA"],
-                        clave_r2(prefijo, identificador, "maestra.m3u8")),
+        "duracion": round(float(args.duracion), 3),
+        "url": unir_url(config["R2_URL_PUBLICA"], clave_maestra),
+        "calidades": ficha["calidades"],
+        "subtitulos": ficha["subtitulos"],
+        "bytes": sum(o["tamano"] for o in objetos),
     }
     avisar_video(config, datos)
     print("Avisado: " + datos["url"])
@@ -967,7 +1263,8 @@ def armar_parser():
     parser.add_argument("--listar", action="store_true", help="mostrar que hay en R2")
     parser.add_argument("--borrar", metavar="ID", help="borrar un video de R2 y del servidor")
     parser.add_argument("--avisar", metavar="ID",
-                        help="reintentar el aviso al servidor de un video ya subido")
+                        help="reintentar el aviso al servidor de un video ya subido "
+                             "(lee de R2 calidades, subtitulos y peso)")
     parser.add_argument("--id", help="id del video (por defecto, sale del nombre del archivo)")
     parser.add_argument("--titulo", help="titulo que se ve en el panel")
     parser.add_argument("--duracion", type=float, help="duracion en segundos (solo con --avisar)")
@@ -980,7 +1277,8 @@ def armar_parser():
                         help="no llamar al servidor")
     parser.add_argument("--conservar", action="store_true",
                         help="no borrar la carpeta temporal al terminar")
-    parser.add_argument("--si", action="store_true", help="no preguntar al borrar")
+    parser.add_argument("--si", action="store_true",
+                        help="no preguntar al borrar ni al reemplazar una carpeta")
     parser.add_argument("--env", default=str(Path(__file__).with_name(".env")),
                         help="ruta del .env con las credenciales")
     return parser

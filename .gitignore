@@ -19,3 +19,12 @@ servidor/datos/
 
 # bytecode de python
 __pycache__/
+
+# Basura de las pruebas de herramientas/subir.py: ffmpeg deja segmentos e
+# init sueltos donde se lo corra. Ningun video va al repo.
+*.mp4
+*.mkv
+*.ts
+*.m3u8
+*.vtt
+hls-*/

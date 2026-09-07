@@ -7,7 +7,12 @@
 # Las pruebas (herramientas/pruebas_subir.py) corren con unittest de la
 # biblioteca estándar: no hace falta pytest.
 #
-# boto3 1.36 fue el que empezó a mandar checksums CRC32 en cada PutObject, que
-# R2 no implementa; subir.py los apaga con request_checksum_calculation, y esa
-# opción no existe antes de 1.36. Por eso el piso.
+# El piso es 1.36 porque desde esa versión existe la opción
+# `request_checksum_calculation`, que `subir.py` le pasa a `botocore.config
+# .Config`; con una anterior, ese argumento es un TypeError y el script no
+# arranca. (Antes acá decía que R2 "no implementa" los encabezados de
+# checksum: ya no es cierto. La tabla Checksum Types de la página S3 API
+# compatibility de Cloudflare, actualizada el 31/07/2026, lista CRC-32 como
+# soportado en modo COMPOSITE. Se deja en `when_required` igual: es menos
+# trabajo por objeto y es lo que está probado contra el doble del API.)
 boto3>=1.36,<2

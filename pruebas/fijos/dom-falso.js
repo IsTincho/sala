@@ -63,6 +63,29 @@ class Elemento {
     this.scrollTop = 0;
     this.scrollHeight = 0;
     this.clientHeight = 0;
+
+    /* Un <video> tiene una superficie propia que la Sala usa de
+       verdad: la posicion, si esta pausado, el volumen. Se le da a
+       mano y solo lo que la pagina toca. No es un reproductor: no hay
+       decodificacion ni tiempo que avance solo. El test mueve
+       `currentTime` cuando quiere simular que la peli corrio. */
+    if (this.tagName === 'VIDEO' || this.tagName === 'AUDIO') {
+      this.currentTime = 0;
+      this.duration = NaN;
+      this.paused = true;
+      this.muted = false;
+      this.volume = 1;
+      this.playbackRate = 1;
+      this.seeking = false;
+      /* 4 = HAVE_ENOUGH_DATA. Arranca listo para que el caso normal
+         sea el normal; el test lo baja cuando quiere simular que esta
+         cargando. */
+      this.readyState = 4;
+      this.textTracks = [];
+      this.play = () => { this.paused = false; this.disparar('play'); return Promise.resolve(); };
+      this.pause = () => { this.paused = true; this.disparar('pause'); };
+      this.load = () => {};
+    }
   }
 
   /* ---- innerHTML es la puerta del XSS: aca directamente no existe */
@@ -107,6 +130,14 @@ class Elemento {
     if (this.alAgregar) this.alAgregar(nodo);
     if (this.raiz?.alAgregar) this.raiz.alAgregar(nodo);
     return nodo;
+  }
+
+  /* `append` acepta varios de una y acepta texto suelto. Es DOM
+     estandar y las paginas lo usan; sin esto el arbol se quedaba a
+     medias y el error salia como "la pagina no pinto nada", que es
+     de lo peor que puede decir un test. */
+  append(...nodos) {
+    for (const n of nodos) this.appendChild(typeof n === 'string' ? new NodoTexto(n) : n);
   }
 
   removeChild(nodo) {
@@ -242,15 +273,23 @@ export function parsearHtml(html) {
  * @param {string} [opciones.archivo]   html a montar (por defecto chat.html)
  * @param {string} [opciones.script]    js a correr (por defecto chat/chat.js)
  * @param {string} [opciones.busqueda]  el `?...` de la URL
+ * @param {string} [opciones.ruta]      el pathname de la URL
+ * @param {string[]} [opciones.antes]   scripts a correr antes (comun/…)
  * @param {function} [opciones.fetch]   el fetch que ve la pagina
  * @param {object} [opciones.Sala]      el cliente del bus SSE
+ * @param {object} [opciones.globales]  lo que la pagina espera del
+ *        navegador y aca no existe (por ejemplo `Hls`, que viene de un
+ *        CDN). Se ponen en el contexto antes de correr el script.
  */
 export function abrirPagina({
   archivo = 'chat.html',
   script = 'chat/chat.js',
   busqueda = '',
+  ruta = '/chat',
+  antes = [],
   fetch: elFetch = async () => { throw new Error('la pagina no deberia pedir nada'); },
   Sala = null,
+  globales = {},
 } = {}) {
   const html = fs.readFileSync(path.join(PAGINAS, archivo), 'utf8');
   const { raiz, porId } = parsearHtml(html);
@@ -312,7 +351,7 @@ export function abrirPagina({
     clearInterval: t => { temporizadores.delete(t); return clearInterval(t); },
     queueMicrotask,
     document: documento,
-    location: { search: busqueda, pathname: '/chat', href: 'https://sala.example/chat' + busqueda },
+    location: { search: busqueda, pathname: ruta, href: 'https://sala.example' + ruta + busqueda },
     history: { urls: [], replaceState(_a, _b, url) { this.urls.push(url); } },
     navigator: {},                       // sin serviceWorker: como file://
     localStorage: {
@@ -325,8 +364,15 @@ export function abrirPagina({
   };
   caja.window = caja;
   if (Sala) caja.Sala = Sala;
+  Object.assign(caja, globales);
 
   const contexto = vm.createContext(caja);
+  /* Los scripts que la pagina carga antes del suyo (comun/bus.js,
+     comun/mensajes.js) se corren de verdad, en el mismo contexto: asi
+     el test ejercita el render compartido y no una copia. */
+  for (const previo of antes) {
+    vm.runInContext(fs.readFileSync(path.join(PAGINAS, previo), 'utf8'), contexto, { filename: previo });
+  }
   vm.runInContext(fs.readFileSync(path.join(PAGINAS, script), 'utf8'), contexto, { filename: script });
 
   return {

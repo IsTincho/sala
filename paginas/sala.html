@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sala</title>
+<meta name="theme-color" content="#0e1013">
+<link rel="icon" href="/icono-192.png">
+<link rel="stylesheet" href="/comun/base.css">
+<link rel="stylesheet" href="/sala/sala.css">
+<!--
+  hls.js con la version CLAVADA y con integrity.
+
+  Clavada porque un "latest" del CDN es código de un tercero que puede
+  cambiar solo, en el medio de una película, sin que nadie lo pida. Y
+  con integrity porque un CDN comprometido serviría un script con
+  permisos completos sobre esta página: si el archivo no es byte por
+  byte el que se verificó, el navegador no lo ejecuta.
+
+  El hash es de https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js
+  (413.952 bytes). Si se sube de versión hay que recalcularlo:
+    curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+
+  Si el CDN no responde, `Hls` no existe y la página lo dice y prueba
+  con el HLS nativo del navegador (Safari y iOS lo tienen).
+-->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"
+        integrity="sha384-9v3HcdYrO3D+OPDTjZ40RXocgE4GtXVCd3/mCS62JsM93JXgI1afJVuwjFvsu6ni"
+        crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div class="sala" id="sala" data-espera="si">
+
+  <header class="barra-sala">
+    <h1 class="titulo-sala" id="titulo-sala">Sala</h1>
+    <span class="dato-sala">
+      <span id="contador-espectadores">0</span> mirando
+    </span>
+    <span class="dato-sala" id="estado-conexion">conectando…</span>
+    <span class="dato-sala" id="fila-espectador" hidden>
+      <span id="nombre-espectador"></span>
+      <button type="button" id="boton-salir" class="boton-chico">Salir</button>
+    </span>
+  </header>
+
+  <!-- CÁMARA. En escritorio va a la izquierda; en celular queda
+       debajo del video y más chica. El iframe lo arma sala.js con el
+       slug de la URL: no se interpola nada en el HTML. -->
+  <section class="columna columna-camara" id="columna-camara" aria-label="Cámara">
+    <div class="caja-camara" id="caja-camara"></div>
+    <!-- El cartel de espera vive acá y no encima del video: cuando el
+         reloj dice "detenido" la columna del video no existe, así que
+         un cartel adentro de esa columna no se vería nunca. -->
+    <p class="texto-espera" id="texto-espera" hidden></p>
+  </section>
+
+  <!-- VIDEO. El servidor NUNCA lo sirve: el <video> apunta a la
+       playlist en r2.dev y el navegador va solo. -->
+  <section class="columna columna-video" id="columna-video" aria-label="Película">
+    <div class="caja-video" id="caja-video">
+      <video id="video-peli" playsinline preload="none"></video>
+    </div>
+
+    <div class="controles" id="controles-video">
+      <button type="button" id="boton-play" class="boton-control" aria-label="Reproducir">▶</button>
+      <button type="button" id="boton-mudo" class="boton-control" aria-pressed="false" aria-label="Silenciar">🔊</button>
+      <input type="range" id="control-volumen" class="control-volumen"
+             min="0" max="100" step="1" value="100" aria-label="Volumen">
+      <!-- oculto hasta que el video traiga pistas: un selector con una
+           sola opción que dice "sin subtítulos" no es un selector -->
+      <select id="select-subtitulos" class="select-subtitulos" aria-label="Subtítulos" hidden>
+        <option value="-1">Sin subtítulos</option>
+      </select>
+      <button type="button" id="boton-pantalla-completa" class="boton-control" aria-label="Pantalla completa">⛶</button>
+      <span class="estado-sincro" id="estado-sincro"></span>
+    </div>
+    <p class="titulo-peli" id="titulo-peli"></p>
+  </section>
+
+  <!-- CHAT. Los mensajes son los mismos de /chat, con el mismo render
+       (comun/mensajes.js), filtrados a Kick por el SERVIDOR. -->
+  <section class="columna columna-chat" id="columna-chat" aria-label="Chat">
+    <ol class="lista-mensajes" id="lista-chat" role="log" aria-live="polite"></ol>
+    <button type="button" class="boton-volver-abajo" id="boton-abajo" hidden>
+      Volver abajo <span class="contador-nuevos" id="contador-nuevos"></span>
+    </button>
+
+    <div id="aviso-sala" class="banda-aviso" hidden>
+      <span id="texto-aviso"></span>
+      <button type="button" id="boton-cerrar-aviso" aria-label="Cerrar aviso">×</button>
+    </div>
+
+    <!-- sin login se lee, no se escribe -->
+    <div id="banda-entrar" class="banda-entrar" hidden>
+      <span>Entrá con Kick para escribir. Tu mensaje sale en kick.com con tu cuenta.</span>
+      <a id="link-entrar" class="boton-entrar" href="/oauth/kick/entrar?rol=espectador">Entrar con Kick</a>
+    </div>
+
+    <div class="caja-escritura">
+      <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800" disabled
+        placeholder="Entrá con Kick para escribir…" aria-label="Mensaje a enviar"></textarea>
+      <div class="fila-controles-envio">
+        <span id="contador-caracteres" class="contador-caracteres">0/500</span>
+        <button type="button" id="boton-enviar" class="boton-enviar" disabled>Enviar</button>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script src="/comun/bus.js"></script>
+<script src="/comun/mensajes.js"></script>
+<script src="/sala/sala.js"></script>
+</body>
+</html>

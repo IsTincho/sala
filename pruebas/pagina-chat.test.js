@@ -59,6 +59,10 @@ function abrir({ busqueda = '', respuestas = {}, salud = SALUD_SANA } = {}) {
 
   const pagina = abrirPagina({
     busqueda,
+    /* El render de un mensaje vive en comun/mensajes.js, compartido con
+       /sala/:slug. La pagina lo carga con su propio <script>; aca se
+       corre de verdad, no una imitacion. */
+    antes: ['comun/mensajes.js'],
     fetch: responder,
     Sala: { conectar: (_slug, fn) => { alRecibir = fn; } },
   });

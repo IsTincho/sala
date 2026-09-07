@@ -1,0 +1,380 @@
+/* ============================================================
+   La Sala: cámara, película y chat.
+
+   Tres columnas en escritorio; en celular se apila video, cámara
+   chica y chat. La regla que manda sobre todo lo demás: NUNCA hay
+   scroll horizontal. Por eso cada pista de la grilla es `minmax(0,…)`
+   y cada hijo lleva `min-width: 0`: sin eso, un mensaje largo sin
+   espacios o el iframe de la cámara empujan la columna y el celular
+   termina desplazándose de costado, que es la falla clásica de este
+   layout.
+   ============================================================ */
+
+:root{
+  --alto-camara-movil: 32vw;
+  --ancho-chat: 22rem;
+  --ancho-camara: 20rem;
+}
+
+.sala{
+  display: grid;
+  gap: var(--espacio-2);
+  padding: var(--espacio-2);
+  /* dvh y no vh: en celular la barra del navegador se mete adentro de
+     los 100vh y el chat queda cortado por debajo del borde. */
+  height: 100dvh;
+  max-height: 100dvh;
+  grid-template-columns: minmax(0, var(--ancho-camara)) minmax(0, 1fr) minmax(0, var(--ancho-chat));
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "barra  barra barra"
+    "camara video chat";
+}
+
+/* Sin nada puesto la película no existe: la cámara pasa al centro y
+   se lleva el lugar del video, que es lo que se quiere mirar
+   mientras se espera. */
+.sala[data-espera="si"]{
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--ancho-chat));
+  grid-template-areas:
+    "barra  barra"
+    "camara chat";
+}
+.sala[data-espera="si"] .columna-video{ display: none; }
+
+.columna{ min-width: 0; min-height: 0; }
+
+/* ESTO NO ES DECORACIÓN. El `hidden` del HTML vale `display: none`
+   sólo mientras nadie ponga un display propio, y acá casi todo lo que
+   se esconde (las columnas, las bandas de aviso) es flex o grid. Sin
+   esta línea, `elemento.hidden = true` no esconde nada y la pantalla
+   de espera convive con el video. */
+[hidden]{ display: none !important; }
+
+/* ------------------------------------------------------ la barra */
+
+.barra-sala{
+  grid-area: barra;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--espacio-3);
+  min-width: 0;
+}
+
+.titulo-sala{
+  font-size: 1.05rem;
+  margin: 0;
+  /* el nombre del canal viene de la URL: que no empuje la barra */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40vw;
+}
+
+.dato-sala{
+  color: var(--texto-tenue);
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--espacio-2);
+}
+
+.boton-chico{
+  font: inherit;
+  font-size: 0.8rem;
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------- la cámara */
+
+.columna-camara{ grid-area: camara; }
+
+.caja-camara{
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  overflow: hidden;
+}
+
+.caja-camara iframe{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* ------------------------------------------------------ el video */
+
+.columna-video{
+  grid-area: video;
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-2);
+  min-width: 0;
+}
+
+.caja-video{
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  overflow: hidden;
+}
+
+.caja-video video{
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* contain y no cover: recortar una película para llenar la caja es
+     comerse los bordes de cada plano. */
+  object-fit: contain;
+  background: #000;
+}
+
+.texto-espera{
+  margin: var(--espacio-2) 0 0;
+  color: var(--texto-tenue);
+  font-size: 0.9rem;
+}
+
+.controles{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+  min-width: 0;
+}
+
+.boton-control{
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+}
+.boton-control:hover{ border-color: var(--acento); }
+
+.control-volumen{ width: 7rem; max-width: 40vw; accent-color: var(--acento); }
+
+.select-subtitulos{
+  font: inherit;
+  font-size: 0.85rem;
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.3rem;
+  max-width: 10rem;
+}
+
+.estado-sincro{
+  color: var(--texto-tenue);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.titulo-peli{
+  margin: 0;
+  color: var(--texto-tenue);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------- el chat */
+
+.columna-chat{
+  grid-area: chat;
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+.lista-mensajes{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* la única defensa que de verdad importa contra el scroll lateral:
+     un mensaje sin espacios se parte, no ensancha la columna */
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  list-style: none;
+  margin: 0;
+  padding: var(--espacio-2);
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  font-size: var(--tam-chat, 0.95rem);
+}
+
+.mensaje{ padding: 0.2rem 0; min-width: 0; }
+.mensaje-linea{ display: inline; margin-right: 0.35rem; }
+.mensaje-respuesta{
+  color: var(--texto-tenue);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-red{
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 700;
+  border-radius: 0.3em;
+  padding: 0 0.35em;
+  margin-right: 0.3em;
+  color: #0b0d10;
+}
+.chip-red-kick{ background: var(--kick); }
+.chip-red-twitch{ background: var(--twitch); color: #fff; }
+
+.chip-insignia{
+  display: inline-block;
+  font-size: 0.7em;
+  border: 1px solid var(--borde);
+  border-radius: 0.3em;
+  padding: 0 0.3em;
+  margin-right: 0.25em;
+  color: var(--texto-tenue);
+}
+
+.usuario{ font-weight: 700; }
+.usuario::after{ content: ':'; color: var(--texto-tenue); }
+.texto-mensaje{ min-width: 0; }
+.emote{ height: 1.4em; vertical-align: middle; }
+
+.boton-volver-abajo{
+  font: inherit;
+  font-size: 0.85rem;
+  background: var(--acento);
+  color: #0b0d10;
+  border: 0;
+  border-radius: var(--radio);
+  padding: 0.35rem;
+  cursor: pointer;
+}
+
+.banda-aviso, .banda-entrar{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-2);
+  font-size: 0.85rem;
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: var(--espacio-2);
+  min-width: 0;
+}
+.banda-aviso{ border-color: var(--regular); }
+
+.boton-entrar{
+  background: var(--kick);
+  color: #0b0d10;
+  text-decoration: none;
+  font-weight: 700;
+  border-radius: var(--radio);
+  padding: 0.3rem 0.7rem;
+}
+
+.caja-escritura{
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-2);
+  min-width: 0;
+}
+
+.campo-texto{
+  font: inherit;
+  width: 100%;
+  max-height: 8rem;
+  resize: none;
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: var(--espacio-2);
+}
+.campo-texto:disabled{ opacity: 0.55; }
+
+.fila-controles-envio{
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--espacio-2);
+  min-width: 0;
+}
+
+.contador-caracteres{ color: var(--texto-tenue); font-size: 0.8rem; }
+.contador-caracteres.excedido{ color: var(--mal); font-weight: 700; }
+
+.boton-enviar{
+  font: inherit;
+  background: var(--acento);
+  color: #0b0d10;
+  font-weight: 700;
+  border: 0;
+  border-radius: var(--radio);
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+}
+.boton-enviar:disabled{ opacity: 0.5; cursor: default; }
+
+button:focus-visible, a:focus-visible, select:focus-visible,
+textarea:focus-visible, input:focus-visible{
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------- celular
+
+   Se apila: video, cámara chica, chat. La cámara pasa a ser una
+   franja de 32vw de alto para que el chat, que es lo que más se
+   mira, conserve la mayor parte de la pantalla. */
+
+@media (max-width: 900px){
+  .sala{
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "barra"
+      "video"
+      "camara"
+      "chat";
+  }
+
+  .sala[data-espera="si"]{
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "barra"
+      "camara"
+      "chat";
+  }
+
+  .caja-camara{ aspect-ratio: auto; height: var(--alto-camara-movil); }
+  .sala[data-espera="si"] .caja-camara{ aspect-ratio: 16 / 9; height: auto; }
+  .caja-video{ aspect-ratio: 16 / 9; flex: none; }
+  .titulo-sala{ max-width: 55vw; }
+  .control-volumen{ width: 5rem; }
+}

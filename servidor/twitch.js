@@ -417,6 +417,10 @@ export class ConexionEventSub {
        reconexiones que no hacian falta. +50% da aire de sobra. */
     const ms = seg * 1000 * 1.5;
     this.#timerKeepalive = setTimeout(() => this.#alVencerKeepalive(), ms);
+    /* unref: esperar un keepalive de Twitch no es motivo para que el
+       proceso no pueda terminar. Como el resto de los timers del
+       proyecto. */
+    this.#timerKeepalive.unref?.();
   }
 
   #ultimoTimeout = null;
@@ -462,6 +466,7 @@ export class ConexionEventSub {
     const espera = base / 2 + Math.random() * (base / 2);
     clearTimeout(this.#timerReintento);
     this.#timerReintento = setTimeout(() => this.#abrir(this.#url, { esperaWelcomeDeReconexion: false }), espera);
+    this.#timerReintento.unref?.();
   }
 
   /** Corta todo. No reconecta mas. Limpia todos los timers. */

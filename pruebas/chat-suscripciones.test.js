@@ -111,6 +111,17 @@ class EventSubFalso {
 
 let eventSubs = [];
 
+/* El plan B no se ejercita en este archivo, pero la fabrica se fija
+   igual: `fijarConexiones` exige las dos justamente para que un test
+   no se quede con la `ConexionIrc` de verdad puesta y termine abriendo
+   un TLS contra irc.chat.twitch.tv el dia que dispare el plan B. Si
+   algo la llama, se anota y el test lo ve. */
+let ircsPedidos = [];
+const ircQueNadieDeberiaPedir = () => {
+  ircsPedidos.push(new Error('alguien prendio el plan B en este archivo'));
+  return { conectar() {}, cerrar() {}, ultimaLlegada: null };
+};
+
 async function guardarVinculoKick() {
   await vinculos.guardar('kick', {
     usuarioId: USUARIO,
@@ -146,8 +157,10 @@ test.beforeEach(async () => {
   falla = null;
   await vinculos.olvidar('kick');
   await vinculos.olvidar('twitch');
+  ircsPedidos = [];
   chat.fijarConexiones({
     eventSub: opciones => { const c = new EventSubFalso(opciones); eventSubs.push(c); return c; },
+    irc: ircQueNadieDeberiaPedir,
   });
 });
 
@@ -159,6 +172,32 @@ test.after(async () => {
 });
 
 const pedidosA = fragmento => llamadas.filter(l => l.url.includes(fragmento));
+
+/* ------------------------------------- la costura no se fija a medias */
+
+test('fijarConexiones no acepta media costura', async () => {
+  /* La trampa que dejo la Fase 1: fijar solo `eventSub` dejaba la
+     `ConexionIrc` DE VERDAD como fabrica del plan B. Mientras ningun
+     test de este archivo llegue al cuarto fallo de EventSub no pasa
+     nada; el dia que uno llegue, la suite abre un TLS contra
+     irc.chat.twitch.tv desde la maquina que corra `npm test`, sin que
+     nada lo diga. Falla al fijarla, que es cuando se puede leer. */
+  assert.throws(
+    () => chat.fijarConexiones({ eventSub: () => ({ conectar() {}, cerrar() {} }) }),
+    /las dos fabricas/,
+    'fijar una sola deja la conexion de verdad puesta y eso tiene que doler aca');
+
+  assert.throws(
+    () => chat.fijarConexiones({ irc: () => ({ conectar() {}, cerrar() {} }) }),
+    /las dos fabricas/);
+
+  /* Sin argumentos si: es como `reiniciar()` vuelve a las de verdad. */
+  chat.fijarConexiones();
+});
+
+test('ningun test de este archivo prende el plan B por accidente', () => {
+  assert.deepEqual(ircsPedidos, [], 'alguien pidio una ConexionIrc: revisar por que');
+});
 
 /* ------------------------------------------- suscripciones de Kick */
 
@@ -226,6 +265,24 @@ test('si falta una suscripcion, la verificacion la vuelve a crear', async () => 
   assert.equal(creaciones.length, 1, 'tiene que haber creado las suscripciones que faltaban');
   assert.deepEqual(creaciones[0].cuerpo.events, kick.EVENTOS);
   assert.equal(chat.salud().kick.suscripcion, 'activa');
+});
+
+test('la version de una suscripcion se compara como numero, venga como venga', async () => {
+  /* La API contesta JSON y el `version` podria llegar como "1" en vez
+     de 1. Sin el `Number(...)`, `'1' === 1` da false, la verificacion
+     cree que faltan las dos suscripciones y las vuelve a crear CADA
+     CINCO MINUTOS, para siempre, contra la cuota de Kick. El fixture
+     de los otros tests usa numeros, asi que ese caso no lo mira
+     nadie. */
+  chat.fijarCanal(CANAL);
+  await guardarVinculoKick();
+  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: String(e.version) }));
+
+  const r = await chat.verificarKick();
+
+  assert.deepEqual(r, { vinculado: true, resuscrito: false },
+    'estan las dos: no hay nada que volver a crear');
+  assert.equal(pedidosA('/events/subscriptions').filter(l => l.metodo === 'POST').length, 0);
 });
 
 test('resuscribir a mano crea las suscripciones aunque parezca que esta todo bien', async () => {

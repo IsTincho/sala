@@ -221,6 +221,32 @@ test('un prendido a medio camino no abre nada si EventSub vuelve mientras tanto'
   assert.equal(chat.salud().twitch.modo, 'eventsub');
 });
 
+test('un pedido que llega con otro en vuelo no se pierde aunque en el medio se haya apagado', async () => {
+  /* La coalescencia mal hecha: `prenderPlanB` devolvia la promesa del
+     prendido en curso SIN volver a levantar la bandera. Si entre el
+     primer pedido y el tercero hubo un `apagarPlanB()`, esa promesa
+     vieja despierta con el pedido cancelado y aborta; como el tercer
+     pedido se colgo de ella, no queda nadie que abra el IRC y el
+     canal se queda sin plan B hasta el cambio de estado siguiente.
+
+     Que hoy sea casi inalcanzable depende de que `ConexionEventSub`
+     ponga `intentosFallidosSeguidos = 0` ANTES de avisar `conectado`,
+     o sea del mismo acoplamiento que la guarda de `revisarPlanB`
+     quiso dejar de usar. Por eso el doble avisa `conectado` con los
+     fallos todavia arriba: es el estado que la clase podria dejar el
+     dia que ese orden cambie. */
+  const { twitch, sockets } = await preparar();
+
+  twitch.avisar('cortado', 9);      // pide el plan B; queda esperando el vinculo
+  twitch.avisar('conectado', 9);    // EventSub vuelve: se cancela el pedido
+  twitch.avisar('cortado', 9);      // y se vuelve a caer, todo en el mismo turno
+  await asentarse();
+
+  assert.equal(sockets.length, 1,
+    'el ultimo pedido se colgo del prendido en vuelo y se perdio: el chat de Twitch queda mudo');
+  assert.equal(chat.salud().twitch.modo, 'irc');
+});
+
 /* --------------------------------------------------------- el apagado */
 
 test('cuando EventSub vuelve, el IRC se apaga', async () => {
@@ -252,6 +278,23 @@ test('parar() cierra el IRC, no solo EventSub', async () => {
 
   assert.equal(sockets[0].destruido, true, 'el socket de IRC tiene que quedar cerrado');
   assert.equal(twitch.cerrada, true, 'y el de EventSub tambien');
+});
+
+test('parar() en medio de un prendido no deja un IRC abierto despues', async () => {
+  /* La otra mitad del arreglo de la carrera, y la que no tenia test:
+     `parar()` baja `planBPedido`. Sin esa linea, un prendido que
+     estaba esperando el vinculo despierta despues del apagado, no ve
+     ninguna conexion abierta y abre una. Queda un socket contra
+     irc.chat.twitch.tv, con su propio backoff, en un modulo que ya se
+     dio por apagado y cuyo `conexionIrc` nadie va a volver a mirar. */
+  const { twitch, sockets } = await preparar();
+
+  twitch.avisar('reconectando', 4);   // pide el plan B, todavia no lo abrio
+  chat.parar();                       // se apaga todo antes de que llegue el vinculo
+  await asentarse();
+
+  assert.equal(sockets.length, 0,
+    `parar() dejo ${sockets.length} conexion(es) de IRC vivas y sin dueño`);
 });
 
 test('mientras el plan B esta prendido, sus mensajes entran por el mismo camino', async () => {

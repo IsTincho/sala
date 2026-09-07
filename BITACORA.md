@@ -4,6 +4,186 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-06 — Fase 1: los cabos sueltos del cierre
+
+Los siete puntos que la entrada "Fase 1: CERRADA" dejó anotados como
+pendientes, cerrados uno por uno. Ninguno era un bug del día: eran agujeros de
+red sobre código correcto y puertas que la Fase 2 y la Fase 3 se iban a montar
+encima. **238 pruebas en verde** (eran 224), corridas dos veces enteras, y
+**once mutaciones aplicadas a mano, once cazadas**: cada arreglo se escribió
+con la mutación al lado y el test se reescribió hasta que caía sin el arreglo.
+
+Trabajo hecho en paralelo con la Fase 2, tocando sólo `servidor/chat.js`,
+`servidor/twitch.js` y pruebas.
+
+### El pedido de plan B ya no se pierde por coalescencia
+
+`prenderPlanB` levantaba `planBPedido` **después** del `if (prendiendoPlanB)
+return`. Un pedido que llegaba con otro en vuelo se colgaba de la promesa
+vieja; si en el medio hubo un `apagarPlanB()`, esa promesa vieja despierta con
+el pedido ya cancelado y aborta, así que el pedido nuevo no abría nada y nadie
+volvía a intentarlo hasta el cambio de estado siguiente: chat de Twitch mudo,
+sin plan B y sin un solo error. La bandera ahora se levanta primero.
+
+Que hoy fuera casi inalcanzable dependía de que `ConexionEventSub` ponga
+`intentosFallidosSeguidos = 0` **antes** de avisar `conectado`, o sea del mismo
+acoplamiento que la guarda de `revisarPlanB` quiso dejar de usar. El test
+(`chat-planb.test.js`) hace lo que la clase podría hacer el día que ese orden
+cambie: `cortado(9)` → `conectado(9)` → `cortado(9)` en el mismo turno, y exige
+una conexión IRC. Sin el arreglo daba cero.
+
+### `parar()` en medio de un prendido, ahora con test
+
+Sacar `planBPedido = false;` de `parar()` sobrevivía las 224 pruebas, y es la
+línea que evita que un prendido a medio camino despierte después del apagado y
+abra un IRC contra `irc.chat.twitch.tv` con su propio backoff, en un módulo que
+ya se dio por apagado y cuyo `conexionIrc` nadie va a volver a mirar. La prueba
+nueva pide el plan B, llama a `parar()` antes de que llegue el vínculo, y exige
+cero sockets.
+
+### La costura de las conexiones no se fija más a medias
+
+`fijarConexiones({ eventSub })` sin `irc` dejaba la `ConexionIrc` **de verdad**
+puesta, y `chat-suscripciones.test.js` fijaba sólo `eventSub`: el día que un
+test de ese archivo llegara al cuarto fallo de EventSub, `npm test` abría un TLS
+contra Twitch desde la máquina de quien lo corriera, sin que nada lo dijera.
+Ahora son las dos o ninguna, y falla **al fijarlas** —que es cuando se puede
+leer el error— y no al usarlas, que es cuando el test ya está a mitad de camino
+y el error sale como rechazo suelto. `chat-suscripciones.test.js` fija un doble
+de IRC que anota si alguien lo pide, y hay una prueba que verifica que nadie lo
+pidió.
+
+### El webhook ya no fabrica canales del bus con el slug del payload
+
+`recibirDeKick` sacaba el slug de `broadcaster.channel_slug` y se lo pasaba a
+`canales.recordar`, que **crea** el canal que no exista. Era la misma puerta que
+la Fase 1 ya había cerrado del otro lado con el `canalPermitido` de
+`/eventos/:slug`, abierta de este. Hoy inocuo (sólo entra lo que Kick firma y
+sólo está suscripto el canal del dueño); en la Fase 3 es el chat de un canal
+cayendo en la sala de otro. Ahora un slug que no es el del dueño sale como
+`canal ajeno` y no toca nada.
+
+**Decisión que trae cola:** para que eso funcione, el módulo tiene que saber
+cuál es su canal **sin que nadie lo arranque**. `arrancar()` se lo fija, pero
+`crearServidor()` no llama a `arrancar()`, y el camino del webhook existe desde
+que hay servidor. Así que `chat.js` ahora lee `KICK_SLUG` del entorno al
+cargarse, la misma variable y del mismo modo que `index.js`. Es una segunda
+lectura de la misma variable, y se prefirió eso a que la puerta quedara abierta
+cuando el módulo no fue arrancado. En la Fase 3 esto se reemplaza por resolver
+el slug contra la suscripción (`Kick-Event-Subscription-Id`), no adivinando.
+
+### `estado.kick.broadcasterId`: borrado
+
+Se escribía en dos lugares y no lo leía nadie: no sale por `salud()` ni por
+ninguna ruta. Misma especie que `kickSospechoso`, que ya se había limpiado por
+el mismo motivo. **Se borró en vez de usarlo**, y el motivo es que el dato que
+guardaba —un `broadcaster_user_id` suelto a nivel de módulo— es exactamente la
+forma equivocada para la Fase 3: ahí la correspondencia entre id de broadcaster
+y canal es un índice en `creadores`, no una variable. Dejarlo puesto invitaba a
+que la Fase 3 lo leyera y se llevara la suposición de un solo canal adentro.
+
+### Timers de EventSub con `unref()`
+
+`servidor/twitch.js`: el del keepalive (45 s) y el del reintento (hasta 60 s)
+venían de la Fase 0 sin `unref`, a diferencia del resto de los timers del
+proyecto. Un proceso que ya cerró todo lo demás se quedaba esperando a Twitch en
+vez de terminar. La prueba arma los dos con un WebSocket de mentira —sin red y
+sin esperar— y mira `hasRef()`.
+
+### Los tres agujeros de cobertura
+
+- **El tope de Twitch se cuenta en puntos de código.** Dos pruebas, una por
+  lado: 80 familias de emoji son 80 caracteres para Kick y 560 para Twitch (se
+  rechaza, y con destino `ambos` no sale en ninguna de las dos); 300 emojis
+  sueltos son 300 puntos de código y 600 unidades UTF-16 (pasa). Contarlo como
+  lo cuenta Kick, o contar `texto.length`, ahora se cae.
+- **El `Number(s.version)` de `verificarKick`.** El fixture usaba números y
+  nunca miraba el caso `"1"`. Sin el `Number(...)`, la verificación creería que
+  faltan las dos suscripciones y las volvería a crear cada cinco minutos, para
+  siempre, contra la cuota de Kick.
+- **Las tres traducciones dan el mismo juego de claves.** `deKick`, `deTwitch`
+  y `deIrc` eran idénticas "verificado a mano": agregarle una clave a una sola
+  sobrevivía las 224 pruebas. Y la que rompe es la tercera, `deIrc`, que es el
+  plan B: una clave que exista en dos de las tres se descubriría justo la noche
+  en que todo lo demás también está mal.
+
+### Archivos tocados
+
+`servidor/chat.js`, `servidor/twitch.js`, `pruebas/chat-planb.test.js`,
+`pruebas/chat-suscripciones.test.js`, y dos archivos nuevos:
+`pruebas/chat-cabos.test.js` y `pruebas/mensajes-forma.test.js`.
+`servidor/mensajes.js` **no se tocó**: la prueba de las claves mira, no cambia.
+
+### Cómo verlo
+
+`npm test` (238 en verde). Para ver que la red atrapa: sacar
+`planBPedido = false;` de `parar()`, o el `if (slug !== slugDueno)` de
+`recibirDeKick`, o un `.unref?.()` de `twitch.js`, y correr de nuevo.
+
+### Qué queda pendiente
+
+De la lista de la entrada anterior quedan dos agujeros de cobertura que viven
+en archivos de la página y no se tocaron acá: la poda de 300 mensajes por lista
+y la validación del color antes del `style`. Y la decisión de comportamiento que
+sigue abierta: con destino `ambos`, un mensaje que Kick aceptaría pero Twitch no
+ya no sale en ninguna de las dos. Si molesta, se cambia.
+
+---
+
+## 2026-09-06 — Fase 1: CERRADA
+
+Escrito por el director. La segunda verificación adversarial **no encontró
+ninguna falla que bloquee**, y lo dijo explícito. Cómo lo verificó: `npm test`
+seis veces (224/224, una de ellas en serie), **64 mutaciones propias** sobre una
+copia limpia de HEAD, un reproductor propio de la carrera del plan B con cinco
+escenarios, y el servidor levantado a mano para mirar el cable SSE de verdad.
+
+Su reproductor mata el código viejo y no puede con el nuevo: 40 cambios de
+estado seguidos daban **40 conexiones IRC, 39 imposibles de cerrar**; ahora dan
+1 y ninguna queda viva tras `parar()`.
+
+De sus 64 mutaciones, 49 caen. Las 15 que sobreviven **no son bugs**: son
+agujeros de red sobre código correcto. La tabla de "21 de 21" de la entrada de
+los arreglos es cierta para esas 21; con 64 la red tiene 15 huecos. Queda dicho
+para que nadie lea "21 de 21" como cobertura total.
+
+### Lo que queda pendiente de la Fase 1 (no bloquea, sí conviene cerrarlo)
+
+- **El pedido de plan B se puede perder por coalescencia** (`servidor/chat.js:393-399`):
+  si `prenderPlanB` se llama mientras hay otro en vuelo devuelve la promesa
+  vieja sin volver a poner `planBPedido = true`, y si en el medio pasó un
+  `apagarPlanB()` el pedido nuevo se pierde. Hoy es casi inalcanzable, pero
+  **por una razón incómoda**: `ConexionEventSub` pone `intentosFallidosSeguidos = 0`
+  antes de avisar `conectado`. O sea que la corrección depende justo del
+  acoplamiento que el arreglo quiso evitar.
+- **La segunda mitad del arreglo de F1 no tiene test**: sacar
+  `planBPedido = false` de `parar()` (`chat.js:156`) sobrevive las 224 pruebas,
+  y es la línea que evita que quede un IRC vivo después de apagar.
+- `estado.kick.broadcasterId` es **estado muerto**: se escribe en dos lugares y
+  no lo lee nadie. Misma especie que `kickSospechoso`, que ya se limpió.
+- `fijarConexiones({eventSub})` sin `irc` cae en la `ConexionIrc` de verdad
+  (`chat.js:96-99`), y `pruebas/chat-suscripciones.test.js:149` sólo pasa
+  `eventSub`: si esa prueba algún día dispara el plan B, abre un TLS real contra
+  `irc.chat.twitch.tv`. Trampa para la fase que viene.
+- **El webhook puede crear canales del bus con cualquier slug del payload**
+  (`chat.js:257` → `canales.recordar`), salteando el `canalPermitido` que la
+  Fase 1 puso en `/eventos/:slug`. Hoy inocuo; en la Fase 3 es la misma puerta,
+  del otro lado.
+- Timers sin `unref()` en `servidor/twitch.js:419` y `:464`. Vienen de la Fase 0.
+- Agujeros de cobertura menores: la poda de 300 mensajes por lista, la
+  validación del color antes del `style`, el tope de Twitch en puntos de código,
+  el `Number(s.version)` de `verificarKick`, y que las tres traducciones tengan
+  el mismo juego de claves (son idénticas hoy, verificado a mano).
+
+### Una decisión que cambió de comportamiento
+
+Con destino `ambos`, un mensaje que Kick aceptaría (400 grapheme clusters) pero
+Twitch no (600 puntos de código) **ya no sale en ninguna de las dos**. Es lo que
+dice la decisión escrita ("validar antes de mandarle nada a ninguna"), pero
+antes salía en Kick. Si molesta, se cambia.
+
+---
+
 ## 2026-09-06 — Fase 1: los arreglos de la verificación
 
 La carrera está arreglada, los seis agujeros de cobertura cerrados y las dos

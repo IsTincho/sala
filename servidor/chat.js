@@ -57,11 +57,21 @@ const TOPE_VISTOS = 500;
 
 /* --------------------------------------------------------- estado */
 
-let slugDueno = '';
+/* De donde sale el canal del dueño.
+
+   `arrancar()` lo fija con lo que le pasa index.js, pero el modulo
+   tiene que saberlo TAMBIEN sin que nadie lo arranque: `recibirDeKick`
+   compara contra este slug para no dejar que el payload de un webhook
+   fabrique canales del bus con el nombre que se le ocurra, y ese
+   camino existe desde que hay servidor, no desde que hay `arrancar`.
+   Es la misma variable de entorno que lee index.js, leida igual. */
+const SLUG_DEL_ENTORNO = (process.env.KICK_SLUG ?? '').toLowerCase();
+
+let slugDueno = SLUG_DEL_ENTORNO;
 let urlBase = '';
 
 const estado = {
-  kick: { ultima: null, suscripcion: 'desconocida', vivo: false, broadcasterId: '', vinculado: false },
+  kick: { ultima: null, suscripcion: 'desconocida', vivo: false, vinculado: false },
   twitch: { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false },
 };
 
@@ -91,21 +101,36 @@ const CONEXIONES_REALES = {
 };
 let crearConexion = { ...CONEXIONES_REALES };
 
-/** Solo para los tests: con que se abren las conexiones de Twitch. */
-export function fijarConexiones({ eventSub, irc } = {}) {
-  crearConexion = {
-    eventSub: eventSub ?? CONEXIONES_REALES.eventSub,
-    irc: irc ?? CONEXIONES_REALES.irc,
-  };
+/**
+ * Solo para los tests: con que se abren las conexiones de Twitch.
+ *
+ * O las DOS fabricas, o ninguna (que vuelve a las de verdad). Media
+ * costura era una trampa: un test que fijaba solo `eventSub` se
+ * quedaba con la `ConexionIrc` de verdad, y el dia que ese test
+ * disparara el plan B abriria un TLS contra irc.chat.twitch.tv desde
+ * la suite. Falla al fijarlas y no al usarlas, que es cuando el test
+ * ya esta a mitad de camino y el error sale como rechazo suelto.
+ */
+export function fijarConexiones(dobles) {
+  if (dobles === undefined) {
+    crearConexion = { ...CONEXIONES_REALES };
+    return;
+  }
+  const { eventSub, irc } = dobles ?? {};
+  if (typeof eventSub !== 'function' || typeof irc !== 'function') {
+    throw new Error('fijarConexiones necesita las dos fabricas (eventSub e irc) o ninguna: ' +
+                    'dejar una sin fijar deja la conexion de verdad puesta');
+  }
+  crearConexion = { eventSub, irc };
 }
 
 /** Solo para los tests: deja el modulo como recien cargado. */
 export function reiniciar() {
   parar();
   fijarConexiones();
-  slugDueno = '';
+  slugDueno = SLUG_DEL_ENTORNO;
   urlBase = '';
-  estado.kick = { ultima: null, suscripcion: 'desconocida', vivo: false, broadcasterId: '', vinculado: false };
+  estado.kick = { ultima: null, suscripcion: 'desconocida', vivo: false, vinculado: false };
   estado.twitch = { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false };
   vistosTwitch.clear();
 }
@@ -186,10 +211,6 @@ export async function verificarKick() {
   }
   estado.kick.vinculado = true;
 
-  /* En Kick, el broadcaster_user_id de un canal es el user_id de su
-     dueño: el mismo numero que devuelve /users para el token. */
-  estado.kick.broadcasterId = v.usuarioId;
-
   await revisarSiEstaEnVivo(v.accessToken);
 
   const actuales = await kick.listarSuscripciones(v.accessToken, v.usuarioId);
@@ -243,7 +264,6 @@ async function revisarSiEstaEnVivo(accessToken) {
 export async function resuscribirKick() {
   const v = await vinculos.acceso('kick');
   if (!v) throw new Error('no hay vinculo con Kick');
-  estado.kick.broadcasterId = v.usuarioId;
   await kick.suscribirEventos(v.accessToken, v.usuarioId, urlBase ? `${urlBase}/kick/webhook` : '');
   estado.kick.suscripcion = 'activa';
   return { ok: true };
@@ -256,6 +276,15 @@ export async function resuscribirKick() {
 export function recibirDeKick(evento, cuerpo) {
   const slug = String(cuerpo?.broadcaster?.channel_slug ?? slugDueno ?? '').toLowerCase();
   if (!slug) return { hecho: 'sin canal' };
+  /* El slug lo elige el PAYLOAD, y `canales.recordar` crea el canal del
+     bus que no exista. Sin esto, cualquier evento que entre por el
+     webhook puede fabricar canales nuevos con el nombre que quiera,
+     salteando el `canalPermitido` que /eventos/:slug ya exige del otro
+     lado. Hoy solo esta suscripto el canal del dueño y no cambia nada;
+     en la Fase 3, cuando el ruteo por slug sea de verdad, es la misma
+     puerta. La atribucion multi-canal se resuelve ahi contra la
+     suscripcion (Kick-Event-Subscription-Id), no adivinando. */
+  if (slug !== slugDueno) return { hecho: 'canal ajeno' };
 
   if (evento?.tipo === 'chat.message.sent') {
     const mensaje = mensajes.deKick(cuerpo, { hora: evento.cuando });
@@ -392,8 +421,15 @@ function revisarPlanB() {
 
 function prenderPlanB() {
   if (conexionIrc) return Promise.resolve();
-  if (prendiendoPlanB) return prendiendoPlanB;      // ya hay uno en camino
+  /* La bandera se levanta ANTES de colgarse del prendido en vuelo, y
+     no despues. Al reves, un pedido que llegaba con otro en camino
+     devolvia la promesa vieja y se perdia: si en el medio hubo un
+     `apagarPlanB()`, esa promesa vieja ya venia con el pedido
+     cancelado y aborta al despertar, asi que el pedido nuevo no
+     abria nada y nadie volvia a intentarlo hasta el cambio de estado
+     siguiente. */
   planBPedido = true;
+  if (prendiendoPlanB) return prendiendoPlanB;      // ya hay uno en camino
   prendiendoPlanB = abrirPlanB().finally(() => { prendiendoPlanB = null; });
   return prendiendoPlanB;
 }

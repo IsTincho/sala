@@ -137,7 +137,7 @@ La Fase 3 está construida. Todo esto es lo que falta para encenderla; sin nada 
 
 ## Datos públicos (se pueden escribir acá)
 
-- Dominio de Railway: `(pendiente)`
+- Dominio de Railway: `https://sala-production-2289.up.railway.app`
 - URL pública del bucket: `(pendiente)`
 - Nombre del bucket: `sala-video`
 - Slug del dueño: `istincho`

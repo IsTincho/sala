@@ -3,6 +3,59 @@
 Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y por qué, archivos tocados, cómo verlo funcionando, qué quedó pendiente.
 
 ---
+---
+
+## 2026-09-09 — Primera prueba contra las APIs reales: el Chat Global anda
+
+Hasta hoy **nada del proyecto habia tocado una API de verdad**: las cuatro fases se
+construyeron y se verificaron contra dobles, fixtures y servidores falsos. Esta es la
+primera evidencia de afuera.
+
+Desplegado en Railway con Mongo conectado, `/chat` muestra Kick y Twitch en vivo,
+mezclados, con las insignias reales de cada red (Broadcaster / Moderator / Verified
+channel del lado de Kick; Streamer y el badge de evento del lado de Twitch), los
+colores por red y la salud midiendo bien ("Kick · hace 31 s", "Twitch · conectado").
+
+Lo que eso confirma, y que ninguna prueba podia dar:
+
+- Los dos OAuth reales, con los scopes que pide `SCOPES.dueno`.
+- **El webhook de Kick esta llegando**, o sea que el paso 4 bis (prender *Enable
+  Webhooks* a mano en el portal) quedo bien. Era el paso que mas caro salia olvidarse:
+  sin el, todo parece andar y no llega un mensaje.
+- **EventSub de Twitch conectado de verdad**, sin caer al plan B de IRC.
+- Los traductores de `mensajes.js` contra payloads reales, no fixtures.
+
+Pendiente de probar: el **envio** (la caja con Kick / Twitch / Ambos). Leer esta
+confirmado; escribir es el otro camino y todavia no se ejercito contra lo real.
+
+### Lo que costo llegar hasta aca, para el que despliegue la proxima
+
+- **`ENOTFOUND` de Mongo**: la URI tenia el hostname de ejemplo que el director escribio
+  al explicar como armarla (`cluster0.ab1cd.mongodb.net`), copiado literal. Ni red ni
+  credenciales: el cluster no existia. **Al documentar una URI conviene poner un
+  placeholder que no parezca un valor real.**
+- El log solo imprimia `e.name`, asi que decia `Error` a secas y no distinguia una clave
+  mal puesta de un host mal escrito. Se le agrego `code` y `codeName`, que son etiquetas
+  del driver y no traen la URI adentro. Con eso el diagnostico fue inmediato.
+- En local faltaba `npm install`: el modulo de mongo ausente sale disfrazado de
+  `mongo fallo en listar (ERR_MODULE_NOT_FOUND)`.
+- **Matar `npm run local` no mata el `node` de abajo.** Se midio un rato el proceso
+  viejo, que seguia escuchando en el 8778, mientras el nuevo moria con `EADDRINUSE`.
+  Hay que matar por el PID que escucha el puerto.
+- El respaldo de DNS del almacen hace su trabajo: en la maquina del dueño el resolutor
+  no contesta consultas SRV y salta solo a 1.1.1.1, avisando por consola.
+
+### Cambio de permisos
+
+Se saco del `.claude/settings.json` la prohibicion de leer y escribir `.env`. Venia del
+blindaje para trabajar en vivo (pantalla al aire = un agente que lee un `.env` lo
+imprime en camara), pero el dueño dejo de codear esto en directo y la traba impedia
+hasta corregir un host mal escrito. **Sigue prohibido lo que vuelca el entorno entero**
+(`printenv`, `env`, `set`, `railway variables`, `gh auth token`), que era el riesgo de
+verdad, y los `.env` siguen fuera de git.
+
+---
+
 
 ## 2026-09-07 — Fase 3: las tres dudas que dejó la verificación, cerradas
 

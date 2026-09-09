@@ -3,7 +3,6 @@
 Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y por qué, archivos tocados, cómo verlo funcionando, qué quedó pendiente.
 
 ---
----
 
 ## 2026-09-09 — Primera prueba contra las APIs reales: el Chat Global anda
 

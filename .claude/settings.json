@@ -1,11 +1,6 @@
 {
   "permissions": {
     "deny": [
-      "Read(./servidor/.env)",
-      "Read(./herramientas/.env)",
-      "Read(./.env)",
-      "Read(./**/.env)",
-      "Read(./**/.env.*)",
       "Bash(printenv *)",
       "Bash(env *)",
       "Bash(set *)",

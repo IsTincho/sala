@@ -149,9 +149,22 @@ async function base() {
    La degradacion NO es definitiva: pasado REINTENTO se vuelve a
    probar. Asi, arreglado lo que fallaba (tipico: habilitar la IP en
    Atlas), el servicio se recupera solo y no hace falta redeployar. */
+/* Del error se toman `name`, `code` y `codeName`, nunca `message`: los
+   tres primeros son etiquetas del driver (`MongoServerError`, 18,
+   `AuthenticationFailed`) y el ultimo es el unico que puede traer la
+   URI con la contraseña adentro. Sin el codigo, "Error" a secas no
+   distingue una clave mal puesta de una URI mal armada, que es
+   exactamente la duda que aparece la primera vez que se despliega. */
+function etiquetaDelError(e) {
+  const partes = [e?.name || 'Error'];
+  if (e?.codeName) partes.push(e.codeName);
+  else if (e?.code !== undefined && e?.code !== null) partes.push(`codigo ${e.code}`);
+  return partes.join(', ');
+}
+
 function degradar(donde, e) {
   if (modo !== 'archivo') {
-    motivo = `mongo fallo en ${donde} (${e.name})`;
+    motivo = `mongo fallo en ${donde} (${etiquetaDelError(e)})`;
     console.warn(`[almacen] ${motivo} -> archivo local, reintento en ${REINTENTO / 1000}s`);
   }
   modo = 'archivo';

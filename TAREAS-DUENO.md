@@ -57,18 +57,28 @@ Valores que NO son secretos y sí se anotan acá abajo, en "Datos públicos": do
 
 - [ ] **9. Bucket R2.** Cloudflare → R2 → Create bucket → nombre `sala-video`, ubicación automática. Después, en el bucket → Settings:
   - Public access → R2.dev subdomain → Allow. Copiá la URL pública (`https://pub-….r2.dev`) en "Datos públicos".
-  - CORS policy → Add → pegá esto (reemplazando el dominio):
+  - CORS policy → Add → pegá esto tal cual, que ya lleva tu dominio:
     ```json
     [
       {
-        "AllowedOrigins": ["https://<dominio de Railway>", "http://localhost:8778"],
-        "AllowedMethods": ["GET", "HEAD"],
+        "AllowedOrigins": [
+          "https://sala-production-2289.up.railway.app",
+          "http://localhost:8778"
+        ],
+        "AllowedMethods": ["GET", "HEAD", "PUT"],
         "AllowedHeaders": ["*"],
+        "ExposeHeaders": ["ETag"],
         "MaxAgeSeconds": 3600
       }
     ]
     ```
     Sin esto, hls.js no puede cargar el video desde la página.
+
+    **`PUT` y `ETag` van desde ya, aunque hoy no hagan falta.** El script de subida
+    sube desde Python y a eso el CORS no lo toca: es una regla del navegador. Pero la
+    Fase 3 firma URL para que un creador suba **desde la web**, y ese día sin `PUT` la
+    subida falla con un error de CORS que no dice qué falta. Ponerlo ahora es gratis;
+    descubrirlo después es volver a esta pantalla sin saber por qué.
 
 - [ ] **10. Token de R2 para tu PC.** R2 → Manage R2 API Tokens → Create → permisos Object Read & Write, sólo bucket `sala-video`. Te da Access Key ID, Secret Access Key y el Account ID. Van a `herramientas/.env` en esta carpeta (el agente de Fase 2 deja `herramientas/.env.ejemplo` con los nombres exactos). Nunca al chat.
 

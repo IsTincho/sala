@@ -34,6 +34,10 @@
   const textoAvisoPanel = el('texto-aviso-panel');
   const botonCerrarAviso = el('boton-cerrar-aviso-panel');
 
+  const tarjetaInterruptorSala = el('tarjeta-interruptor-sala');
+  const interruptorSala = el('interruptor-sala');
+  const estadoSala = el('estado-sala');
+
   const tarjetaSala = el('tarjeta-sala');
   const puntitoReloj = el('puntito-reloj');
   const estadoReloj = el('estado-reloj');
@@ -388,6 +392,57 @@
     tarjetaPlan.hidden = false;
   }
 
+  // ---------- el interruptor de la Sala ----------
+
+  /* Mismo motivo que `enviandoChat`: mientras sale el cambio, la
+     consulta de cada 4 s no repinta el interruptor, o el que se acaba
+     de tocar volvería un instante a como estaba y haría dudar si el
+     click anduvo. */
+  let enviandoSala = false;
+
+  /**
+   * El interruptor de la Sala, que sólo ve el dueño del SERVICIO.
+   *
+   * Que la tarjeta esté escondida para los demás es comodidad, no
+   * seguridad: `/api/panel/sala` les contesta 403 y las rutas de la
+   * película 404, tenga la página el interruptor o no.
+   */
+  function pintarInterruptorSala(datos) {
+    tarjetaInterruptorSala.hidden = !datos.esDueno;
+    if (enviandoSala) return;
+    interruptorSala.checked = Boolean(datos.salaAbierta);
+    estadoSala.textContent = datos.salaAbierta
+      ? 'Abierta: tu /sala/… se puede abrir'
+      : 'Cerrada: tu /sala/… no existe para nadie';
+  }
+
+  interruptorSala.addEventListener('change', () => {
+    enviandoSala = true;
+    interruptorSala.disabled = true;
+    /* Salga bien o mal, la pantalla termina diciendo lo que dice el
+       servidor: si falló, el interruptor vuelve a donde estaba. */
+    fetch('/api/panel/sala', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ abierta: Boolean(interruptorSala.checked) }),
+    })
+      .then(async r => {
+        const datos = await r.json().catch(() => null);
+        if (!r.ok) { avisar(datos?.error || `no se pudo (http ${r.status})`); return; }
+        avisoPanel.hidden = true;
+      })
+      .catch(() => avisar('no se pudo hablar con el servidor'))
+      .then(() => {
+        enviandoSala = false;
+        interruptorSala.disabled = false;
+        /* Se vuelve a consultar entera: prender la Sala hace aparecer
+           tres tarjetas más (la película, los videos y la clave), y
+           todas salen del mismo pedido. */
+        return consultar();
+      });
+  });
+
   // ---------- el chat abierto ----------
 
   /* Mientras sale un cambio, la consulta de cada 4 s no repinta este
@@ -557,6 +612,7 @@
     ultimoPanel = datos;
     pintarSalud(datos.salud);
     pintarPlan(datos);
+    pintarInterruptorSala(datos);
     pintarChatAbierto(datos.chatAbierto, datos.slug, datos.salud);
     pintarReloj(datos.reloj);
     pintarVideos(datos.videos ?? [], datos.reloj);
@@ -579,9 +635,15 @@
        torcido. */
     if (Number.isFinite(Number(datos.hora))) desfase = Number(datos.hora) - Date.now();
 
-    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave]) {
-      t.hidden = false;
+    /* Las tres tarjetas de la película se ven sólo con la Sala
+       prendida: el servidor le contesta 404 a las tres (la película, el
+       catálogo y la clave de subida), así que mostrarlas sería ofrecer
+       pantallas que no hacen nada. Las métricas se quedan siempre:
+       también cuentan el chat, que es lo que hoy se ofrece. */
+    for (const t of [tarjetaSala, tarjetaVideos, tarjetaClave]) {
+      t.hidden = !datos.salaAbierta;
     }
+    tarjetaMetricas.hidden = false;
     /* La del webhook sólo si hay algo que mostrar: el servidor le manda
        la URL vacía a quien no es el dueño del servicio. */
     tarjetaWebhook.hidden = !datos.urlWebhook;

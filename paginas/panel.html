@@ -105,6 +105,29 @@
     </p>
   </section>
 
+  <!-- ---------- el interruptor de la Sala ----------
+       Sólo la ve el dueño del SERVICIO. Hoy la Sala está apagada para
+       todos: lo que se ofrece es el chat. El servidor contesta 403 a
+       cualquier otro que toque `/api/panel/sala`, así que esconderla no
+       es la puerta, es no pintar un botón que no haría nada. -->
+  <section class="tarjeta" id="tarjeta-interruptor-sala" hidden>
+    <h2>La Sala (ver una peli juntos)</h2>
+    <p class="linea-tenue">
+      Con esto apagado, tu <code>/sala/…</code> <b>no existe para nadie</b>: la página,
+      el catálogo, la clave de subida y los controles de la película contestan 404,
+      igual que un canal inventado. No se borra nada; se vuelve a prender acá.
+    </p>
+
+    <label class="fila-interruptor">
+      <input type="checkbox" id="interruptor-sala">
+      <span id="estado-sala">Cerrada</span>
+    </label>
+
+    <p class="linea-tenue">
+      La de otro creador se prende desde <a href="/admin">la lista de creadores</a>.
+    </p>
+  </section>
+
   <!-- ---------- la sala ---------- -->
   <section class="tarjeta" id="tarjeta-sala" hidden>
     <h2>La sala</h2>

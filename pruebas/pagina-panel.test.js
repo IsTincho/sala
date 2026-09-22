@@ -68,6 +68,11 @@ const panelLleno = (extra = {}) => ({
   plan: 'dueno',
   soloLectura: false,
   esDueno: true,
+  /* La Sala prendida: es el caso que prueba este archivo. Nace apagada
+     (interruptor del 2026-09-22) y apagada el panel no pinta ni la
+     película, ni los videos, ni la clave; eso tiene sus propias
+     pruebas más abajo. */
+  salaAbierta: true,
   uso: { bytes: 0, gb: 0, topeGb: null, medido: Date.now(), real: true },
   cobro: { proveedor: 'paddle', listo: false, falta: 'faltan PADDLE_API_KEY', monto: 5, moneda: 'USD' },
   subida: { lista: true, falta: '' },
@@ -914,5 +919,104 @@ test('sin sesión el bloque del chat abierto no se ve', async () => {
   const p = abrir({ estadoPanel: () => ({ ok: false, status: 401, json: async () => ({ error: 'no hay sesion' }) }) });
   await asentarse();
   assert.equal(p.el('tarjeta-chat-abierto').hidden, true);
+  p.cerrar();
+});
+
+/* ======================= el interruptor de la Sala (2026-09-22) */
+
+const conSala = (extra = {}) => ({
+  estadoPanel: () => ({
+    ok: true,
+    status: 200,
+    /* Con el chat abierto adentro: la mitad de estas pruebas es que
+       apagar la Sala NO apaga el chat, y sin `chatAbierto` esa tarjeta
+       queda escondida por otro motivo. */
+    json: async () => panelLleno({ chatAbierto: CHAT_CERRADO, ...extra }),
+  }),
+});
+
+test('con la Sala apagada no se pinta ni la película, ni los videos, ni la clave', async () => {
+  /* Las tres rutas que alimentan esas tarjetas contestan 404 con la
+     Sala apagada, así que mostrarlas sería ofrecer tres pantallas que
+     no hacen nada. Las métricas se quedan: también cuentan el chat. */
+  const p = abrir(conSala({ salaAbierta: false }));
+  await asentarse();
+
+  assert.equal(p.el('tarjeta-sala').hidden, true);
+  assert.equal(p.el('tarjeta-videos').hidden, true);
+  assert.equal(p.el('tarjeta-clave').hidden, true);
+  assert.equal(p.el('tarjeta-metricas').hidden, false, 'las métricas son también las del chat');
+  assert.equal(p.el('tarjeta-chat-abierto').hidden, false, 'y el chat abierto es lo que hoy se ofrece');
+
+  p.cerrar();
+});
+
+test('el interruptor de la Sala lo ve el dueño del servicio y nadie más', async () => {
+  /* Esconderlo es comodidad, no seguridad: `/api/panel/sala` contesta
+     403 a cualquier otro. Lo que evita es pintar un botón que el
+     servidor va a rechazar. */
+  const dueno = abrir(conSala({ esDueno: true, salaAbierta: false }));
+  await asentarse();
+  assert.equal(dueno.el('tarjeta-interruptor-sala').hidden, false);
+  assert.equal(dueno.el('interruptor-sala').checked, false);
+  assert.match(dueno.el('estado-sala').textContent, /no existe para nadie/);
+  dueno.cerrar();
+
+  const otro = abrir(conSala({ esDueno: false, plan: 'amigo', soloLectura: false, salaAbierta: false }));
+  await asentarse();
+  assert.equal(otro.el('tarjeta-interruptor-sala').hidden, true);
+  otro.cerrar();
+});
+
+test('tocar el interruptor manda abierta: true y vuelve a consultar', async () => {
+  const p = abrir({
+    ...conSala({ esDueno: true, salaAbierta: false }),
+    respuestas: {
+      'POST /api/panel/sala': async () => ({ ok: true, status: 200, json: async () => ({ ok: true, salaAbierta: true }) }),
+    },
+  });
+  await asentarse();
+
+  p.el('interruptor-sala').checked = true;
+  p.el('interruptor-sala').disparar('change');
+  await asentarse();
+
+  const puesto = p.pedidos.find(x => x.url === '/api/panel/sala');
+  assert.ok(puesto, 'no se mandó nada');
+  assert.equal(puesto.metodo, 'POST');
+  assert.deepEqual(JSON.parse(puesto.cuerpo), { abierta: true },
+    'el slug NO viaja: el servidor usa el de la cookie');
+
+  /* Y vuelve a pedir el panel entero: prender la Sala hace aparecer
+     tres tarjetas más, y todas salen del mismo pedido. */
+  assert.ok(p.pedidos.filter(x => x.url === '/api/panel').length >= 2,
+    'no volvió a consultar');
+
+  p.cerrar();
+});
+
+test('si el servidor rechaza el interruptor, se avisa y la pantalla vuelve a la verdad', async () => {
+  /* El caso de un creador que se hiciera un POST a mano: 403. La
+     pantalla no puede quedar diciendo "abierta" porque el checkbox se
+     movió. */
+  const p = abrir({
+    ...conSala({ esDueno: true, salaAbierta: false }),
+    respuestas: {
+      'POST /api/panel/sala': async () => ({
+        ok: false, status: 403, json: async () => ({ error: 'la Sala la prende el dueño del servicio' }),
+      }),
+    },
+  });
+  await asentarse();
+
+  p.el('interruptor-sala').checked = true;
+  p.el('interruptor-sala').disparar('change');
+  await asentarse();
+
+  assert.equal(p.el('aviso-panel').hidden, false);
+  assert.match(p.el('texto-aviso-panel').textContent, /dueño del servicio/);
+  assert.equal(p.el('interruptor-sala').checked, false,
+    'la consulta que sigue tiene que devolver el interruptor a como está de verdad');
+
   p.cerrar();
 });

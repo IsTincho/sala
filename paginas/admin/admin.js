@@ -81,6 +81,57 @@
     return b;
   }
 
+  /**
+   * La celda de la Sala: cómo está, y el botón para darla vuelta.
+   *
+   * Es una columna propia y no otro botón adentro de «Acciones» a
+   * propósito: el plan y la Sala son dos interruptores independientes
+   * (una Sala apagada da 404 tenga el plan que tenga), y mezclarlos en
+   * la misma celda los haría parecer grados de lo mismo.
+   *
+   * Al dueño del servicio SÍ se le ofrece, a diferencia del plan: su
+   * plan no sale de la base y éste sí, y es el mismo campo que toca
+   * desde su panel.
+   */
+  function celdaSala(c) {
+    const td = document.createElement('td');
+    const abierta = Boolean(c.salaAbierta);
+
+    const puntito = document.createElement('span');
+    puntito.className = 'puntito ' + (abierta ? 'bien' : 'regular');
+    td.appendChild(puntito);
+
+    const texto = document.createElement('span');
+    texto.textContent = abierta ? 'abierta' : 'cerrada';
+    td.appendChild(texto);
+
+    const boton = document.createElement('button');
+    boton.type = 'button';
+    boton.className = 'boton-admin';
+    boton.textContent = abierta ? 'Cerrar' : 'Abrir';
+    boton.dataset.slug = c.slug;
+    boton.addEventListener('click', () => {
+      boton.disabled = true;
+      fetch('/api/admin/sala', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: c.slug, abierta: !abierta }),
+      })
+        .then(async r => {
+          const datos = await r.json().catch(() => null);
+          if (!r.ok) { avisar(datos?.error || `no se pudo (http ${r.status})`); return; }
+          aviso.hidden = true;
+          consultar();
+        })
+        .catch(() => avisar('no se pudo hablar con el servidor'))
+        .finally(() => { boton.disabled = false; });
+    });
+    td.appendChild(boton);
+
+    return td;
+  }
+
   function fila(c) {
     const tr = document.createElement('tr');
 
@@ -106,6 +157,7 @@
     tr.appendChild(canal);
 
     tr.appendChild(celdaPlan(c));
+    tr.appendChild(celdaSala(c));
 
     const vence = document.createElement('td');
     vence.textContent = c.vence ? comoFecha(c.vence) : '–';

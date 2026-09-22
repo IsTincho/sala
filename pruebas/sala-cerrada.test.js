@@ -420,6 +420,123 @@ test('con plan PENDIENTE y la Sala apagada contesta 404, y no el 402 del plan', 
   }
 });
 
+/* ============================================ el interruptor */
+
+test('el dueño del servicio prende su Sala desde su panel y vuelve a existir', async () => {
+  const antes = await pedir(`/sala/${SLUG}`);
+  assert.equal(antes.estado, 404, 'tenía que arrancar apagada');
+
+  const r = await pedir('/api/panel/sala', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { abierta: true },
+  });
+  assert.equal(r.estado, 200, `contestó ${r.estado}: ${r.texto.slice(0, 120)}`);
+  assert.equal(r.datos.salaAbierta, true);
+
+  /* Y lo que importa: las puertas se abrieron de verdad, no se contestó
+     un ok y nada más. */
+  assert.equal((await pedir(`/sala/${SLUG}`)).estado, 200);
+  assert.equal((await pedir('/api/videos', { cookie: sesionDueno })).estado, 200);
+  assert.equal((await pedir(`/api/sala/${SLUG}/yo`)).estado, 200);
+
+  /* Y se vuelve a apagar por el mismo camino. */
+  const apagar = await pedir('/api/panel/sala', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { abierta: false },
+  });
+  assert.equal(apagar.estado, 200);
+  assert.equal(apagar.datos.salaAbierta, false);
+  assert.equal((await pedir(`/sala/${SLUG}`)).estado, 404);
+});
+
+test('un creador que no es el dueño del SERVICIO no puede prender la suya', async () => {
+  /* Es la mitad de la decisión: la Sala no está apagada porque a nadie
+     le falte un permiso, está apagada porque hoy no se ofrece. Quién
+     la prende lo dice KICK_SLUG y no un campo de la base. */
+  const r = await pedir('/api/panel/sala', {
+    metodo: 'POST', cookie: sesionOtro, cuerpo: { abierta: true },
+  });
+  assert.equal(r.estado, 403, `contestó ${r.estado}`);
+
+  /* Y no quedó prendida a medias. */
+  assert.equal(await creadores.salaAbierta(OTRO), false);
+  assert.equal((await pedir(`/sala/${OTRO}`)).estado, 404);
+});
+
+test('sin sesión, y con un `abierta` que no es booleano, no se prende nada', async () => {
+  const sinSesion = await pedir('/api/panel/sala', { metodo: 'POST', cuerpo: { abierta: true } });
+  assert.equal(sinSesion.estado, 401);
+
+  /* `"true"` de texto no se interpreta: una Sala que queda abierta
+     creyendo que se la cerró es el error que no se descubre hasta que
+     alguien entra. */
+  for (const abierta of ['true', 1, undefined]) {
+    const r = await pedir('/api/panel/sala', {
+      metodo: 'POST', cookie: sesionDueno, cuerpo: { abierta },
+    });
+    assert.equal(r.estado, 400, `${JSON.stringify(abierta)} contestó ${r.estado}`);
+  }
+  assert.equal(await creadores.salaAbierta(SLUG), false);
+});
+
+test('el dueño del servicio prende la Sala de otro creador desde /admin', async () => {
+  /* Es la única forma de habilitársela a alguien que no sea él. */
+  const r = await pedir('/api/admin/sala', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: OTRO, abierta: true },
+  });
+  assert.equal(r.estado, 200, `contestó ${r.estado}: ${r.texto.slice(0, 120)}`);
+  assert.equal(r.datos.salaAbierta, true);
+
+  assert.equal((await pedir(`/sala/${OTRO}`)).estado, 200);
+  assert.equal((await pedir('/api/videos', { cookie: sesionOtro })).estado, 200);
+
+  /* Y no le prendió la Sala a nadie más de paso. */
+  assert.equal(await creadores.salaAbierta(SLUG), false);
+});
+
+test('/api/admin/sala es sólo del dueño del servicio', async () => {
+  assert.equal((await pedir('/api/admin/sala', {
+    metodo: 'POST', cuerpo: { slug: OTRO, abierta: true },
+  })).estado, 401);
+
+  const ajeno = await pedir('/api/admin/sala', {
+    metodo: 'POST', cookie: sesionOtro, cuerpo: { slug: OTRO, abierta: true },
+  });
+  assert.equal(ajeno.estado, 403, `contestó ${ajeno.estado}`);
+  assert.equal(await creadores.salaAbierta(OTRO), false, 'se prendió igual');
+
+  /* Ni siquiera para prenderse la suya con su propio slug. */
+  const conSuSlug = await pedir('/api/admin/sala', {
+    metodo: 'POST', cookie: sesionOtro, cuerpo: { slug: OTRO, abierta: true },
+  });
+  assert.equal(conSuSlug.estado, 403);
+});
+
+test('/api/admin/sala sobre un creador que no existe da 404 y no lo crea', async () => {
+  const r = await pedir('/api/admin/sala', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: NO_EXISTE, abierta: true },
+  });
+  assert.equal(r.estado, 404, `contestó ${r.estado}`);
+  assert.equal(await almacen.obtener('creadores', NO_EXISTE), null,
+    'prender una Sala no puede ser una forma lateral de dar de alta una sala');
+});
+
+test('desde /admin el dueño SÍ se puede tocar a sí mismo, a diferencia del plan', async () => {
+  /* `/api/admin/plan` lo rechaza porque su plan no sale de la base y
+     escribirlo daría la impresión de que sí. Este interruptor sale de
+     la base para todos, y es el mismo campo del mismo documento que
+     toca desde su panel: rechazarlo acá sería una excepción sin
+     motivo. */
+  const plan = await pedir('/api/admin/plan', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: SLUG, plan: 'amigo' },
+  });
+  assert.equal(plan.estado, 400, 'el plan del dueño sigue sin salir de la base');
+
+  const sala = await pedir('/api/admin/sala', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: SLUG, abierta: true },
+  });
+  assert.equal(sala.estado, 200, `contestó ${sala.estado}: ${sala.texto.slice(0, 120)}`);
+  assert.equal((await pedir(`/sala/${SLUG}`)).estado, 200);
+});
+
 /* ================== el chat abierto, que es lo que sí se ofrece */
 
 test('con la Sala apagada el chat abierto no cambia en nada', async () => {

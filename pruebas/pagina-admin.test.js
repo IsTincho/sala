@@ -28,7 +28,7 @@ const creador = (extra = {}) => ({
   slug: 'ana', nombre: 'Ana', plan: 'amigo', planEfectivo: 'amigo',
   vence: 0, creado: Date.now(), suscrito: true,
   terminos: { version: '1', cuando: Date.now() },
-  conectados: 0, gb: 0.5, medido: Date.now(),
+  conectados: 0, gb: 0.5, medido: Date.now(), salaAbierta: false,
   cobro: { proveedor: '', suscripcion: '' },
   ...extra,
 });
@@ -273,4 +273,87 @@ test('la página no ESCRIBE innerHTML en ningún lado', () => {
   const js = fs.readFileSync(path.join(PAGINAS, 'admin', 'admin.js'), 'utf8');
   assert.equal(/\.innerHTML/.test(js), false);
   assert.equal(/insertAdjacentHTML|outerHTML|document\.write/.test(js), false);
+});
+
+/* ============================== el interruptor de la Sala */
+
+/** La celda de la Sala es la tercera: Canal, Plan, Sala, Vence, Uso, Acciones. */
+const celdaSala = fila => fila.children[2];
+
+test('la columna Sala dice cómo está y ofrece darla vuelta', async () => {
+  const p = abrir({ respuesta: lista([
+    creador({ slug: 'ana', salaAbierta: false }),
+    creador({ slug: 'beto', salaAbierta: true }),
+  ]) });
+  try {
+    await asentarse();
+    const filas = p.el('filas-creadores').children;
+
+    assert.match(celdaSala(filas[0]).textContent, /cerrada/);
+    assert.match(celdaSala(filas[0]).textContent, /Abrir/);
+
+    assert.match(celdaSala(filas[1]).textContent, /abierta/);
+    assert.match(celdaSala(filas[1]).textContent, /Cerrar/,
+      'a la que ya está abierta se le ofrece cerrarla, no abrirla de nuevo');
+  } finally { p.cerrar(); }
+});
+
+test('tocar "Abrir" manda el slug y abierta: true, y vuelve a consultar', async () => {
+  const p = abrir({ respuesta: lista([creador({ slug: 'beto', salaAbierta: false })]) });
+  try {
+    await asentarse();
+    celdaSala(p.el('filas-creadores').children[0]).children.at(-1).disparar('click');
+    await asentarse();
+
+    const puesto = p.pedidos.find(x => x.url.startsWith('/api/admin/sala'));
+    assert.ok(puesto, 'no se mandó nada');
+    assert.equal(puesto.metodo, 'POST');
+    assert.deepEqual(JSON.parse(puesto.cuerpo), { slug: 'beto', abierta: true });
+
+    const consultas = p.pedidos.filter(x => x.url.startsWith('/api/admin/creadores'));
+    assert.ok(consultas.length >= 2, `sólo consultó ${consultas.length} vez`);
+  } finally { p.cerrar(); }
+});
+
+test('al dueño del servicio SÍ se le ofrece el botón de la Sala, a diferencia del plan', async () => {
+  /* Su plan no sale de la base; este interruptor sí, y es el mismo
+     campo que toca desde su panel. Que una columna le ofrezca botón y
+     la otra no es la diferencia entera entre los dos interruptores. */
+  const p = abrir({ respuesta: lista([
+    creador({ slug: 'istincho', planEfectivo: 'dueno', plan: 'pendiente', salaAbierta: false }),
+  ]) });
+  try {
+    await asentarse();
+    const fila = p.el('filas-creadores').children[0];
+
+    const acciones = fila.children.at(-1);
+    assert.equal(acciones.children.filter(c => c.tagName === 'BUTTON').length, 0,
+      'el plan del dueño sigue sin ofrecer botón');
+
+    const botones = celdaSala(fila).children.filter(c => c.tagName === 'BUTTON');
+    assert.equal(botones.length, 1);
+    assert.match(botones[0].textContent, /Abrir/);
+  } finally { p.cerrar(); }
+});
+
+test('un error al prender la Sala se muestra y no se traga', async () => {
+  const p = abrirPagina({
+    archivo: 'admin.html',
+    script: 'admin/admin.js',
+    ruta: '/admin',
+    fetch: async (url) => {
+      if (String(url).startsWith('/api/admin/sala')) {
+        return new Response(JSON.stringify({ error: 'ese creador no existe' }), { status: 404 });
+      }
+      return new Response(JSON.stringify(lista([creador({ salaAbierta: false })])), { status: 200 });
+    },
+  });
+  try {
+    await asentarse();
+    celdaSala(p.el('filas-creadores').children[0]).children.at(-1).disparar('click');
+    await asentarse();
+
+    assert.equal(p.el('aviso-admin').hidden, false);
+    assert.match(p.el('texto-aviso-admin').textContent, /no existe/);
+  } finally { p.cerrar(); }
 });

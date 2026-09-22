@@ -1465,6 +1465,48 @@ async function apiClaveRevocar(url, req, res) {
   });
 }
 
+/**
+ * Prende o apaga SU Sala. `POST { abierta: true|false }`.
+ *
+ * LA RUTA ES DE CUALQUIER CREADOR CON SESION Y CONTESTA 403 AL QUE NO
+ * SEA EL DUEÑO DEL SERVICIO. No es un descuido que no use
+ * `conDuenoDelServicio`: esta ruta habla de SU sala (el slug sale de la
+ * cookie, como todo /api/panel), y la pregunta "¿ademas sos el dueño
+ * del servicio?" es otra cosa. Se contesta aca, con `esDueno`, que
+ * compara contra KICK_SLUG y no lee ningun campo de la base: login
+ * identifica, no autoriza.
+ *
+ * Y POR QUE NO PUEDE PRENDERLA CADA CREADOR: la Sala no esta apagada
+ * porque a alguien le falte un permiso. Esta apagada porque hoy no se
+ * ofrece. Es ademas la unica funcion del servicio que gasta R2 y ancho
+ * de banda de verdad, asi que prenderla es una decision de producto y
+ * de costo, de a uno. El dueño del servicio lo hace desde /admin
+ * (`POST /api/admin/sala`); esta ruta es el atajo para la suya, que es
+ * la que va a tocar mas seguido.
+ */
+async function apiPanelSala(url, req, res) {
+  return conCreador(req, res, async (slug) => {
+    if (!creadores.esDueno(slug)) {
+      return json(res, 403, { error: 'la Sala la prende el dueño del servicio' });
+    }
+
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+    /* Exacto y no "lo que parezca": un `abierta: "false"` que se
+       interpretara como true dejaria una Sala abierta creyendo que se
+       la cerro, que es el error que no se descubre hasta que alguien
+       entra. */
+    if (typeof pedido?.abierta !== 'boolean') {
+      return json(res, 400, { error: 'abierta tiene que ser true o false' });
+    }
+
+    const abierta = Boolean(await creadores.ponerSalaAbierta(slug, pedido.abierta));
+    console.log(`[sala] ${slug}: la Sala queda ${abierta ? 'abierta' : 'cerrada'}`);
+    return json(res, 200, { ok: true, salaAbierta: abierta });
+  });
+}
+
 /** Desvincula Twitch de SU sala: cierra la conexion y borra el token. */
 async function apiTwitchDesvincular(url, req, res) {
   return conCreador(req, res, async (slug) => {
@@ -1653,6 +1695,11 @@ async function apiAdminCreadores(url, req, res) {
         vence: c.vence,
         creado: c.creado,
         suscrito: c.suscrito,
+        /* El interruptor de la Sala (2026-09-22). Va en la lista
+           porque /admin es el unico lugar desde donde se prende la de
+           otro creador, y un boton que no dice como esta la cosa
+           ahora es un boton que se toca dos veces. */
+        salaAbierta: c.salaAbierta,
         terminos: c.terminos,
         conectados: canales.conectados(c.slug),
         gb: Math.round((c.bytes / GIGA) * 100) / 100,
@@ -1692,6 +1739,40 @@ async function apiAdminPlan(url, req, res) {
     } catch (e) {
       return json(res, 400, { error: e.message });
     }
+  });
+}
+
+/**
+ * El dueño del servicio prende o apaga la Sala de CUALQUIER creador.
+ * `POST { slug, abierta }`.
+ *
+ * Es la unica forma de habilitarle la Sala a alguien que no sea el
+ * dueño: `/api/panel/sala` contesta 403 a los demas, a proposito.
+ *
+ * A DIFERENCIA DE `/api/admin/plan`, ACA EL DUEÑO SI SE PUEDE TOCAR A
+ * SI MISMO. Aquella ruta lo rechaza porque su plan no sale de la base y
+ * escribirlo daria la impresion de que si; este interruptor, en cambio,
+ * SI sale de la base para todos, y es el mismo campo del mismo
+ * documento que toca desde su panel.
+ */
+async function apiAdminSala(url, req, res) {
+  return conDuenoDelServicio(req, res, async () => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const slug = creadores.normalizar(pedido?.slug);
+    if (typeof pedido?.abierta !== 'boolean') {
+      return json(res, 400, { error: 'abierta tiene que ser true o false' });
+    }
+    /* `existe` y no `obtener`: el dueño del servicio puede no tener
+       fila todavia y su sala existe igual (KICK_SLUG).
+       `ponerSalaAbierta` se la crea. */
+    if (!await creadores.existe(slug)) return json(res, 404, { error: 'ese creador no existe' });
+
+    const abierta = Boolean(await creadores.ponerSalaAbierta(slug, pedido.abierta));
+    console.log(`[admin] ${slug}: la Sala queda ${abierta ? 'abierta' : 'cerrada'}`);
+    return json(res, 200, { ok: true, slug, salaAbierta: abierta });
   });
 }
 
@@ -2492,6 +2573,7 @@ const RUTAS = [
   ['DELETE', '/api/panel/twitch',      apiTwitchDesvincular],
   ['POST',   '/api/panel/suscribirse', apiSuscribirse],
   ['POST',   '/api/panel/chat',        apiPanelChat],
+  ['POST',   '/api/panel/sala',        apiPanelSala],
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
   ['GET',    '/api/chat/:slug/yo',      apiChatYo],
   ['POST',   '/api/chat/:slug/enviar',  apiChatEnviarEspectador],
@@ -2500,6 +2582,7 @@ const RUTAS = [
   ['POST',   '/api/subida/borrar',     apiSubidaBorrar],
   ['GET',    '/api/admin/creadores',   apiAdminCreadores],
   ['POST',   '/api/admin/plan',        apiAdminPlan],
+  ['POST',   '/api/admin/sala',        apiAdminSala],
   ['GET',    '/api/videos',            apiVideosListar],
   ['POST',   '/api/videos',            apiVideosGuardar],
   ['DELETE', '/api/videos/:id',        apiVideosBorrar],

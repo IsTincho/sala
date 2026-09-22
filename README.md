@@ -147,10 +147,10 @@ paginas/
   panel/        css y js del panel
   crear/        css y js de /crear
   admin/        css y js de /admin
-  comun/        base.css, bus.js (cliente SSE) y mensajes.js (el render)
+  comun/        base.css, bus.js (cliente SSE), mensajes.js (el render) y qr.js
   manifest.webmanifest, sw.js, icono-*.png   lo que hace la PWA instalable
 pruebas/        node --test, sin librerías
-herramientas/   scripts que corren en la PC del dueño (Fase 2)
+herramientas/   scripts que corren en la PC del dueño: subir.py y verificar-qr.mjs
 cloudflare/     el Worker de Pages que pone un dominio lindo delante de Railway
 ```
 
@@ -173,7 +173,7 @@ Reglas que no se negocian:
 |---|---|
 | `/` | Página de estado: si el servidor está vivo y conectado al bus |
 | `/chat` | **Chat Global**: Kick y Twitch juntos, con caja para escribir a los dos. Se instala como app |
-| `/chat/:slug` | **El chat abierto de una sala**: la misma página que `/chat`, para la comunidad del creador. **Leer no pide login**: las redes que el creador eligió, mezcladas en vivo, sin la salud (que es de la cuenta del creador). **Escribir pide conectar la cuenta propia**: "Conectar Kick" y "Conectar Twitch", y el selector muestra sólo las redes que la persona conectó Y que el creador abrió (con las dos, aparece "las dos"). Si el creador no lo abrió dice "este chat está cerrado" y se vuelve a fijar sola cada 30 s. **404 si la sala no existe**, igual que `/sala/:slug`. Se sirve `chat.html` con `<base href="/">` y sin el manifest del creador; `/chat` a secas sale byte por byte igual. No va como fuente en OBS si se transmite a Twitch (reglas de simulcast) |
+| `/chat/:slug` | **El chat abierto de una sala**: la misma página que `/chat`, para la comunidad del creador. **Leer no pide login**: las redes que el creador eligió, mezcladas en vivo, sin la salud (que es de la cuenta del creador). **Escribir pide conectar la cuenta propia**: "Conectar Kick" y "Conectar Twitch", y el selector muestra sólo las redes que la persona conectó Y que el creador abrió (con las dos, aparece "las dos"). Arriba dice cuánta gente está leyendo —un número, nunca quiénes— y se puede **instalar como app**: cada sala tiene su propio manifest. Si el creador no lo abrió dice "este chat está cerrado" y se vuelve a fijar sola cada 30 s. **404 si la sala no existe**, igual que `/sala/:slug`. Se sirve `chat.html` con `<base href="/">` y sin el manifest del creador; `/chat` a secas sale byte por byte igual. No va como fuente en OBS si se transmite a Twitch (reglas de simulcast) |
 | `/panel` | Panel de **cada creador**: entrar con Kick, vincular Twitch, ver la salud, manejar la película, la clave de subida y el plan. Con un plan sin reproducción se ve en modo sólo lectura, con el botón de suscribirse |
 | `/crear` | El alta. Aceptar los términos y entrar con Kick: crea la sala con plan "pendiente" |
 | `/terminos` | El texto que se acepta al crear la sala |
@@ -192,6 +192,7 @@ Reglas que no se negocian:
 | `/api/chat/:slug/yo` | `GET` con cookie de espectador: qué redes conectó esa persona y en cuáles puede escribir **acá** (lo suyo cruzado con lo que el creador abrió). Habla del que pregunta y de nadie más |
 | `/api/chat/:slug/enviar` | `POST { red: "kick" \| "twitch" \| "ambas", texto }` con cookie de espectador **y `Origin` propio**. Mismos frenos que `/api/sala/:slug/chat`, y **"ambas" cuenta como un solo mensaje**. 403 si el chat está cerrado, si esa red no está abierta o si la persona no la conectó. El resultado viene **por red**: `{ ok, kick: {ok, motivo}, twitch: {ok, motivo} }` |
 | `/api/espectador/salir` | `POST` con `Origin` propio: cierra la sesión y **borra los tokens de las dos redes**. Sin slug: la cuenta de espectador es del dominio, no de una sala |
+| `/chat/:slug/manifest.webmanifest` | El manifest de la PWA de **esa** sala: `start_url` y `scope` son `/chat/<slug>`, así cada espectador instala el chat de su streamer y abre ahí. 404 si la sala no existe |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
 | `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie |
 | `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script |
@@ -204,7 +205,7 @@ Reglas que no se negocian:
 | `/api/panel/clave` | `POST` genera la clave de subida de su sala (se devuelve una sola vez), `DELETE` la revoca |
 | `/api/panel/twitch` | `DELETE` desvincula Twitch de su sala: cierra la conexión y borra el token |
 | `/api/panel/suscribirse` | `POST` devuelve la URL del checkout del proveedor de cobro |
-| `/api/panel/chat` | `POST { activo?, redes? }` abre o cierra el chat abierto de **su** sala y elige las redes (`kick`, `twitch` o las dos). Lo que no viene queda como estaba; una red desconocida o una lista vacía da 400. **El slug sale de la cookie**: un `slug` en el cuerpo no se lee. Entra en todos los planes. Vale en el acto para la gente conectada y se avisa por el bus (`chat-abierto`) |
+| `/api/panel/chat` | `POST { activo?, redes?, bloquear?, desbloquear? }` abre o cierra el chat abierto de **su** sala, elige las redes (`kick`, `twitch` o las dos) y maneja la lista de bloqueados. Lo que no viene queda como estaba; una red desconocida o una lista vacía da 400. **El slug sale de la cookie**: un `slug` en el cuerpo no se lee. Los bloqueados se tocan **de a uno** (`{ red, id, nombre? }`), nunca la lista entera: con dos pestañas del panel abiertas, mandar la lista completa haría que la segunda pise el bloqueo de la primera. Entra en todos los planes. Vale en el acto para la gente conectada y se avisa por el bus (`chat-abierto`) |
 | `/api/subida` | `POST` firma las URL de subida a R2 de su prefijo `<slug>/<id>/`. **402 si su plan no sube, 409 si no entra en su tope de GB.** Acepta la cookie **o** la cabecera `X-Clave-Subida`: el script corre en una terminal |
 | `/api/subida/borrar` | `POST` firma los DELETE de todo lo que haya bajo `<slug>/<id>/`. Misma autenticación |
 | `/api/admin/creadores` | La lista con plan, vencimiento y uso. Sólo el dueño del servicio |
@@ -299,13 +300,15 @@ Se filtra **en el servidor y por conexión** (`canales.js`, `leDaEl`), no en el 
 ```json
 {
   "tipo": "chat", "red": "kick",
-  "id": "01JG…", "usuario": "unaespectadora", "color": "#ff5733",
+  "id": "01JG…", "usuario": "unaespectadora", "usuarioId": "12345", "color": "#ff5733",
   "insignias": [{ "tipo": "moderator", "texto": "Moderator" }],
   "texto": "que peli mas larga HYPERCLAP",
   "emotes": [{ "id": "4148074", "inicio": 19, "fin": 28, "url": "https://files.kick.com/emotes/4148074/fullsize" }],
   "hora": "2026-01-14T16:08:06.000Z"
 }
 ```
+
+`usuarioId` es el id de quien escribió **en su red**, y está para una sola cosa: que el creador pueda bloquearlo en esta herramienta desde el menú de su mensaje. Por nombre no serviría, porque los nombres se cambian. Sale por el bus para todos y eso se pensó: es el mismo id que Kick manda en `sender.user_id` y Twitch en `chatter_user_id` a cualquiera que lea ese chat público.
 
 `inicio` y `fin` cuentan **puntos de código Unicode** sobre `texto`, y el emote ocupa `[inicio, fin)`. Se corta con `[...texto]`, nunca con `texto.slice`: un índice de string cuenta unidades UTF-16, y un solo emoji antes de un emote corre de lugar todos los que vengan después.
 
@@ -420,6 +423,30 @@ Los baneos, el slow mode y el AutoMod de cada plataforma **se aplican solos**: e
 Debajo del chat hay un **"Suscribirse"**: es un link a `https://kick.com/<canal>/subscribe`, se abre en otra pestaña (`rel="noopener noreferrer"`, así la película sigue corriendo acá) y no hay nada que cobrar de este lado.
 
 El mensaje **no se difunde por el bus**: vuelve por el webhook como cualquier otro. Pintarlo al enviarlo lo mostraría dos veces y encima mentiría si Kick lo retuvo.
+
+#### Cuánto vive una cuenta de espectador
+
+- **"Salir"** borra los tokens de las dos redes y la sesión, en el momento.
+- **A los 60 días** sin usarse, se borra sola. Se poda al arrancar, que para este servicio pasa seguido (cada deploy es un arranque), y se barren también los documentos del modelo viejo que nunca se migraron: la migración corre al *leer* un espectador, y al que ya no tiene sesión no lo lee nadie nunca más.
+- **Leer un espectador anota que sigue viniendo**, como mucho una vez cada seis horas. Esa escritura **se espera**: escribe el documento entero, así que una volando podría aterrizar después de un `conectar` y borrar la red recién conectada —justo el caso de quien vuelve después de una semana a sumar Twitch.
+
+### Moderación propia: bloquear en esta herramienta
+
+El creador toca **bloquear** en un mensaje, en su Chat Global (`/chat`), y esa persona deja de poder escribir en su chat abierto. La lista queda en `/panel`, con un botón para soltarla.
+
+- **Es un bloqueo de acá.** En kick.com y en twitch.tv esa persona sigue escribiendo: ahí manda la moderación de cada plataforma. El panel lo dice con todas las letras, porque creer lo contrario es el error caro.
+- **Por id y no por nombre**, porque los nombres se cambian. El nombre se guarda igual, pero sólo para que el creador reconozca a quién bloqueó.
+- **Es por sala.** Que Ana bloquee a alguien no lo bloquea en el chat de Beto: cada sala es un inquilino.
+- **Al bloqueado se le dice.** `GET /api/chat/:slug/yo` devuelve en qué redes está bloqueado, así la página lo explica en vez de esconderle la caja sin motivo.
+- **Quién está bloqueado no sale por ninguna ruta pública**: es del creador.
+
+La escucha del botón vive en la **lista** y no en el botón, porque `/chat` clona el `<li>` para ponerlo en la columna de su red y un clon no se lleva las escuchas: el botón de la columna no haría nada y nadie se enteraría hasta tocarlo.
+
+### El QR del link
+
+`paginas/comun/qr.js` dibuja el QR del link del chat abierto, sin dependencias: modo byte, corrección M, versiones 1 a 10 (hasta 213 caracteres). Lo dibuja el **navegador** y no el servidor porque el link también se arma ahí, con el origen desde el que se mira el panel: si lo armara el servidor, detrás del proxy el QR llevaría al dominio de Railway.
+
+**Está verificado contra un decodificador ajeno, no contra sí mismo.** `herramientas/verificar-qr.mjs` baja jsQR y le da de leer las diez versiones al tope de su capacidad, 300 textos al azar, los links de verdad y textos con acentos y emojis: 328 de 328 volvieron iguales. Esa herramienta sale a internet, así que **no** es parte de `npm test`; la suite guarda la huella del dibujo de un link conocido, y si alguien toca el enmascarado se entera y hay que volver a verificar.
 
 ### La clave de subida
 

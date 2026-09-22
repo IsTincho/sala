@@ -1,9 +1,10 @@
 # Plan: Multichat por sala — el streamer lo abre, los espectadores lo usan
 
-Fecha: 2026-09-22. Estado: **5.1, 5.2 y 5.3 construidas** (el chat abierto se lee sin
-login y se escribe con la cuenta de cada quien, en Kick, en Twitch o en las dos; ver la
-BITACORA del 2026-09-22). **5.4 sin empezar**; **5.5 afuera de este plan**, por decisión
-del dueño.
+Fecha: 2026-09-22. Estado: **5.1 a 5.4 construidas**. El chat abierto se lee sin login, se
+escribe con la cuenta de cada quien —Kick, Twitch o las dos—, el creador puede bloquear a
+alguien en esta herramienta, los tokens de quien no vuelve se borran solos a los 60 días y
+cada sala se instala como app. Ver la BITACORA del 2026-09-22. **La 5.5 queda afuera de
+este plan**, por decisión del dueño.
 Complemento de [PLAN.md](PLAN.md), que sigue mandando sobre todo lo demás.
 
 ---
@@ -229,7 +230,7 @@ tokens ya no están en Mongo.
 > a mano en un servidor local, pero ninguna tocó todavía la API real de Twitch. La lista
 > exacta de lo que sólo se ve en producción está en la BITACORA del 2026-09-22.
 
-### Fase 5.4 — Moderación propia y cierre (1 bloque) — **SIN EMPEZAR**
+### Fase 5.4 — Moderación propia y cierre — **CONSTRUIDA**
 
 Bloquear desde el menú del mensaje, la lista de bloqueados en el panel, el
 vencimiento de 60 días, el contador de conectados, el QR, los términos y el
@@ -238,6 +239,11 @@ espectador puede instalar el chat de su streamer como app).
 
 **Verificación:** un bloqueado recibe 403 en Kick y en Twitch, el desbloqueo
 anda al instante, y la PWA instalada abre directo en la sala.
+
+> Construida. Lo que falta mirar con los ojos: **escanear el QR con un celular de verdad**
+> (lo leyó jsQR 328 veces, pero una cámara agrega óptica y pantalla) e **instalar la PWA**
+> de una sala desde un teléfono. El vencimiento de 60 días no corrió nunca contra datos
+> viejos de verdad, por razones obvias.
 
 ### Fase 5.5 — Creadores que sólo usan Twitch — **AFUERA de este plan**
 
@@ -298,7 +304,9 @@ Casi nada. La app de Kick y la de Twitch ya existen y el redirect es el mismo.
       construir la 5.2/5.3: el sitio se sirve desde dos dominios y el login tiene que
       terminar en el mismo donde empezó. Sin esto, desde el dominio de Cloudflare no se
       puede escribir ni conectar ninguna cuenta.
-- [ ] Revisar el texto nuevo de `/terminos` (qué se guarda del espectador) antes
-      de la Fase 5.4.
+- [ ] Revisar el texto nuevo de `/terminos` (qué se guarda del espectador y cómo se
+      borra) y **decidir si sube a Versión 2**. Subirlo obliga a tocar también el link de
+      `/crear`, que lleva `terminos=1` escrito; a los creadores que ya están no los afecta
+      (los términos sólo se piden en el alta).
 - [ ] Para las pruebas: una **cuenta secundaria** de Kick y otra de Twitch, para
       escribir como espectador sin usar la tuya.

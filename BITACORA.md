@@ -4,6 +4,155 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — Fase 5.4: moderación propia, vencimiento y el chat como app
+
+La última de [`PLAN-MULTICHAT.md`](PLAN-MULTICHAT.md). Seis cosas chicas que cierran el
+chat abierto: bloquear a alguien, que los tokens de quien no vuelve se borren solos, el
+contador de conectados, el QR del link, el manifest por sala y el texto nuevo de
+`/terminos`.
+
+**749 pruebas en verde** (eran 716). **10 mutaciones, las 10 cazadas.**
+
+### Bloquear a alguien, en esta herramienta
+
+El creador toca **bloquear** en un mensaje, en su Chat Global, y esa persona deja de poder
+escribir en su chat abierto. La lista queda en `/panel` con un botón para soltarla, y
+`POST /api/panel/chat` la toca **de a uno** (`bloquear` / `desbloquear`), nunca la lista
+entera: con dos pestañas del panel abiertas, mandar la lista completa haría que la segunda
+pise el bloqueo de la primera.
+
+**Es un bloqueo de acá y el panel lo dice con todas las letras**: en kick.com y en
+twitch.tv esa persona sigue escribiendo, porque ahí manda la moderación de cada
+plataforma. Creer lo contrario es el error caro.
+
+**Por id y no por nombre**, porque los nombres se cambian: el que se bloqueó ayer puede ser
+otra persona mañana. Para eso el formato único de mensaje pasa a traer `usuarioId`. Sale
+por el bus para todos y eso se pensó: es el mismo id que Kick manda en `sender.user_id` y
+Twitch en `chatter_user_id` (y en el tag `user-id` de IRC) a cualquiera que lea ese chat
+público. No es un dato nuestro sobre nadie; es lo que la plataforma ya publica de un
+mensaje público. Filtrarlo por conexión costaría una copia del objeto por mensaje y por
+persona mirando, para esconder algo que está a un pedido de distancia.
+
+**Al bloqueado se le dice.** `/api/chat/:slug/yo` devuelve en qué redes está bloqueado, así
+la página lo explica en vez de esconderle la caja sin motivo: quedarse escribiendo contra
+una pared que no avisa es peor que un "el creador te bloqueó en este chat". Y **quién está
+bloqueado no sale por ninguna ruta pública**: es del creador.
+
+**La escucha del botón va en la lista, no en el botón.** `/chat` clona el `<li>` para
+ponerlo en la columna de su red, y un clon no se lleva las escuchas: el botón de la
+columna no haría nada y nadie se enteraría hasta tocarlo. Hay prueba de eso, con el clon.
+
+### El espectador que no vuelve se borra solo
+
+A los **60 días** sin usarse. Guardar el refresh token de alguien que no usa el servicio
+hace dos meses es riesgo sin beneficio; si vuelve, lo conecta de nuevo en dos clicks. Se
+poda al arrancar, que para este servicio pasa seguido, y **se barren los dos modelos**: el
+viejo hace falta porque la migración corre al *leer* un espectador, y al que ya no tiene
+sesión no lo lee nadie nunca más.
+
+**Lo delicado fue anotar que alguien sigue viniendo.** Se hace al leerlo, como mucho una
+vez cada seis horas, y **esa escritura se espera**. Escribe el documento entero (el almacén
+no sabe actualizar un campo suelto), así que una escritura suelta volando podría aterrizar
+después de un `conectar` y devolver el documento a como estaba, borrando la red que se
+acababa de conectar. Es justo el caso de quien vuelve después de una semana a sumar Twitch:
+hace más de seis horas que no viene, así que esa escritura se dispara. Esperarla cuesta una
+escritura cada seis horas por persona.
+
+### El chat de cada sala se instala aparte
+
+`GET /chat/:slug/manifest.webmanifest`, con `start_url` y `scope` en `/chat/<slug>`, y el
+service worker con el mismo alcance. Quien instala el chat de su streamer abre ahí y no en
+la ventana del creador, que es lo que pasaba con el manifest de antes (`start_url: /chat`).
+Dos salas instaladas son dos apps. `paraUnaSala` ya no le saca el manifest a la página: se
+lo cambia.
+
+Y arriba dice **cuánta gente está leyendo**. Un número y nada más: quiénes, nunca. Sale del
+mismo evento de presencia que ya usaba la Sala.
+
+### El QR, y cómo se verifica algo que no se puede mirar
+
+`paginas/comun/qr.js`: modo byte, corrección M, versiones 1 a 10 (hasta 213 caracteres; un
+link de acá son 55). Sin dependencias, porque un QR es un formato cerrado y bien
+documentado: se escribe una vez y no se toca más, que es lo contrario de sumar una
+dependencia que hay que auditar y actualizar.
+
+Lo dibuja el **navegador** y no el servidor, por la misma razón que el link: el panel lo
+arma con el origen desde el que se lo mira, y si lo armara el servidor, detrás del proxy de
+Cloudflare el QR llevaría a Railway.
+
+**El problema de verdad era verificarlo.** Un QR mal armado se ve perfecto: son cuadraditos
+negros. Un test que compare mi encoder contra mis propias tablas no prueba nada, y no hay
+cámara acá. Se resolvió con un **decodificador ajeno**: `herramientas/verificar-qr.mjs` baja
+jsQR y le da de leer las diez versiones **al tope de su capacidad** (que es donde se nota
+una tabla de bloques mal copiada), 300 textos al azar, los links de verdad del proyecto y
+textos con acentos y emojis. **328 de 328 volvieron iguales.** Como jsQR lee la información
+de formato, la de versión, los patrones de alineación y los bloques de corrección para
+decodificar, que pase quiere decir que las tablas están bien.
+
+Esa herramienta **sale a internet**, así que no es parte de `npm test`. La suite guarda la
+**huella** del dibujo de un link conocido: si alguien toca el enmascarado, se cae, y hay
+que volver a correr la verificación antes de dar el cambio por bueno. Está escrito en el
+encabezado de `pruebas/qr.test.js` para que no quede en la memoria de nadie.
+
+De paso, las dos tablas del código se cruzan solas: bloques × (datos + corrección) tiene
+que dar el total de bytes de esa versión, y las diez cierran. Un número mal copiado en
+cualquiera de las dos no pasa esa cuenta.
+
+### Los términos
+
+Sección 3 reescrita: qué se guarda por red, que los tokens van cifrados, y **las tres
+formas de que eso desaparezca** (Salir, los 60 días, y quitarle el permiso a la app desde
+la plataforma). También que un bloqueo guarda el id y el nombre que tenía, y que de la
+gente conectada lo único que se muestra es cuánta hay.
+
+**El número de versión NO subió.** Esa decisión es del dueño (tarea 16 de TAREAS-DUENO) y
+tiene una consecuencia: subirlo obliga a tocar también el link de `/crear`, que lleva
+`terminos=1` escrito. A los creadores que ya están no los afecta (sólo se piden términos en
+el alta).
+
+### Cómo se verificó
+
+- **10 mutaciones sobre las guardas nuevas y las de la 5.2/5.3** (aceptar cualquier
+  `Origin`, dejar escribir a un bloqueado, dejar escribir con el chat cerrado, anotar el
+  freno después de mandar, quedarse con el manifest del creador, no borrar el documento
+  viejo al migrar, migrar sin mirar el `tipo`, podar también a los que vuelven, escribir
+  sin `chat:write`, el botón de bloquear en el chat público). **Las 10 las caza al menos
+  una prueba.**
+- **En vivo**, con un servidor local limpio y el navegador: se inyectó un mensaje de Kick
+  con `/api/prueba/webhook`, se tocó **bloquear** en el mensaje, se vio el aviso con
+  **Deshacer**, la lista apareció en el panel con su chip de red, y Deshacer la vació.
+  `/chat/istincho` mostró "1 conectado" y su propio manifest. El QR del panel se decodificó
+  de vuelta y dijo exactamente el link que el panel muestra.
+
+### Archivos tocados
+
+`servidor/{mensajes,creadores,espectadores,index}.js`, `paginas/comun/{mensajes,qr}.js`,
+`paginas/chat.html`, `paginas/chat/{chat.js,chat.css}`, `paginas/panel.html`,
+`paginas/panel/{panel.js,panel.css}`, `paginas/terminos.html`,
+`herramientas/verificar-qr.mjs` (nueva). Pruebas: `pruebas/qr.test.js` (nueva, 12) y
+agregados en `espectadores`, `chat-enviar`, `chat-abierto`, `pagina-chat`, `pagina-panel`,
+`mensajes-forma` y el DOM de mentira.
+
+### Pendiente
+
+- **El vencimiento de 60 días nunca corrió contra datos viejos de verdad**, por razones
+  obvias: el servicio tiene menos de 60 días. Lo que sí está probado es el corte con las
+  fechas puestas a mano.
+- **El QR no lo escaneó un celular.** Lo leyó jsQR 328 veces, que es una implementación
+  ajena y completa, pero una cámara real agrega óptica, foco y una pantalla de por medio.
+  Vale la pena que el dueño lo apunte una vez con el teléfono antes de ponerlo en cámara.
+- **Bloquear se hace desde `/chat`, la ventana del creador, y no desde `/chat/<slug>`.** Un
+  creador que abra su propio chat público no va a ver el botón ahí. No lo pidió nadie y
+  mezclar las dos páginas sería mezclar dos roles.
+- **`/chat` de un creador que no es el dueño sigue mirando la sala del dueño** (es de
+  antes), así que el botón de bloquear ahí bloquearía en SU sala mientras mira el chat del
+  dueño. Para el dueño del servicio, que es quien usa esa ventana hoy, está bien.
+- **El número de versión de los términos**, que decide el dueño.
+- La Fase 5.5 (creadores que sólo usan Twitch) sigue afuera del plan, por decisión del
+  dueño.
+
+---
+
 ## 2026-09-22 — Fases 5.2 y 5.3: el espectador escribe, en Kick y en Twitch
 
 Las dos juntas, porque la gracia es que escribir a las dos sea **un solo envío**. En

@@ -168,6 +168,10 @@ Está construido. Sin esto, `/chat/<slug>` se sigue leyendo igual; lo que no and
 
 - [ ] **22. Cuenta secundaria de Twitch** (además de la de Kick de la tarea 13), para probar el chat abierto como espectador: conectar las dos, escribir con "las dos" y ver que sale en los dos chats con esa cuenta.
 
+- [ ] **23. Apuntarle el celular al QR, una vez.** En `/panel`, al lado del link del chat, hay un QR. Lo verificó un decodificador de verdad 328 veces, pero una cámara agrega óptica, foco y una pantalla de por medio: conviene mirarlo una vez con el teléfono antes de ponerlo en cámara. De paso, probá **instalar** `/chat/<tu-slug>` desde el celular (Compartir → Agregar a inicio): tiene que abrir en tu chat y no en el Chat Global.
+
+- [ ] **24. Decidir si los términos suben a Versión 2.** El texto de `/terminos` cambió de fondo: ahora dice qué se guarda de cada espectador por red y las tres formas de borrarlo. **La versión quedó en 1 a propósito**, porque subirla es una decisión tuya y tiene una consecuencia: hay que cambiar `TERMINOS_VERSION` en `servidor/creadores.js` **y** el `terminos=1` del link de `/crear` (`paginas/crear.html`), o el alta deja de funcionar. A los creadores que ya están no los afecta: los términos sólo se piden en el alta.
+
 ---
 
 ## Datos públicos (se pueden escribir acá)

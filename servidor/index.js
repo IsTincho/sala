@@ -23,6 +23,9 @@
      /sala/:slug              la Sala: camara, peli y chat
      /api/chat/*              salud, envio y resuscripcion del chat
      /api/chat/:slug/abierto  si el chat de esa sala esta abierto
+     /api/chat/:slug/yo       que redes conecto quien pregunta
+     /api/chat/:slug/enviar   el mensaje de un espectador a Kick y/o Twitch
+     /api/espectador/salir    borra los tokens de las dos redes
      /api/estado              como esta el servidor
      /api/hora                la hora del servidor, para sincronizar
      /api/videos              el catalogo (lo escribe herramientas/subir.py)
@@ -69,8 +72,10 @@ import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
 import * as cobro from './cobro.js';
 import * as creadores from './creadores.js';
+import * as envio from './envio.js';
 import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
+import * as origenes from './origenes.js';
 import * as metricas from './metricas.js';
 import * as r2 from './r2.js';
 import * as reloj from './reloj.js';
@@ -203,13 +208,23 @@ function soloRuta(u) {
  * La base publica del sitio: la que tiene que coincidir con el redirect
  * registrado en Kick y en Twitch.
  *
- * URL_BASE manda. Si no esta, se arma con lo que dice el pedido, que
- * en local es lo correcto y en Railway tambien, pero depende de un
- * header que un cliente puede mentir. Por eso en produccion URL_BASE
- * no es opcional: sin ella, alguien podria mandar un Host falso y
- * hacer que el link de login apunte a otro lado.
+ * Primero, el origen POR EL QUE ENTRO ESTE PEDIDO, si es uno de los
+ * nuestros (`servidor/origenes.js`). Este sitio se sirve desde dos
+ * dominios —Railway y el proxy de Cloudflare Pages— y un login que
+ * empieza en uno y termina en el otro deja la cookie en el dominio
+ * equivocado: la persona vuelve al link que tenia abierto y no esta
+ * conectada. La lista es explicita, asi que un `Host` inventado no
+ * puede mandar el redirect a ningun lado.
+ *
+ * Si el pedido no vino por ninguno de los nuestros, manda URL_BASE. Si
+ * tampoco esta, se arma con lo que dice el pedido, que en local es lo
+ * correcto. Por eso en produccion URL_BASE no es opcional: sin ella,
+ * alguien podria mandar un Host falso y hacer que el link de login
+ * apunte a otro lado.
  */
 function baseDe(req) {
+  const propio = origenes.delPedido(req);
+  if (propio) return propio;
   if (process.env.URL_BASE) return process.env.URL_BASE.replace(/\/+$/, '');
   const protocolo = req.headers['x-forwarded-proto'] ?? 'http';
   return `${protocolo}://${req.headers.host ?? `localhost:${PUERTO}`}`;
@@ -312,14 +327,18 @@ const destinoSeguro = d =>
 
 const pendientesTwitch = new Map();
 
-function nuevoEstadoTwitch(destino = '') {
+function nuevoEstadoTwitch(destino = '', rol = 'creador') {
   const ahora = Date.now();
   for (const [k, v] of pendientesTwitch) if (v.vence < ahora) pendientesTwitch.delete(k);
   while (pendientesTwitch.size >= TOPE_PENDIENTES) {
     pendientesTwitch.delete(pendientesTwitch.keys().next().value);
   }
   const estado = nodeCrypto.randomBytes(16).toString('base64url');
-  pendientesTwitch.set(estado, { destino, vence: ahora + VENTANA_LOGIN });
+  /* El rol viaja ACA y no en la query del callback, igual que el
+     destino: es lo que decide si este token se guarda como el vinculo
+     de una sala o como la cuenta de un espectador, y eso no puede
+     salir de algo que quien vuelve del login pueda escribir. */
+  pendientesTwitch.set(estado, { destino, rol, vence: ahora + VENTANA_LOGIN });
   return estado;
 }
 
@@ -346,6 +365,63 @@ async function kickEntrar(url, req, res) {
     terminos: rol === 'creador' ? (url.searchParams.get('terminos') ?? '') : '',
   });
   return redirigir(res, destino);
+}
+
+/**
+ * Conecta una red a la cuenta de espectador de quien pide, y lo manda
+ * de vuelta a donde estaba.
+ *
+ * Lo usan los dos callbacks (Kick y Twitch) porque el trato es el
+ * mismo: se le guarda lo minimo (id en esa red, nombre y tokens
+ * cifrados) y nada mas. Login no es autorizacion: esto no le da ningun
+ * permiso sobre ningun canal, solo lo identifica para que la
+ * plataforma publique su mensaje con su nombre.
+ *
+ * ---------------------------------------------------------------
+ * LA RED SE SUMA, NO REEMPLAZA
+ *
+ * Si ya tenia sesion de espectador, la red nueva se agrega a la cuenta
+ * que ya tiene: quien conecto Kick y despues Twitch es UNA persona con
+ * dos redes, no dos cuentas. Y la cookie no se toca, asi que conectar
+ * la segunda red no lo saca de la primera.
+ *
+ * Una cookie que nombra a un espectador que ya no esta (se fue, o
+ * cambio la CLAVE_CIFRADO y sus tokens no se pueden leer) se trata
+ * como si no hubiera: se empieza una cuenta nueva.
+ *
+ * LA CUENTA ES GLOBAL, no de una sala: la cookie es del dominio, asi
+ * que quien conecta Kick en /chat/unosolo ya esta conectado en
+ * /chat/otro. Por eso aca no entra ningun slug.
+ */
+async function conectarRedDelEspectador(req, res, red, datos, destino) {
+  const suyo = await sesion.leer(req, 'espectador');
+  let id = String(suyo?.usuario ?? '');
+  if (id) {
+    const v = await espectadores.leer(id);
+    if (!v) id = '';
+  }
+  const esNueva = !id;
+  if (esNueva) id = espectadores.nuevoId();
+
+  try {
+    await espectadores.conectar(id, red, datos);
+  } catch (e) {
+    return pagina(res, 'No se pudo entrar', e.message);
+  }
+
+  const cabeceras = {};
+  if (esNueva) {
+    /* Sin `slug`: la cuenta de espectador no es de ninguna sala, y el
+       canal de Kick de la persona no lo necesita nadie. */
+    cabeceras['Set-Cookie'] = sesion.cabeceraCookie('espectador', await sesion.crear({
+      tipo: 'espectador',
+      usuario: id,
+      nombre: datos.nombre,
+      agente: req.headers['user-agent'] ?? '',
+    }));
+  }
+
+  return redirigir(res, destino || '/', cabeceras);
 }
 
 /*
@@ -391,30 +467,15 @@ async function kickVolver(url, req, res) {
    * publique su mensaje con su nombre.
    */
   if (t.rol === 'espectador') {
-    try {
-      await espectadores.guardar({
-        usuarioId: yo.id,
-        nombre: yo.nombre,
-        accessToken: t.accessToken,
-        refreshToken: t.refreshToken,
-        venceEn: t.venceEn,
-        scopes: t.scopes,
-      });
-    } catch (e) {
-      return pagina(res, 'No se pudo entrar', e.message);
-    }
-
-    const cookieEspectador = await sesion.crear({
-      tipo: 'espectador',
-      usuario: yo.id,
+    return conectarRedDelEspectador(req, res, 'kick', {
+      usuarioId: yo.id,
       nombre: yo.nombre,
-      slug: yo.slug,
-      agente: req.headers['user-agent'] ?? '',
-    });
-
-    return redirigir(res, destinoSeguro(t.destino) || '/', {
-      'Set-Cookie': sesion.cabeceraCookie('espectador', cookieEspectador),
-    });
+      login: yo.slug,
+      accessToken: t.accessToken,
+      refreshToken: t.refreshToken,
+      venceEn: t.venceEn,
+      scopes: t.scopes,
+    }, destinoSeguro(t.destino));
   }
 
   /*
@@ -512,10 +573,19 @@ async function twitchEntrar(url, req, res) {
     return pagina(res, 'Falta configurar Twitch',
       'Todavia no estan cargadas TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET en Railway.');
   }
-  const estado = nuevoEstadoTwitch(url.searchParams.get('destino') ?? '');
+  /* Dos roles y dos permisos distintos. El del creador sirve para LEER
+     su chat (y escribir con su cuenta); el del espectador es para
+     escribir y nada mas: leer entra con el token del creador, asi que
+     pedirle `user:read:chat` a cada espectador seria pedir un permiso
+     que no se usa. Cualquier otra cosa cae en 'creador', que es el
+     camino que ademas exige una sesion abierta. */
+  const esEspectador = url.searchParams.get('rol') === 'espectador';
+  const estado = nuevoEstadoTwitch(url.searchParams.get('destino') ?? '',
+    esEspectador ? 'espectador' : 'creador');
   return redirigir(res, twitch.urlLogin({
     redirect: `${baseDe(req)}/oauth/twitch/volver`,
     estado,
+    ...(esEspectador ? { scopes: twitch.SCOPES_ESPECTADOR } : {}),
   }));
 }
 
@@ -534,6 +604,32 @@ async function twitchVolver(url, req, res) {
   pendientesTwitch.delete(estado);
   if (!pendiente || pendiente.vence < Date.now()) {
     return pagina(res, 'Ese login ya no vale', 'El state no coincide o se vencio. Proba de nuevo.');
+  }
+
+  /*
+   * El espectador. No hace falta ninguna sesion previa: esto ES su
+   * login. Se le guarda su id de Twitch, su nombre y su token, y con
+   * eso puede escribir en el chat abierto de cualquier sala que haya
+   * compartido Twitch.
+   */
+  if (pendiente.rol === 'espectador') {
+    let t;
+    let yo;
+    try {
+      t = await twitch.canjearCodigo({ code, redirect: `${baseDe(req)}/oauth/twitch/volver` });
+      yo = await twitch.usuarioActual(t.accessToken);
+    } catch (e) {
+      return pagina(res, 'No se pudo conectar Twitch', e.message);
+    }
+    return conectarRedDelEspectador(req, res, 'twitch', {
+      usuarioId: yo.id,
+      nombre: yo.nombre,
+      login: yo.login,
+      accessToken: t.accessToken,
+      refreshToken: t.refreshToken,
+      venceEn: t.venceEn,
+      scopes: t.scopes,
+    }, destinoSeguro(pendiente.destino));
   }
 
   /* Twitch se VINCULA, no se loguea: la identidad de una Sala la da
@@ -982,12 +1078,19 @@ async function apiSalaYo(url, req, res, p) {
       { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
   }
 
+  /* La Sala es de Kick. Alguien que conecto SOLO Twitch (se puede,
+     desde /chat/<slug>) tiene cuenta de espectador y aca no le sirve
+     de nada: se le dice que no esta entrado, en vez de mostrarle una
+     caja de escribir que no va a andar. Y la sesion NO se cierra: su
+     Twitch sigue valiendo en el chat abierto. */
+  if (!v.kick) return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false });
+
   return json(res, 200, {
     entrado: true,
-    nombre: suyo.nombre || v.nombre,
+    nombre: suyo.nombre || v.kick.nombre,
     /* Si el permiso que dio no incluye escribir, mejor decirlo ahora
        que despues de que escriba un mensaje largo. */
-    puedeEscribir: String(v.scopes ?? '').split(/\s+/).includes('chat:write'),
+    puedeEscribir: espectadores.puedeEscribirEn(v, 'kick'),
   });
 }
 
@@ -1000,8 +1103,11 @@ async function apiSalaSalir(url, req, res, p) {
   const suyo = await sesion.leer(req, 'espectador');
   if (suyo) {
     await sesion.cerrar(req, 'espectador');
-    /* Salir borra el token, no solo la cookie. Un "logout" que deja el
-       refresh token del otro lado no es un logout. */
+    /* Salir borra los tokens de LAS DOS REDES, no solo la cookie. Un
+       "logout" que deja el refresh token del otro lado no es un
+       logout, y un token de Twitch al que ya no apunta ninguna sesion
+       es una credencial guardada que su dueño no puede ni usar ni
+       borrar. */
     await espectadores.olvidar(suyo.usuario);
   }
   return json(res, 200, { ok: true }, { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
@@ -1029,7 +1135,7 @@ async function apiSalaChat(url, req, res, p) {
   catch { return json(res, 400, { error: 'json invalido' }); }
 
   const cuerpo = String(pedido?.texto ?? '');
-  const problema = kick.porQueNoSePuedeMandar(cuerpo);
+  const problema = envio.porQueNoSePuedeMandar(cuerpo, ['kick']);
   if (problema) return json(res, 400, { error: problema });
 
   const esperaCanal = espectadores.esperaDelCanalQueFalta(slug);
@@ -1046,70 +1152,44 @@ async function apiSalaChat(url, req, res, p) {
       { 'Retry-After': String(segundos) });
   }
 
-  /*
-   * EL MENSAJE CAE EN EL CANAL DE ESTA SALA, y aca es donde esta la
-   * mina que la Fase 2 dejo marcada con un cartel de obra.
-   *
-   * Antes esta linea decia `vinculos.identidad('kick')`, sin slug: o
-   * sea, el canal del DUEÑO del servicio, escribiera el espectador en
-   * la sala que escribiera. Se tapo con un 503 para las salas ajenas
-   * porque no habia a donde rutear, y su propio autor lo llamo "un
-   * cartel de obra, no la solucion".
-   *
-   * Ahora se rutea de verdad: el vinculo es el de `slug`, que sale del
-   * camino de la URL y ya paso por `canalPermitido`. El 503 de abajo
-   * es el de siempre —esta sala no vinculo Kick todavia— y no un
-   * disfraz de "no se a donde mandar esto".
-   *
-   * `identidad` y no `acceso`: hace falta el numero del canal, no el
-   * token del creador. El refresh token del creador no tiene por que
-   * pasar por el camino de un mensaje de un espectador.
-   */
-  const anfitrion = await vinculos.identidad(slug, 'kick');
-  if (!anfitrion?.usuarioId) {
-    return json(res, 503, { error: 'el canal todavia no esta vinculado con Kick' });
-  }
-
-  const token = await espectadores.acceso(suyo.usuario);
-  if (!token) {
-    await sesion.cerrar(req, 'espectador');
-    return json(res, 401, { error: 'tu permiso con Kick vencio: entra de nuevo' },
-      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
-  }
-
   /* Se anota ANTES de mandar, y a proposito. Si se anotara despues de
      que salga bien, un error que tarda (un timeout de 30s) dejaria a
      la persona reintentando sin freno mientras tanto. */
   espectadores.anotarEnvio(suyo.usuario);
 
-  try {
-    const r = await kick.enviarMensaje(token, anfitrion.usuarioId, cuerpo);
-    metricas.registrarEnvio(slug, { ok: r.enviado });
-    if (!r.enviado) return json(res, 502, { error: 'Kick lo recibio pero no lo publico' });
+  /*
+   * EL MENSAJE CAE EN EL CANAL DE ESTA SALA. El slug sale del camino
+   * de la URL y ya paso por `canalPermitido`; `envio.js` busca el
+   * vinculo de Kick de ESA sala y no del dueño del servicio, que es la
+   * mina que la Fase 2 dejo marcada con un cartel de obra.
+   *
+   * El mismo camino y los mismos frenos que usa /api/chat/:slug/enviar.
+   * Lo unico que decide cada ruta es que hacer cuando el permiso ya no
+   * sirve: aca se cierra la sesion, porque la Sala es de una sola red.
+   */
+  const r = await envio.aUnaRed(slug, suyo.usuario, 'kick', cuerpo);
+
+  if (r.ok) {
     /* No se difunde nada por el bus: el mensaje vuelve por el webhook
        como cualquier otro. Difundirlo aca lo mostraria dos veces, y
        ademas mentiria (se veria aunque Kick lo hubiera retenido). */
     return json(res, 200, { ok: true });
-  } catch (e) {
-    const estado = e.status ?? 0;
-    metricas.registrarEnvio(slug, { ok: false, estado });
-
-    if (estado === 429) {
-      const espera = espectadores.anotar429(slug, e.retryAfter);
-      const segundos = Math.ceil(espera / 1000);
-      return json(res, 429, { error: 'Kick esta frenando los envios del canal', esperar: segundos },
-        { 'Retry-After': String(segundos) });
-    }
-    if (estado === 401 || estado === 403) {
-      await espectadores.olvidar(suyo.usuario);
-      await sesion.cerrar(req, 'espectador');
-      return json(res, 401, { error: 'Kick rechazo tu permiso: entra de nuevo' },
-        { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
-    }
-    /* El texto del error de Kick se recorta: se muestra en pantalla y
-       no se le confia el largo a la API de nadie. */
-    return json(res, 502, { error: String(e.message ?? 'no se pudo enviar').slice(0, 200) });
   }
+
+  if (r.caduco) {
+    await espectadores.olvidar(suyo.usuario);
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 401, { error: r.motivo },
+      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+
+  if (r.estado === 429) {
+    const segundos = r.esperar ?? Math.ceil(espectadores.ESPERA_429_POR_DEFECTO / 1000);
+    return json(res, 429, { error: r.motivo, esperar: segundos },
+      { 'Retry-After': String(segundos) });
+  }
+  if (r.estado === 503) return json(res, 503, { error: r.motivo });
+  return json(res, 502, { error: r.motivo });
 }
 
 /* ------------------------------------------------------- videos
@@ -1951,6 +2031,204 @@ async function apiChatAbierto(url, req, res, p) {
   return json(res, 200, { abierto: c.activo, redes: c.activo ? [...c.redes] : [] });
 }
 
+/* --------------------------------- el espectador del chat abierto
+
+   Las tres rutas de las Fases 5.2 y 5.3. La cuenta del espectador es
+   GLOBAL (una sola para todas las salas), asi que solo el envio y el
+   "que puedo hacer aca" llevan slug; salir no.
+
+   -----------------------------------------------------------------
+   CSRF: COOKIE `SameSite=Lax` **Y** `Origin` NUESTRO
+
+   Los POST de aca son los unicos del proyecto que ademas del Lax
+   exigen el Origin, y no es ceremonia: son los que hacen que alguien
+   escriba con su nombre en el chat de un tercero. Sin `Origin`, un
+   navegador viejo o un cliente cualquiera podria mandar el pedido
+   igual. La lista de origenes validos es explicita y tiene DOS
+   entradas, porque este sitio se sirve desde dos dominios (Railway y
+   el proxy de Cloudflare Pages): `servidor/origenes.js`. */
+
+/** Corta un POST que no venga de una pagina nuestra. Devuelve si corto. */
+function origenAjeno(req, res) {
+  if (origenes.mismoOrigen(req)) return false;
+  json(res, 403, { error: 'este pedido no viene de una pagina de este sitio' });
+  return true;
+}
+
+const nombresDeRedes = redes => redes.map(r => (r === 'kick' ? 'Kick' : 'Twitch')).join(' ni ');
+
+/**
+ * Que redes tiene conectadas esta persona y en cuales puede escribir
+ * en ESTA sala.
+ *
+ * Habla del que pregunta y de nadie mas: nunca quien mas esta mirando
+ * ni quien mas escribio. `conectadas` sale de su cookie;
+ * `puedeEscribir` es el cruce de lo que tiene con lo que el creador
+ * abrio, que es lo que la pagina necesita para armar el selector.
+ */
+async function apiChatYo(url, req, res, p) {
+  const slug = creadores.normalizar(p.slug);
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+
+  const c = await creadores.chatAbierto(slug);
+  /* De un chat cerrado no se cuenta nada, ni siquiera que redes eligio
+     el creador. Mismo criterio que /api/chat/:slug/abierto. */
+  const abiertas = c.activo ? [...c.redes] : [];
+  const nadie = { entrado: false, abierto: c.activo, redes: abiertas, conectadas: {}, puedeEscribir: [] };
+
+  const suyo = await sesion.leer(req, 'espectador');
+  if (!suyo) return json(res, 200, nadie);
+
+  const v = await espectadores.leer(suyo.usuario);
+  if (!v) {
+    /* La sesion sobrevivio a los tokens: no sirve para nada y se
+       cierra, en vez de dejar botones que van a fallar. */
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 200, nadie, { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+
+  const conectadas = {};
+  for (const red of espectadores.redesDe(v)) {
+    conectadas[red] = { nombre: v[red].nombre || v[red].login || '' };
+  }
+
+  return json(res, 200, {
+    entrado: true,
+    abierto: c.activo,
+    redes: abiertas,
+    conectadas,
+    puedeEscribir: abiertas.filter(red => v[red] && espectadores.puedeEscribirEn(v, red)),
+  });
+}
+
+/**
+ * El mensaje de un espectador en el chat abierto de una sala:
+ * `{ red: "kick" | "twitch" | "ambas", texto }`.
+ *
+ * Los mismos frenos que /api/sala/:slug/chat, por el mismo camino
+ * (`servidor/envio.js`): el tope de cada red antes de gastar un pedido,
+ * la espera del canal si Kick nos freno hace poco, y uno cada dos
+ * segundos por persona. **"Las dos" cuenta como UNO**: es un mensaje,
+ * no dos.
+ *
+ * El corte de verdad esta aca y no en la pantalla: con el chat cerrado
+ * —o con una red que el creador no abrio— esto contesta 403 aunque la
+ * caja de escribir siga en la pagina de alguien que la tenia abierta.
+ *
+ * NO SE DIFUNDE NADA POR EL BUS: el mensaje vuelve por el webhook de
+ * Kick y por EventSub de Twitch, como cualquier otro. Mismo criterio
+ * que la Sala. Difundirlo aca lo mostraria dos veces y, peor, lo
+ * mostraria aunque la plataforma lo hubiera retenido.
+ */
+async function apiChatEnviarEspectador(url, req, res, p) {
+  const slug = creadores.normalizar(p.slug);
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  if (origenAjeno(req, res)) return;
+
+  const suyo = await sesion.leer(req, 'espectador');
+  if (!suyo) return json(res, 401, { error: 'conecta Kick o Twitch para poder escribir' });
+
+  const c = await creadores.chatAbierto(slug);
+  if (!c.activo) return json(res, 403, { error: 'este chat esta cerrado' });
+
+  let pedido;
+  try { pedido = await leerJson(req); }
+  catch { return json(res, 400, { error: 'json invalido' }); }
+
+  const redes = envio.redesDelPedido(pedido?.red);
+  if (!redes) return json(res, 400, { error: 'hay que decir a que red mandarlo: kick, twitch o ambas' });
+
+  /* Con "ambas" y una sola red abierta rebota entero, en vez de mandar
+     a media: la pagina no tendria que haber ofrecido "las dos" ahi, y
+     mandar a una sola callado seria mentirle a quien eligio las dos. */
+  const cerradas = redes.filter(red => !c.redes.includes(red));
+  if (cerradas.length) {
+    return json(res, 403, { error: `el creador no abrio ${nombresDeRedes(cerradas)} en este chat` });
+  }
+
+  const v = await espectadores.leer(suyo.usuario);
+  if (!v) {
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 401, { error: 'tu sesion ya no vale: conecta de nuevo' },
+      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+
+  const faltan = redes.filter(red => !v[red]);
+  if (faltan.length) return json(res, 403, { error: `todavia no conectaste ${nombresDeRedes(faltan)}` });
+  const sinPermiso = redes.filter(red => !espectadores.puedeEscribirEn(v, red));
+  if (sinPermiso.length) {
+    return json(res, 403, { error: `el permiso que diste en ${nombresDeRedes(sinPermiso)} no incluye escribir` });
+  }
+
+  const cuerpo = String(pedido?.texto ?? '');
+  const problema = envio.porQueNoSePuedeMandar(cuerpo, redes);
+  if (problema) return json(res, 400, { error: problema });
+
+  if (redes.includes('kick')) {
+    const esperaCanal = espectadores.esperaDelCanalQueFalta(slug);
+    if (esperaCanal) {
+      const segundos = Math.ceil(esperaCanal / 1000);
+      return json(res, 429, { error: 'Kick esta frenando los envios del canal', esperar: segundos },
+        { 'Retry-After': String(segundos) });
+    }
+  }
+
+  const falta = espectadores.esperaQueLeFalta(suyo.usuario);
+  if (falta) {
+    const segundos = Math.ceil(falta / 1000);
+    return json(res, 429, { error: 'espera un momento entre mensajes', esperar: segundos },
+      { 'Retry-After': String(segundos) });
+  }
+
+  /* Uno solo, aunque vaya a las dos redes: el freno es por persona. Y
+     antes de mandar, para que un error que tarda no la deje
+     reintentando sin freno mientras tanto. */
+  espectadores.anotarEnvio(suyo.usuario);
+
+  const r = await envio.aVariasRedes(slug, suyo.usuario, redes, cuerpo);
+
+  /* Una red cuyo permiso ya no sirve se desconecta SOLA: la otra no
+     tiene la culpa y la sesion sigue en pie. `reconectar` es lo que la
+     pagina usa para volver a mostrar el boton de esa red. */
+  const reconectar = redes.filter(red => r[red].caduco);
+  for (const red of reconectar) await espectadores.desconectar(suyo.usuario, red);
+
+  const salida = { ok: redes.some(red => r[red].ok), reconectar };
+  for (const red of redes) salida[red] = { ok: r[red].ok, motivo: r[red].motivo };
+
+  /* Salio en alguna: 200, con el detalle por red. La pagina dice
+     exactamente cual fallo y por que. Un "enviado" global acá seria
+     mentira, y un error pelado haria que la persona lo escriba de
+     nuevo y quede repetido en la red donde si habia salido. */
+  if (salida.ok) return json(res, 200, salida);
+
+  if (redes.some(red => r[red].estado === 429)) {
+    const segundos = Math.max(...redes.map(red => r[red].esperar ?? 5));
+    return json(res, 429, { ...salida, error: 'te estan frenando los envios', esperar: segundos },
+      { 'Retry-After': String(segundos) });
+  }
+
+  const motivos = redes.map(red => r[red].motivo).filter(Boolean).join(' · ');
+  return json(res, 502, { ...salida, error: motivos || 'no se pudo enviar' });
+}
+
+/**
+ * Salir. Borra los tokens de LAS DOS REDES y la sesion, no solo la
+ * cookie.
+ *
+ * Sin slug: la cuenta de espectador es del dominio y no de una sala,
+ * asi que salir es salir de todas.
+ */
+async function apiEspectadorSalir(url, req, res) {
+  if (origenAjeno(req, res)) return;
+  const suyo = await sesion.leer(req, 'espectador');
+  if (suyo) {
+    await sesion.cerrar(req, 'espectador');
+    await espectadores.olvidar(suyo.usuario);
+  }
+  return json(res, 200, { ok: true }, { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+}
+
 /**
  * Abre o cierra el chat de SU sala, y elige las redes. Cookie de
  * creador.
@@ -2019,6 +2297,9 @@ const RUTAS = [
   ['POST',   '/api/panel/suscribirse', apiSuscribirse],
   ['POST',   '/api/panel/chat',        apiPanelChat],
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
+  ['GET',    '/api/chat/:slug/yo',      apiChatYo],
+  ['POST',   '/api/chat/:slug/enviar',  apiChatEnviarEspectador],
+  ['POST',   '/api/espectador/salir',   apiEspectadorSalir],
   ['POST',   '/api/subida',            apiSubidaFirmar],
   ['POST',   '/api/subida/borrar',     apiSubidaBorrar],
   ['GET',    '/api/admin/creadores',   apiAdminCreadores],

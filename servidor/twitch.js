@@ -50,6 +50,12 @@ export const URL_EVENTSUB = 'wss://eventsub.wss.twitch.tv/ws';
 
 const SCOPES_DEFECTO = ['user:read:chat', 'user:write:chat'];
 
+/* Lo minimo que necesita un ESPECTADOR: escribir. Leer el chat de una
+   sala entra por el token del creador (una sola conexion EventSub para
+   todos los que miran), asi que pedirle `user:read:chat` a cada
+   espectador seria pedir un permiso que nadie va a usar. */
+export const SCOPES_ESPECTADOR = Object.freeze(['user:write:chat']);
+
 /** Si estan cargadas las credenciales de la app. Para no armar nada sin esto. */
 export function hayCredenciales() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);

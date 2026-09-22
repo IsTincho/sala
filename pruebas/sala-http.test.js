@@ -166,7 +166,7 @@ const SIN_CONTROLES = /^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*$/;
  * probar. Con un espectador propio, el pedido llega hasta el final.
  */
 async function nuevoEspectador(usuarioId, nombre) {
-  await espectadores.guardar({
+  await espectadores.conectar(usuarioId, 'kick', {
     usuarioId,
     nombre,
     accessToken: `acceso-de-mentira-${usuarioId}`,
@@ -200,7 +200,7 @@ test.before(async () => {
   /* Los dos espectadores tienen vínculo con Kick: sin eso, escribir
      falla por otro motivo y el test no probaría lo que quiere. */
   for (const id of ['1001', '1002']) {
-    await espectadores.guardar({
+    await espectadores.conectar(id, 'kick', {
       usuarioId: id,
       nombre: 'espectador ' + id,
       accessToken: 'acceso-de-mentira-' + id,
@@ -819,7 +819,7 @@ test('un 429 de Kick frena el CANAL entero, no sólo a quien lo pidió', async (
 
 test('si Kick rechaza el permiso, se cierra la sesión y se olvida el token', async () => {
   espectadores.reiniciar();
-  await espectadores.guardar({
+  await espectadores.conectar('1001', 'kick', {
     usuarioId: '1001', nombre: 'unaespectadora',
     accessToken: 'acceso-de-mentira-1001', refreshToken: 'refresco-de-mentira-1001',
     venceEn: Date.now() + 3600_000, scopes: 'user:read chat:write',

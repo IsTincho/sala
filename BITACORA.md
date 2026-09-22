@@ -11,7 +11,7 @@ chat abierto: bloquear a alguien, que los tokens de quien no vuelve se borren so
 contador de conectados, el QR del link, el manifest por sala y el texto nuevo de
 `/terminos`.
 
-**751 pruebas en verde** (eran 716), la suite corrida cuatro veces seguidas sin un solo
+**758 pruebas en verde** (eran 716), la suite corrida cuatro veces seguidas sin un solo
 flake. **10 mutaciones, las 10 cazadas.**
 
 ### Bloquear a alguien, en esta herramienta
@@ -101,6 +101,36 @@ De paso, las dos tablas del código se cruzan solas: bloques × (datos + correcc
 que dar el total de bytes de esa versión, y las diez cierran. Un número mal copiado en
 cualquiera de las dos no pasa esa cuenta.
 
+### Dos cosas a la vez sobre el mismo documento
+
+Apareció revisando lo hecho, y es de las que no se ven hasta que muerden. **El almacén no
+sabe actualizar un campo suelto**: `poner` reemplaza el documento entero. Así que todo el
+que cambia una parte hace leer-cambiar-guardar, y dos de esos a la vez se pisan: el segundo
+leyó antes de que el primero guardara, y al guardar borra lo que el primero escribió.
+
+Dos casos, los dos de este chat:
+
+- un espectador manda **"a las dos" con los dos tokens vencidos**: los dos refrescos
+  guardan al mismo tiempo y uno de los dos tokens nuevos se pierde. Y el viejo ya no
+  sirve, porque las dos plataformas **rotan** el refresh token: esa red se cae sola y hay
+  que reconectarla;
+- el creador toca **"bloquear" en dos mensajes seguidos**, que es justo lo que se hace en
+  una tanda de spam: el segundo leyó la lista sin el primero y la guarda sin él. En
+  silencio.
+
+`almacen.enCola(coleccion, id, tarea)` los serializa por clave. Es la misma idea que la
+cola de escritura de archivos que ya estaba, un piso más arriba: allá se serializa el
+archivo, acá la operación entera. La usan `espectadores.conectar`, `desconectar` y el
+"último uso", y `creadores.ponerChatAbierto`.
+
+**Lo que no se pudo probar de punta a punta**: con el almacén en archivos, tres pedidos
+HTTP seguidos al panel no llegan a pisarse (cada uno termina su lectura y su escritura
+antes de que entre el siguiente), así que la mutación "sacale la cola a
+`ponerChatAbierto`" **no la caza ninguna prueba**. Queda declarada. Lo que sí está
+probado: la cola misma (`pruebas/almacen.test.js`: una por vez, claves distintas no se
+esperan, una que falla no deja la cola trabada) y el caso de los espectadores, que sí se
+puede provocar llamando al módulo directo.
+
 ### Los términos
 
 Sección 3 reescrita: qué se guarda por red, que los tokens van cifrados, y **las tres
@@ -151,6 +181,8 @@ agregados en `espectadores`, `chat-enviar`, `chat-abierto`, `pagina-chat`, `pagi
   antes), así que el botón de bloquear ahí bloquearía en SU sala mientras mira el chat del
   dueño. Para el dueño del servicio, que es quien usa esa ventana hoy, está bien.
 - **El número de versión de los términos**, que decide el dueño.
+- **La carrera de dos bloqueos a la vez no tiene prueba que la cace** (ver arriba): con
+  Mongo de verdad se podría provocar, con archivos no.
 - La Fase 5.5 (creadores que sólo usan Twitch) sigue afuera del plan, por decisión del
   dueño.
 

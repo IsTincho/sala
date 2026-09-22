@@ -627,6 +627,19 @@ test('el reloj que quedó puesto NO sale por el bus público con la Sala apagada
   const ajeno = await primerEstado(SLUG, { cookie: sesionOtro });
   assert.equal(ajeno.reloj, null, 'la cookie de otro creador no abre el reloj de esta sala');
 
+  /* LA MISMA FUGA POR LA OTRA PUERTA. `/api/estado` es público y sin
+     sesión —lo consulta la página `/`— y publicaba `canales[].reloj`
+     entero: el título, la URL y el segundo de la película de TODOS los
+     canales, de un pedido, sin siquiera saber el slug. Cerrar sólo el
+     bus no cerraba nada. */
+  const estado = await pedir('/api/estado');
+  assert.equal(estado.estado, 200);
+  assert.ok(!estado.texto.includes('ep1'),
+    `/api/estado nombra la película: ${estado.texto.slice(0, 300)}`);
+  assert.ok(!estado.texto.includes('maestra.m3u8'), '/api/estado da la URL del video');
+  /* Y sigue sirviendo para lo que sirve: decir qué canales hay vivos. */
+  assert.ok(Array.isArray(estado.datos.canales));
+
   /* Se deja el canal limpio para los demás tests del archivo. */
   await creadores.ponerSalaAbierta(SLUG, true);
   await pedir(`/api/sala/${SLUG}/reloj`, {

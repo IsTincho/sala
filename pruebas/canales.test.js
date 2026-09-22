@@ -216,9 +216,18 @@ test('ponerReloj difunde el reloj, lo deja puesto y lo muestra en el resumen', (
   const nuevo = conectar('sala');
   assert.equal(nuevo.res.datos[0].reloj.videoId, 'ep3');
 
+  /* En el resumen va un booleano y NO el reloj: `/api/estado` es
+     público y sin sesión, así que mandar el objeto entero publicaba el
+     título y el segundo de la película de todos los canales a
+     cualquiera. El booleano se queda porque explica por qué un canal
+     con cero conectados sigue en la lista (ver `soltarSiVacio`). */
   const enResumen = canales.resumen().find(c => c.slug === 'sala');
-  assert.equal(enResumen.reloj.videoId, 'ep3');
+  assert.equal(enResumen.conReloj, true);
   assert.equal(enResumen.conectados, 2);
+
+  const crudo = JSON.stringify(canales.resumen());
+  assert.ok(!crudo.includes('ep3'),
+    `el resumen público nombra la película: ${crudo}`);
 
   /* Un canal con reloj puesto es estado real: no se borra aunque no
      quede nadie mirando. */

@@ -60,13 +60,28 @@ export function canal(slug) {
 export const hayCanal = slug => canales.has(String(slug).toLowerCase());
 export const conectados = slug => (canales.get(String(slug).toLowerCase())?.clientes.size ?? 0);
 
-/** Foto de todos los canales, para la pagina de estado. */
+/**
+ * Foto de todos los canales, para la pagina de estado.
+ *
+ * VA `conReloj` Y NO EL RELOJ. `/api/estado` es publico y no pide
+ * sesion (lo consulta la pagina `/`), asi que mandar `c.reloj` entero
+ * publicaba el titulo, la URL y el segundo exacto de la pelicula de
+ * TODOS los canales a cualquiera que pidiera esa direccion. Era la
+ * misma fuga que `estadoDe` cierra del lado del bus, por una puerta
+ * distinta: cerrar una sola de las dos no cierra nada.
+ *
+ * El booleano se queda porque tiene un uso real y documentado: un
+ * canal con reloj puesto NO se libera de memoria aunque no quede nadie
+ * mirando (ver `soltarSiVacio`), y sin este campo no hay forma de
+ * entender desde afuera por que un canal con cero conectados y cero
+ * mensajes sigue en la lista. No dice que pelicula es.
+ */
 export const resumen = () =>
   [...canales.values()].map(c => ({
     slug: c.slug,
     conectados: c.clientes.size,
     mensajes: c.mensajes.length,
-    reloj: c.reloj,
+    conReloj: Boolean(c.reloj),
     desde: c.desde,
   }));
 

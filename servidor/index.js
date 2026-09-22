@@ -1631,11 +1631,11 @@ async function apiSubidaFirmar(url, req, res) {
  *
  * Con la Sala apagada esto tambien da 404, aunque borrar sea "menos"
  * que subir. Dejarlo abierto seria la unica pieza del grupo que sigue
- * en pie: se podrian borrar objetos de R2 de una sala que no se puede
- * ni abrir ni llenar, y `subir.py --borrar` andaria a medias (firma los
- * DELETE y despues no puede sacar la ficha del catalogo, que si esta
- * cerrado). Media funcion es peor que ninguna. Al que necesite vaciar
- * su bucket con la Sala apagada se le prende un rato.
+ * en pie, y ademas dejaria borrar a medias: `DELETE /api/videos/:id`,
+ * que es el que saca la ficha del catalogo, tambien contesta 404, asi
+ * que quien usara esto se llevaria los bytes de R2 y dejaria la ficha
+ * apuntando a un video que ya no esta. Al que necesite vaciar su
+ * bucket con la Sala apagada se le prende un rato.
  */
 async function apiSubidaBorrar(url, req, res) {
   return conCreadorOClave(req, res, async (slug) => {

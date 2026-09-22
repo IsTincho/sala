@@ -247,6 +247,50 @@ test('un vinculo de creador que se parece a uno viejo NO se migra', async () => 
   await almacen.quitar('tokens', 'espectador:kick');
 });
 
+/* ------------------------------------------ dos cosas a la vez */
+
+test('conectar las dos redes AL MISMO TIEMPO no pierde ninguna', async () => {
+  /* EL BUG QUE ESTO ATAJA: conectar es leer-cambiar-guardar, y el
+     almacen no sabe actualizar un campo suelto. Sin la cola, las dos
+     escrituras leen el mismo documento viejo y la segunda pisa a la
+     primera. Pasa de verdad cuando alguien manda "a las dos" con los
+     dos tokens vencidos: los dos refrescos guardan a la vez, se pierde
+     uno, y el refresh token viejo ya no sirve porque las dos
+     plataformas lo rotan. */
+  await Promise.all([
+    espectadores.conectar(UNO, 'kick', KICK),
+    espectadores.conectar(UNO, 'twitch', TWITCH),
+  ]);
+
+  const v = await espectadores.leer(UNO);
+  assert.deepEqual(espectadores.redesDe(v), ['kick', 'twitch']);
+  assert.equal(v.kick.accessToken, KICK.accessToken);
+  assert.equal(v.twitch.accessToken, TWITCH.accessToken);
+
+  await espectadores.olvidar(UNO);
+});
+
+test('reconectar la misma red diez veces a la vez deja una sola versión', async () => {
+  await Promise.all(Array.from({ length: 10 }, (_, i) =>
+    espectadores.conectar(UNO, 'kick', { ...KICK, accessToken: `acceso-${i}` })));
+
+  const v = await espectadores.leer(UNO);
+  assert.match(v.kick.accessToken, /^acceso-\d$/, 'quedó uno de los diez, entero');
+  await espectadores.olvidar(UNO);
+});
+
+test('desconectar una red mientras se conecta la otra no borra la que llega', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await Promise.all([
+    espectadores.desconectar(UNO, 'kick'),
+    espectadores.conectar(UNO, 'twitch', TWITCH),
+  ]);
+
+  const v = await espectadores.leer(UNO);
+  assert.deepEqual(espectadores.redesDe(v), ['twitch'], 'Kick se fue, Twitch llegó y se quedó');
+  await espectadores.olvidar(UNO);
+});
+
 /* ---------------------------------------------- el vencimiento */
 
 test('el que no vuelve en 60 dias pierde sus tokens, y el que vuelve no', async () => {

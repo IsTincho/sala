@@ -284,6 +284,47 @@ async function guardarArchivo(coleccion) {
   return actual;
 }
 
+/* ------------------------------------------------- leer-cambiar-guardar
+
+   El almacen no sabe actualizar un campo suelto: `poner` reemplaza el
+   documento entero. Asi que todo el que cambia una parte hace
+   leer-cambiar-guardar, y dos de esos a la vez sobre el MISMO
+   documento se pisan: el segundo leyo antes de que el primero
+   guardara, y al guardar borra lo que el primero acababa de escribir.
+
+   No es teorico. Los dos casos de este proyecto:
+
+     - un espectador manda "a las dos" con los dos tokens vencidos: los
+       dos refrescos guardan a la vez y uno de los dos tokens nuevos se
+       pierde (y el viejo ya no sirve, porque las dos plataformas rotan
+       el refresh token);
+     - el creador toca "bloquear" en dos mensajes seguidos: el segundo
+       leyo la lista sin el primero y la guarda sin el.
+
+   `enCola` los serializa por clave. Es la misma idea que la cola de
+   escritura de archivos de mas arriba, un piso mas arriba: alla se
+   serializa el archivo, aca la operacion entera. */
+
+const enFila = new Map();   // "coleccion/id" -> promesa de lo ultimo encolado
+
+/**
+ * Corre `tarea` cuando no haya otra corriendo sobre la misma clave.
+ * Devuelve lo que devuelva la tarea.
+ */
+export function enCola(coleccion, id, tarea) {
+  const clave = `${coleccion}/${id}`;
+  const previa = enFila.get(clave) ?? Promise.resolve();
+  /* .then(f, f): si la anterior fallo, la propia no tiene por que
+     fallar tambien. */
+  const actual = previa.then(tarea, tarea);
+  enFila.set(clave, actual);
+  /* La limpieza va con then(f, f) y no con finally(), que devolveria
+     otra promesa rechazada sin nadie que la atrape. */
+  const limpiar = () => { if (enFila.get(clave) === actual) enFila.delete(clave); };
+  actual.then(limpiar, limpiar);
+  return actual;
+}
+
 /* ---------------------------------------------------------- interfaz
 
    Los documentos van y vienen como objetos planos. El id se guarda en

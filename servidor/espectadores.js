@@ -173,13 +173,20 @@ export async function conectar(id, red, datos) {
     throw new Error(`no se puede guardar el vinculo sin CLAVE_CIFRADO (${cifrado.porQueNoHayClave()})`);
   }
 
-  const viejo = await documento(id);
-  await almacen.poner('espectadores', id, {
-    ...(viejo ?? {}),
-    id: String(id),
-    [red]: redParaGuardar(datos),
-    creado: Number(viejo?.creado ?? Date.now()),
-    ultimoUso: Date.now(),
+  /* En cola: conectar es leer-cambiar-guardar, y dos a la vez sobre el
+     mismo espectador se pisan. Pasa de verdad cuando alguien manda "a
+     las dos" con los dos tokens vencidos: los dos refrescos guardan al
+     mismo tiempo y uno de los dos tokens nuevos se pierde (y el viejo
+     ya no sirve, porque las dos plataformas rotan el refresh token). */
+  return almacen.enCola('espectadores', id, async () => {
+    const viejo = await documento(id);
+    await almacen.poner('espectadores', id, {
+      ...(viejo ?? {}),
+      id: String(id),
+      [red]: redParaGuardar(datos),
+      creado: Number(viejo?.creado ?? Date.now()),
+      ultimoUso: Date.now(),
+    });
   });
 }
 
@@ -304,7 +311,10 @@ async function tocar(doc) {
   if (ahora - Number(doc.ultimoUso ?? 0) < REFRESCAR_USO) return;
   doc.ultimoUso = ahora;
   try {
-    await almacen.poner('espectadores', doc.id, doc);
+    /* En la misma cola que `conectar`: esta escritura lleva el
+       documento entero, asi que sin la cola puede aterrizar despues de
+       un conectar y devolverlo a como estaba. */
+    await almacen.enCola('espectadores', doc.id, () => almacen.poner('espectadores', doc.id, doc));
   } catch (e) {
     /* Que no se pueda anotar el ultimo uso no es motivo para que la
        persona no pueda escribir. */
@@ -340,16 +350,22 @@ export async function olvidar(id) {
  */
 export async function desconectar(id, red) {
   if (!valido(id) || !redValida(red)) return false;
-  const doc = await documento(id);
-  if (!doc?.[red]) return false;
+  /* En cola, por lo mismo que `conectar`: con "las dos" caidas a la
+     vez, las dos desconexiones corren juntas. `olvidar` no entra en la
+     cola —es un borrado, no un leer-cambiar-guardar— y ademas se llama
+     desde adentro de esta tarea: encolarlo seria esperarse a si mismo. */
+  return almacen.enCola('espectadores', id, async () => {
+    const doc = await documento(id);
+    if (!doc?.[red]) return false;
 
-  const quedan = REDES.filter(r => r !== red && doc[r]);
-  if (!quedan.length) return olvidar(id);
+    const quedan = REDES.filter(r => r !== red && doc[r]);
+    if (!quedan.length) return olvidar(id);
 
-  const nuevo = { ...doc };
-  delete nuevo[red];
-  await almacen.poner('espectadores', id, { ...nuevo, ultimoUso: Date.now() });
-  return true;
+    const nuevo = { ...doc };
+    delete nuevo[red];
+    await almacen.poner('espectadores', id, { ...nuevo, ultimoUso: Date.now() });
+    return true;
+  });
 }
 
 /* ---------------------------------------------------------- acceso */

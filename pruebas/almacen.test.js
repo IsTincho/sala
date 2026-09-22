@@ -224,3 +224,47 @@ test('si Mongo no responde se degrada a archivo, lo dice, y no pierde el dato', 
   assert.equal(guardado.plan, 'gratis');
   assert.equal((await leerArchivo('creadores'))['con-mongo-caido'].plan, 'gratis');
 });
+
+/* ------------------------------------------------ la cola por clave */
+
+test('enCola corre una tarea por vez sobre la misma clave', async () => {
+  /* Es lo que hace que un leer-cambiar-guardar no se pise con otro.
+     Sin esto, los dos leen lo mismo y el segundo pisa al primero: es
+     como se pierde una red recien conectada, o un bloqueo. */
+  const orden = [];
+  const tarea = (nombre, demora) => almacen.enCola('creadores', 'la-misma', async () => {
+    orden.push(`empieza ${nombre}`);
+    await new Promise(ok => setTimeout(ok, demora));
+    orden.push(`termina ${nombre}`);
+    return nombre;
+  });
+
+  /* La primera tarda MAS que la segunda: sin cola, "termina b" saldria
+     antes que "termina a". */
+  const [a, b] = await Promise.all([tarea('a', 30), tarea('b', 0)]);
+
+  assert.equal(a, 'a');
+  assert.equal(b, 'b');
+  assert.deepEqual(orden, ['empieza a', 'termina a', 'empieza b', 'termina b']);
+});
+
+test('claves distintas no se esperan entre si', async () => {
+  const orden = [];
+  const tarea = (clave, nombre, demora) => almacen.enCola('creadores', clave, async () => {
+    await new Promise(ok => setTimeout(ok, demora));
+    orden.push(nombre);
+  });
+
+  await Promise.all([tarea('una', 'lenta', 30), tarea('otra', 'rapida', 0)]);
+  assert.deepEqual(orden, ['rapida', 'lenta'], 'la rapida no tiene por que esperar a la lenta');
+});
+
+test('una tarea que falla no deja la cola trabada', async () => {
+  /* Si la cola se quedara enganchada del rechazo, el proximo pedido de
+     esa persona (o de esa sala) no se atenderia nunca mas. */
+  const rota = almacen.enCola('creadores', 'con-error', async () => { throw new Error('se rompio'); });
+  await assert.rejects(() => rota, /se rompio/);
+
+  const despues = await almacen.enCola('creadores', 'con-error', async () => 'sigo andando');
+  assert.equal(despues, 'sigo andando');
+});

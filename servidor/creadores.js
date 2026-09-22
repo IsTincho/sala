@@ -660,6 +660,15 @@ export async function ponerChatAbierto(slug, pedido = {}) {
   const problema = porQueNoSePuedeAbrir(pedido);
   if (problema) throw new Error(problema);
 
+  /* En cola: esto es leer-cambiar-guardar sobre la lista de
+     bloqueados, y dos a la vez se pisan. Pasa de verdad cuando el
+     creador toca "bloquear" en dos mensajes seguidos en medio de una
+     tanda de spam: el segundo leyo la lista sin el primero y la
+     guardaria sin el, en silencio. */
+  return almacen.enCola('creadores', s, () => cambiarChatAbierto(s, pedido));
+}
+
+async function cambiarChatAbierto(s, pedido) {
   let doc = await almacen.obtener('creadores', s);
   if (!doc) {
     if (!esDueno(s)) return null;

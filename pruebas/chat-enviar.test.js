@@ -641,6 +641,29 @@ test('bloquear dos veces a la misma persona no la duplica', async () => {
   await panelChat({ desbloquear: { red: 'kick', id: '4242' } });
 });
 
+test('dos bloqueos al mismo tiempo no se pisan', async () => {
+  /* EL BUG QUE ESTO ATAJA: guardar un bloqueo es leer-cambiar-guardar
+     sobre la lista, y el almacén no sabe actualizar un campo suelto.
+     Sin cola, el segundo lee la lista sin el primero y la guarda sin
+     él: el bloqueo desaparece en silencio. Pasa tocando "bloquear" en
+     dos mensajes seguidos, que es justo lo que se hace en una tanda
+     de spam. */
+  await Promise.all([
+    panelChat({ bloquear: { red: 'kick', id: '10001', nombre: 'uno' } }),
+    panelChat({ bloquear: { red: 'kick', id: '10002', nombre: 'dos' } }),
+    panelChat({ bloquear: { red: 'twitch', id: '10003', nombre: 'tres' } }),
+  ]);
+
+  const r = await panelChat({});
+  const ids = r.datos.chatAbierto.bloqueados.map(b => b.id).sort();
+  assert.deepEqual(ids, ['10001', '10002', '10003'], 'los tres tienen que haber quedado');
+
+  for (const [red, id] of [['kick', '10001'], ['kick', '10002'], ['twitch', '10003']]) {
+    await panelChat({ desbloquear: { red, id } });
+  }
+  assert.deepEqual((await panelChat({})).datos.chatAbierto.bloqueados, []);
+});
+
 test('el bloqueo es de una sala, no del servicio', async () => {
   /* Cada sala es un inquilino: que Ana bloquee a alguien no lo bloquea
      en el chat de Beto. */

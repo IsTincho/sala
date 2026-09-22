@@ -3,39 +3,56 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crear tu Sala · Sala</title>
+<title>Tu chat de Kick y Twitch · Sala</title>
 <link rel="stylesheet" href="/comun/base.css">
 <link rel="stylesheet" href="/crear/crear.css">
 </head>
 <body>
 <main class="contenedor contenedor-crear">
-  <h1>Creá tu Sala</h1>
+  <h1>Tu chat de Kick y Twitch, juntos</h1>
 
   <p class="entrada">
-    Pasá una película en una página tuya, con tu cámara al lado y el chat real
-    de tu canal de Kick a la derecha. La gente entra, escribe con su propia
-    cuenta, y lo que escribe aparece en tu chat de Kick.
+    Un link tuyo donde tu comunidad lee los dos chats mezclados y en vivo, sin
+    entrar con nada. Y el que quiera escribir conecta <b>su</b> cuenta de Kick o
+    de Twitch: el mensaje sale en el chat de verdad, con su nombre, no con el de
+    un bot.
   </p>
 
   <section class="tarjeta">
     <h2>Cómo funciona</h2>
     <ol class="pasos">
-      <li>Entrás con Kick. Tu Sala queda en <code>/sala/tu-canal</code>.</li>
-      <li>Subís un video desde tu PC con el script, y queda en tu catálogo.</li>
-      <li>Desde tu panel tocás play, y todos los que estén mirando ven el mismo segundo.</li>
+      <li>Entrás con Kick. Tu chat queda en <code>/chat/tu-canal</code>.</li>
+      <li>Vinculás Twitch desde tu panel, si transmitís también ahí.</li>
+      <li>Pasás el link. Se puede instalar como app en el celular, y hay un QR
+        para ponerlo en pantalla.</li>
     </ol>
     <p class="linea-tenue">
-      Tu Sala arranca <b>pendiente</b>: se puede abrir y leer el chat, pero no
-      reproduce hasta que tengas un plan activo. Desde tu panel vas a poder
-      suscribirte.
+      Entra en todos los planes, incluido el que tenés al darte de alta: leer y
+      escribir en tu chat no cuesta nada de nuestro lado.
+    </p>
+    <p class="linea-tenue">
+      <b>No lo pongas como fuente en OBS si transmitís a Twitch.</b> Las reglas
+      de simulcast no dejan mostrar en el stream un chat mezclado con otras
+      plataformas. Es para que tu gente lo lea fuera del stream.
+    </p>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Y lo de ver una peli juntos</h2>
+    <p class="linea-tenue">
+      La Sala —pasar una película en una página tuya, sincronizada para todos,
+      con tu cámara y el chat al lado— <b>está construida pero no se está
+      ofreciendo</b>. Hoy <code>/sala/tu-canal</code> no existe para nadie. Se
+      habilita a pedido y de a uno, porque es lo único de acá que cuesta
+      almacenamiento y ancho de banda de verdad. Si te interesa, escribime.
     </p>
   </section>
 
   <section class="tarjeta" id="tarjeta-permisos">
     <h2>Qué permisos te va a pedir Kick</h2>
     <ul class="permisos">
-      <li><b>Ver tu cuenta y tu canal</b>, para saber cuál es tu Sala.</li>
-      <li><b>Escribir en tu chat</b>, para que los mensajes de la Sala lleguen ahí.</li>
+      <li><b>Ver tu cuenta y tu canal</b>, para saber cuál es el tuyo.</li>
+      <li><b>Escribir en tu chat</b>, para que lo que escribas desde acá llegue ahí.</li>
       <li><b>Suscribirse a tus eventos</b>, para poder leer tu chat en vivo.</li>
     </ul>
     <p class="linea-tenue">
@@ -58,7 +75,7 @@
 
     <p>
       <a id="boton-entrar" class="boton-crear apagado" aria-disabled="true"
-         href="/oauth/kick/entrar?rol=creador&amp;destino=/panel&amp;terminos=1">Entrar con Kick y crear mi Sala</a>
+         href="/oauth/kick/entrar?rol=creador&amp;destino=/panel&amp;terminos=1">Entrar con Kick y armar mi chat</a>
     </p>
 
     <p class="linea-tenue" id="aviso-acepto">
@@ -67,7 +84,7 @@
   </section>
 
   <p class="linea-tenue">
-    ¿Ya tenés una Sala? <a href="/panel">Andá a tu panel</a>.
+    ¿Ya entraste alguna vez? <a href="/panel">Andá a tu panel</a>.
   </p>
 </main>
 

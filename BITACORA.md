@@ -4,6 +4,175 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — Los emotes de 7TV, en el multichat, para Kick y para Twitch
+
+**864 pruebas en verde** (eran 825), con 39 nuevas. Cada guarda se comprobó al revés: se mutó
+el código a como estaba y se verificó que la prueba nueva **falla**. Dos mutaciones
+sobrevivieron en el primer intento y las dos eran culpa de la prueba, no del código; están
+contadas más abajo.
+
+### El agujero que se cierra
+
+Alguien escribe `CHAD` en el chat de Kick, lo ve como emote en kick.com porque tiene la
+extensión de 7TV puesta, y en el multichat lo veía como una palabra. Ni Kick ni Twitch saben
+que 7TV existe: el emote llega como texto pelado en el `content` o en un fragmento `text`, y
+hay que resolverlo contra el set del creador.
+
+`servidor/emotes.js` baja ese set y `resolver()` mete los emotes en el **mismo array del
+formato único**, con `fuente: "7tv"`. **La página no cambió una línea**: `agregarTextoConEmotes()`
+pinta un emote de 7TV por el mismo camino que uno de Kick. Ese es el pago del formato único, y
+era la apuesta de la Fase 1.
+
+### Las decisiones, y por qué
+
+**La caché es por `(slug, red)`, no por red.** El repo hermano tiene un solo canal y le alcanza
+con la clave por red. Acá dos creadores comparten la red y no comparten el set, así que esa
+clave le pintaría el set de uno a los mensajes del otro. No rompe nada: **muestra el emote
+equivocado en la pantalla de otra comunidad**, que es peor. Cada casillero tiene su vencimiento
+y su bajada en vuelo, así que un 7TV que falla para uno no toca a los demás.
+
+**El que pregunta nunca espera.** `resolver()` es síncrona: un mensaje de chat sale al toque y
+no se queda esperando a un tercero. Si la tabla no está, el mensaje sale sin emotes de 7TV.
+Hacerla asíncrona habría significado `await` en el camino del webhook de Kick, con el timeout
+de 7TV adentro.
+
+**Ganan los nativos.** No es un empate arbitrario: en Kick el texto que se ve **no** es el que
+la persona escribió — `partirTextoDeKick()` reemplaza `[emote:4148074:HYPERCLAP]` por la palabra
+`HYPERCLAP` para que sirva de `alt`—, así que esa palabra queda lista para resolverse **dos
+veces**. Y el nativo es el que la persona eligió del selector de su plataforma.
+
+**Tres vencimientos y no uno.** Éxito a los 10 min; 404 de 7TV ("este creador no tiene cuenta",
+que es el caso de la **mayoría**) a la hora; fallo de verdad al minuto, y sin pisar la tabla que
+había. La diferencia no es cosmética: con 900 creadores, tratar el 404 como un fallo cualquiera
+pasa de unos 21 mil pedidos por día a 1,3 millones contra un servicio gratuito ajeno.
+
+**Los globales de 7TV van incluidos**, en una tabla sola para todo el proceso: son los que ve
+cualquiera con la extensión puesta en cualquier canal, tenga o no el streamer cuenta de 7TV.
+Dejarlos afuera haría que el multichat muestre **menos** de lo que la gente ya ve.
+
+### El peso, con números medidos y no copiados
+
+Acá el problema **no** es el de CosasStream. Allá son los frames que le cuesta a OBS repintar un
+gif; acá es el ancho de banda del navegador de **cada espectador**, y no hay ningún tope aguas
+abajo: lo que el servidor mete en el mensaje se lo baja todo el mundo. Por eso el número no es
+el mismo, y por eso acá el criterio puede decir que no.
+
+Medido el 2026-09-22 contra el set real del dueño (66 emotes, 49 animados), pidiendo `2x.webp`:
+mediana **29,8 KB**, p90 **245 KB**, máximo **1.100 KB**. La mediana es barata y la cola es
+carísima. Se pide en 2x; si no entra, en 1x; si tampoco, el emote no sale y la palabra se lee
+como texto — que es exactamente lo que se veía antes, así que nunca se empeora.
+
+| Presupuesto | En 2x | En 1x | Afuera | Si un espectador ve el set entero |
+|---|---|---|---|---|
+| 64 KB | 42 | 15 | 9 | 1,3 MB |
+| **128 KB** | **56** | **7** | **3** | **2,6 MB** |
+| 256 KB | 62 | 3 | 1 | 3,6 MB |
+
+Se eligieron 128 KB. Los tres que quedan afuera son animaciones largas; la peor, `maxwin`, pesa
+1,1 MB en 2x y 505 KB hasta en 1x. Se pide WEBP y no AVIF aunque AVIF pese la mitad: un Safari o
+un WebView de Android viejos no lo dibujan, y en un chat eso es un ícono roto por mensaje.
+
+Comprobado contra el 7TV de verdad, no sólo contra el de mentira de las pruebas: el set del
+dueño deja 63 nombres en la tabla (56 en 2x, 7 en 1x, 3 descartados), `CHAD` baja a 1x por peso,
+`maxwin` no sale, `Clap` entra por los globales y el `HYPERCLAP` nativo gana. El camino de
+Twitch se ejercitó igual con un canal real.
+
+### La EventAPI de 7TV: anotada, no hecha
+
+Existe y funciona (`emote_set.update` por SSE, 500 suscripciones por conexión, verificado en
+`INVESTIGACION-EMOTES.md`). **No se puso, a propósito.** Lo único que compra es bajar de "hasta
+10 minutos" a "en el acto" la demora con la que aparece un emote recién agregado; lo que cuesta
+es una conexión persistente más que mantener, reconectar y vigilar, más una lista de set ids
+que suscribir y desuscribir a medida que entran y salen creadores. Para un adorno, no compensa
+todavía. El gancho ya está: `emotes.vencer(slug, red)`.
+
+### Lo que encontró la revisión adversarial
+
+Corrió 32 mutaciones y seis sondas sobre el diff ya commiteado.
+
+**El bug grande: seis bajadas colgadas apagaban 7TV para todos, para siempre y en silencio.**
+El contador de bajadas simultáneas se descontaba en un `finally` que dependía de que la promesa
+terminara alguna vez. Pero la bajada arranca pidiéndole el id al almacén, y el cliente de Mongo
+se crea con `serverSelectionTimeoutMS` y **sin** `socketTimeoutMS`: un socket medio abierto no
+vence nunca. Reproducido: con seis identidades colgadas, un creador sano manda mil mensajes y
+recibe cero emotes, cero pedidos y ni una línea de log. El `AbortSignal.timeout` del `fetch` no
+alcanzaba porque el cuelgue es **antes** del fetch.
+
+Tres arreglos: un plazo que cubre la bajada **entera**; el tope lleno ahora se avisa (como mucho
+una vez por minuto, porque un apagón global tiene que ser visible — así es como casi se escapa
+éste); y `Promise.resolve().then(como)` para que una excepción síncrona caiga en el `catch` y no
+se lleve puesto el contador **y** el webhook.
+
+**`resolver()` podía tirar, y corre adentro del webhook sin try.** `procesarEvento` llama a
+`recibirDeKick` **después** de marcar el evento como visto. Una excepción ahí no es un emote que
+falta: es el mensaje perdido y un 500. Un rango nativo con `NaN` clavaba además el puntero de
+rangos ocupados y dejaba pasar un emote de 7TV **encima** de uno nativo.
+
+**La URL que termina en el `<img>` de cada espectador no se validaba.** La arma un tercero, y
+pasaban `javascript:`, `data:` y `http:`. No es XSS, pero el estándar de la casa es el de
+`colorSeguro()`: validar en el servidor además de en la página.
+
+**Dos bugs de `deTwitch`, anteriores a todo esto**, que salieron de refilón y se arreglaron: un
+fragmento de emote con texto vacío dejaba un rango de largo cero (la página le dibuja un `<img>`
+y no mueve el cursor, así que lo de encima se dibuja dos veces), y el recorte del mensaje podía
+dejar un emote apuntando más allá del final del texto, porque el tope corta por unidades UTF-16
+y los índices cuentan puntos de código. `deIrc` ya se cuidaba de lo segundo; ahora los tres
+traductores hacen lo mismo.
+
+**Un `size` negativo entraba como si fuera gratis** (`-1 > PRESUPUESTO` es false).
+
+**Y el README prometía de más.** Decía "un mensaje pelado por creador y por arranque". Medido
+con 20 creadores mandando un mensaje cada 250 ms y 7TV a 600 ms: 130 mensajes sin emotes y hasta
+11 seguidos para el peor creador. Ahora dice el número real. También se corrigieron dos
+comentarios que afirmaban cosas que nunca se observaron.
+
+**Cuatro pruebas pasaban por casualidad.** Sólo afirmaban ausencias, así que sobrevivían a
+apagar la funcionalidad entera (`ACTIVO = false`). Ahora cada una lleva un emote que **sí** tiene
+que resolver, en el lugar exacto.
+
+Y dos mutaciones sobrevivieron al primer intento de matarlas, las dos por culpa de la prueba:
+el `assert` previo al cuelgue agendaba sin querer la bajada del creador sano, y los globales
+liberaban un cupo al terminar bien, así que el creador sano entraba igual aunque las colgadas no
+se destrabaran nunca. Las dos están anotadas en el propio comentario de la prueba, porque son la
+clase de error que se vuelve a cometer.
+
+### Lo que se decidió NO hacer
+
+- **BTTV y FFZ.** Cubren sólo Twitch (verificado: 404 en Kick) y son más superficie por menos
+  cobertura. La forma del módulo los admite el día que se quieran.
+- **`animado` en el emote.** 7TV lo dice gratis, pero hoy no hay quien lo mire y serían un
+  booleano por emote por mensaje hacia cada pestaña. El día que haya un "pausar animados", es
+  una línea.
+- **Precalentar las tablas al arrancar.** Cerraría el hueco del primer mensaje, pero serían 1800
+  pedidos por deploy —y acá *push a main es deploy*— para chats que en su mayoría esa noche no
+  hablan.
+
+### Archivos
+
+`servidor/emotes.js` (nuevo), `servidor/mensajes.js` (el campo `fuente` y los dos rangos de
+`deTwitch`), `servidor/chat.js` (los dos embudos, y vencer la tabla al vincular Twitch),
+`pruebas/emotes.test.js` (nuevo, 36 pruebas), `pruebas/mensajes.test.js`,
+`pruebas/mensajes-forma.test.js`, `README.md`, `servidor/.env.ejemplo`, `GUIA.md`, y
+`INVESTIGACION-EMOTES.md`, que estaba suelta sin versionar y es de donde salen los números.
+
+### Cómo verlo
+
+Con el chat abierto, que alguien escriba en Kick o en Twitch el nombre exacto de un emote del
+set de 7TV del creador (o uno global, como `Clap`): tiene que aparecer la imagen. El log dice
+`[7tv] <slug>/<red>: N emotes` **una vez**, no una por mensaje. Un creador sin 7TV deja una sola
+línea, `sin set de 7TV`, y no vuelve a preguntar en una hora.
+
+### Pendiente
+
+- **El set de 7TV de Twitch del dueño no se pudo verificar**: no hay un `usuarioId` de Twitch a
+  mano. El camino se ejercitó contra el 7TV real con el id de otro canal y anda; falta confirmar
+  que el del dueño tenga set.
+- La EventAPI, si algún día molesta esperar diez minutos.
+- Queda abierta la pregunta 8 de `INVESTIGACION-EMOTES.md`: el campo `fuente` viaja, pero nadie
+  decidió todavía si la página tiene que **mostrar** de dónde viene cada emote.
+
+---
+
 ## 2026-09-22 — Dos revisiones adversariales: las fases 5.2–5.4 y el cierre de la Sala
 
 Dos revisiones independientes sobre lo que ya estaba deployado, más una tercera sobre los

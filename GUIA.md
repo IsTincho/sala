@@ -61,6 +61,13 @@ Si Twitch te figura sin vincular, se vincula desde el mismo panel.
 3. Lo mismo con una cuenta secundaria de Twitch.
 4. Probá **"las dos"**: un mensaje, los dos chats.
 5. Bloqueá a esa cuenta desde su mensaje y comprobá que ya no puede escribir.
+6. Escribí el nombre exacto de un emote de tu 7TV (respeta mayúsculas, y tiene que ir
+   como palabra suelta): tiene que verse la imagen, no la palabra.
+
+**Los emotes de 7TV ya se ven**, los tuyos y los globales, en Kick y en Twitch. Los que pesen
+más de 128 KB hasta en su tamaño más chico no salen a propósito: se los bajaría el navegador de
+cada persona que esté mirando. Si te hacés una cuenta de 7TV recién ahora, puede tardar hasta
+una hora en aparecer; un deploy lo resuelve en el acto.
 
 ---
 

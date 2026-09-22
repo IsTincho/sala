@@ -243,7 +243,15 @@ test('con la Sala apagada, /sala/:slug es indistinguible de una sala que no exis
   /* INDISTINGUIBLE, y no "un 404 cualquiera": si contestara 403, o un
      404 con otro texto, la dirección estaría anunciando que ahí hay
      algo apagado esperando que alguien insista. Una Sala cerrada no es
-     un permiso que falte: es una función que no se está ofreciendo. */
+     un permiso que falte: es una función que no se está ofreciendo.
+
+     DE ESTA DIRECCIÓN, NO DEL SITIO. Que `ana` tenga sala en este
+     servicio se averigua igual: con la Sala apagada, `/chat/ana`,
+     `/api/chat/ana/abierto`, `/eventos/ana` y el manifest contestan 200
+     para un slug que existe y 404 para uno inventado (y este archivo lo
+     prueba más abajo, porque es lo que hoy se ofrece). Lo que se cuida
+     acá es lo otro: que no se pueda distinguir "apagada" de "no
+     existe", que es lo único que invitaría a insistir. */
   const apagada = await pedir(`/sala/${SLUG}`);
   const inventada = await pedir(`/sala/${NO_EXISTE}`);
 
@@ -295,6 +303,36 @@ test('prendida, la misma dirección vuelve a servir la página', async () => {
   const r = await pedir(`/sala/${SLUG}`);
   assert.equal(r.estado, 200, `contestó ${r.estado}`);
   assert.match(r.tipo, /text\/html/);
+});
+
+test('la cáscara de la Sala tampoco se abre por la puerta de atrás', async () => {
+  /*
+   * `/sala/<slug>` contesta 404 con la Sala apagada, pero `/sala.html`
+   * —el ARCHIVO— se servía igual, porque las páginas viven en paginas/
+   * y de ahí salen los estáticos. No dejaba entrar a ningún dato (todas
+   * las rutas de /api/sala contestan 404 y el bus manda `reloj: null`),
+   * pero se comía el argumento entero: "esa dirección no existe" con
+   * una dirección que contesta 200 no es verdad.
+   *
+   * Y la de al lado es peor: `/admin` contesta 404 al que no es el
+   * dueño del servicio justamente para no anunciar que hay un panel de
+   * administración y con qué nombre, y `/admin.html` lo anunciaba.
+   */
+  for (const ruta of [`/sala.html?canal=${SLUG}`, '/sala.html', '/admin.html', '/panel.html']) {
+    const r = await pedir(ruta);
+    assert.equal(r.estado, 404, `${ruta} contestó ${r.estado}`);
+  }
+
+  /* Pero cada página sigue abriéndose por SU dirección, que es la que
+     tiene la guarda. Sin esto, un 404 a todo lo que termine en .html
+     dejaría el sitio sin páginas. */
+  assert.equal((await pedir('/')).estado, 200, 'la portada');
+  assert.equal((await pedir('/panel')).estado, 200);
+  assert.equal((await pedir('/crear')).estado, 200);
+  assert.equal((await pedir(`/chat/${SLUG}`)).estado, 200);
+
+  await creadores.ponerSalaAbierta(SLUG, true);
+  assert.equal((await pedir(`/sala/${SLUG}`)).estado, 200);
 });
 
 test('el CSS y el JS de la Sala se siguen sirviendo con la Sala apagada', async () => {
@@ -440,6 +478,45 @@ test('con la Sala apagada no se manda a nadie a pagar', async () => {
   await creadores.ponerSalaAbierta(OTRO, true);
   const abierta = await pedir('/api/panel/suscribirse', { metodo: 'POST', cookie: sesionOtro });
   assert.notEqual(abierta.estado, 404, `contestó ${abierta.estado}`);
+});
+
+test('el 404 de la Sala apagada llega antes que el 503 de R2', async () => {
+  /*
+   * EL ORDEN QUE NINGUNA PRUEBA MIRABA. Todos los tests de este archivo
+   * configuran R2, así que el `if (await salaCerrada(...))` podía
+   * mudarse debajo del `if (!r2.hayCredenciales())` sin que nadie se
+   * enterara. Y ahí un creador con la Sala apagada recibiría "falta
+   * R2_ACCOUNT_ID": un mensaje sobre una configuración del servidor
+   * cuando lo que pasa es que la función no se ofrece.
+   *
+   * `r2.js` lee `process.env` en cada llamada, así que se le pueden
+   * sacar las credenciales por un rato. Se devuelven en el `finally`:
+   * el resto del archivo las necesita.
+   */
+  const guardadas = {};
+  for (const v of ['R2_ACCOUNT_ID', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_URL_PUBLICA']) {
+    guardadas[v] = process.env[v];
+    delete process.env[v];
+  }
+  try {
+    const r = await pedir('/api/subida', {
+      metodo: 'POST', cookie: sesionDueno,
+      cuerpo: { id: 'ep1', archivos: [{ ruta: 'maestra.m3u8', bytes: 1 }] },
+    });
+    assert.equal(r.estado, 404, `contestó ${r.estado}`);
+    assert.match(r.datos.error, /cerrada/i, 'tiene que hablar de la Sala, no de R2');
+
+    /* Control negativo: con la Sala prendida y sin R2, ahí sí manda R2. */
+    await creadores.ponerSalaAbierta(SLUG, true);
+    const conSala = await pedir('/api/subida', {
+      metodo: 'POST', cookie: sesionDueno,
+      cuerpo: { id: 'ep1', archivos: [{ ruta: 'maestra.m3u8', bytes: 1 }] },
+    });
+    assert.equal(conSala.estado, 503, `contestó ${conSala.estado}`);
+    assert.match(conSala.datos.error, /R2_/, 'y dice qué variable falta');
+  } finally {
+    for (const [v, valor] of Object.entries(guardadas)) process.env[v] = valor;
+  }
 });
 
 test('el panel sigue abriéndose, y dice que la Sala está apagada', async () => {

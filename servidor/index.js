@@ -254,7 +254,7 @@ const MIME = {
    volver a pedirla. */
 const ES_CODIGO = ['.html', '.css', '.js', '.json', '.webmanifest'];
 
-async function estatico(url, req, res) {
+async function estatico(url, req, res, { cascaras = false } = {}) {
   let partes;
   try {
     partes = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
@@ -262,8 +262,29 @@ async function estatico(url, req, res) {
     return false;   // %ZZ y cosas asi: no es una ruta, no es nuestra
   }
 
-  /* La raiz es la pagina de estado. */
-  if (!partes.length) partes = ['index.html'];
+  /* La raiz es la pagina de estado, y es una entrada legitima. */
+  if (!partes.length) { partes = ['index.html']; cascaras = true; }
+
+  /*
+   * LAS CASCARAS NO SE SIRVEN POR SU NOMBRE DE ARCHIVO.
+   *
+   * Cada pagina tiene su direccion y su guarda: /panel, /crear,
+   * /chat/:slug, /sala/:slug, /admin. Pero los archivos viven en
+   * paginas/ y esta funcion sirve paginas/, asi que `/sala.html`,
+   * `/panel.html` y `/admin.html` contestaban 200 a cualquiera por la
+   * puerta de atras, salteando la guarda de su ruta.
+   *
+   * No dejaba entrar a ningun dato —todas las rutas de datos tienen su
+   * propia guarda, y con la Sala apagada `/sala.html?canal=x` es una
+   * pantalla que no reproduce nada—, pero se comia dos argumentos
+   * escritos en este archivo: que una Sala apagada "no existe para
+   * nadie", y que /admin conteste 404 al que no es el dueño para no
+   * anunciar que hay un panel de administracion y con que nombre.
+   *
+   * `cascaras: true` es como entra `servirPagina`, que es justamente
+   * quien ya paso por la guarda de la ruta.
+   */
+  if (!cascaras && partes[partes.length - 1].toLowerCase().endsWith('.html')) return false;
 
   /* Dos cinturones para lo mismo, porque un traversal que funcione
      serviria cualquier archivo del contenedor, incluido servidor/.env
@@ -1976,7 +1997,9 @@ async function cobroWebhook(url, req, res) {
 
 const servirPagina = archivo => async (url, req, res) => {
   const falso = new URL(`http://sala.local/${archivo}`);
-  if (await estatico(falso, req, res)) return;
+  /* `cascaras: true`: el de afuera no puede pedir `/panel.html`, pero
+     esto es la ruta /panel, que ya paso por su guarda. */
+  if (await estatico(falso, req, res, { cascaras: true })) return;
   return texto(res, 404, 'no existe');
 };
 
@@ -2061,6 +2084,24 @@ const canalPermitido = slug => creadores.existe(slug);
  * que este servicio no esta ofreciendo. Un 403 —o un 404 con otro
  * texto— anunciaria que ahi hay algo escondido esperando que alguien
  * insista.
+ *
+ * PERO ES UNA PROPIEDAD DE ESTAS RUTAS Y NO DEL SITIO, y conviene
+ * decirlo sin adornos: con la Sala apagada, `/chat/<slug>`,
+ * `/api/chat/<slug>/abierto`, `/eventos/<slug>` y el manifest siguen
+ * contestando 200 para un slug que existe y 404 para uno inventado. O
+ * sea que averiguar si alguien tiene sala en este servicio es tan facil
+ * como siempre. Es inevitable: el chat abierto es lo que se ofrece, y
+ * esconder su existencia seria no ofrecerlo. Lo que estas rutas cuidan
+ * es lo otro: que no se pueda distinguir "esta apagada" de "no existe",
+ * que es lo unico que invitaria a insistir.
+ *
+ * El `canalPermitido` de adelante es defensa en profundidad y hoy no
+ * decide nada: para un slug que no existe, `salaAbierta` ya contesta
+ * false (no hay documento, no hay campo). Se deja porque la pregunta
+ * "¿existe?" y la pregunta "¿esta prendida?" son dos, y el dia que
+ * `salaAbierta` cambie de criterio —o que el dueño del servicio entre
+ * por algun atajo, como ya entra en `existe`— esto tiene que seguir
+ * empezando por la primera.
  */
 const salaPermitida = async slug =>
   (await canalPermitido(slug)) && (await creadores.salaAbierta(slug));

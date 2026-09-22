@@ -62,6 +62,7 @@ Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pu
 | `TOPE_CANALES` | Cuántas salas se admiten (tope de Kick) | 900 |
 | `TOPE_TWITCH` | Cuántas conexiones EventSub sostiene el proceso | 50 |
 | `EMOTES_7TV` | Poner `0` apaga los emotes de 7TV sin tocar código | Prendido |
+| `EMOTES_7TV_RESPALDO` | Poner `0` apaga el respaldo entre redes (ver más abajo) | Prendido |
 | `EMOTES_KB` | Cuánto puede pesar **un** emote de 7TV | 128 KB |
 | `EMOTES_POR_MENSAJE` | Cuántos emotes de 7TV puede meter un solo mensaje | 30 |
 | `EMOTES_PLAZO_MS` | Cuánto puede durar **una bajada entera** de 7TV antes de darla por perdida | 20 s |
@@ -342,6 +343,10 @@ Entra por el **mismo array `emotes`** del formato único, con `fuente: "7tv"`. L
 **Por creador y por red.** La caché es por `(slug, red)`: el set del Kick de alguien no es el de su Twitch, y el de un creador no es el de otro. Con la clave por red sola —que es lo que alcanza en el repo hermano, que tiene un solo canal— el set de uno se le pintaría a los mensajes del otro: no rompe nada, muestra el emote equivocado en la pantalla de otra comunidad. Cada casillero tiene su propio vencimiento y su propia bajada en vuelo, así que un 7TV que falla para uno no toca la tabla de los demás.
 
 El id con el que se pregunta es el **`user_id` de Kick** (el mismo que usamos como `broadcaster_user_id` para el webhook) o el de Twitch, según la red. Ojo, que es el error fácil: el `channel_id` de Kick da 404 en 7TV.
+
+**El respaldo entre redes.** Verificado el 2026-09-22 contra el 7TV real: el Kick del dueño tiene set propio (66 emotes) y su Twitch no tiene `emote_set` en la respuesta — es el caso normal de quien usa 7TV sólo en una red. Sin respaldo, sus mensajes de Twitch saldrían sin un solo emote de 7TV aunque tenga 66 cargados del otro lado. Cuando la red de un mensaje no tiene set propio (7TV contestó 404, o contestó bien pero sin `emote_set`) **y esa red está vinculada**, se resuelve con el set de la **otra** red del mismo creador, si el creador la tiene vinculada también. Vale en las dos direcciones. La red propia **siempre gana**: el respaldo sólo entra cuando ya está confirmado que la propia no tiene nada, nunca mientras la bajada está en curso o mientras la caché guarda un fallo de verdad (esos dos casos se sirven sin respaldo, a la espera del próximo mensaje).
+
+No hay una cuarta caché para esto: el respaldo se lee con la misma `tabla(slug, otraRed)`, con sus mismos tres vencimientos, su misma bajada compartida y su mismo tope de seis en vuelo. Si alguien ya mira el chat de esa otra red, la tabla ya está cacheada y el respaldo la lee gratis. Se apaga con `EMOTES_7TV_RESPALDO=0`; viene prendido.
 
 **Los globales de 7TV van incluidos**, en una tabla sola para todo el proceso. Son los que ve cualquiera con la extensión puesta en cualquier canal, tenga o no el streamer cuenta de 7TV; dejarlos afuera haría que el multichat muestre menos de lo que la gente ya ve. Son 45 emotes y pesan poco: mediana 4,5 KB en 2x y 852 KB el set entero (medido el 2026-09-22 contra `7tv.io/v3/emote-sets/global`). Si un creador le pone a un emote suyo el nombre de uno global, gana el suyo.
 

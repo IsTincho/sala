@@ -64,7 +64,9 @@ Si Twitch te figura sin vincular, se vincula desde el mismo panel.
 6. Escribí el nombre exacto de un emote de tu 7TV (respeta mayúsculas, y tiene que ir
    como palabra suelta): tiene que verse la imagen, no la palabra.
 
-**Los emotes de 7TV ya se ven**, los tuyos y los globales, en Kick y en Twitch. Los que pesen
+**Los emotes de 7TV ya se ven**, los tuyos y los globales, en Kick y en Twitch. Si sólo tenés
+7TV activado en una de las dos redes, tus emotes también aparecen en los mensajes de la otra:
+no hace falta tener cuenta de 7TV en las dos. Los que pesen
 más de 128 KB hasta en su tamaño más chico no salen a propósito: se los bajaría el navegador de
 cada persona que esté mirando. Si te hacés una cuenta de 7TV recién ahora, puede tardar hasta
 una hora en aparecer; un deploy lo resuelve en el acto.

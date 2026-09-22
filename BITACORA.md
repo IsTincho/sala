@@ -4,6 +4,48 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — El respaldo entre redes de los emotes de 7TV
+
+**869 pruebas en verde** (eran 864), con 5 nuevas. Verificado hoy contra el 7TV real: el Kick
+del dueño tiene set propio (66 emotes) y su Twitch no tiene `emote_set` — es el caso normal
+de quien usa 7TV en una sola red. Hasta ahora eso dejaba sus mensajes de Twitch sin un solo
+emote de 7TV.
+
+`servidor/emotes.js` agrega `tablaConRespaldo()`: cuando la red propia de un mensaje no tiene
+set (7TV contestó 404, o contestó bien pero sin `emote_set`) **y esa red está vinculada**, se
+resuelve con el set de la OTRA red del mismo creador, si el creador la tiene vinculada. La
+propia siempre gana; el respaldo entra sólo cuando la ausencia de set está confirmada, nunca
+mientras la bajada todavía está en curso o falló de verdad (timeout, 500).
+
+Decisión: **no hay una cuarta caché.** El respaldo se lee con la misma `tabla(slug, otraRed)`
+que ya existe — misma clave, mismos tres vencimientos, misma bajada compartida, mismo tope de
+`EN_VUELO_MAX`. Guardar el respaldo aparte hubiera bajado el mismo set dos veces sin ganar
+nada, y un vencimiento propio para el respaldo hubiera sido una cuarta regla de caché para
+justificar. Para distinguir "esta red no tiene cuenta de 7TV" (el respaldo puede entrar) de
+"el creador ni tiene esta red en la herramienta" (no hay nada que respaldar), cada casillero
+suma un campo `vinculada`, que fija si la última bajada tuvo un id real para preguntarle a 7TV.
+
+Prendido por defecto (`EMOTES_7TV_RESPALDO`, apaga con `0`), como pidió el dueño.
+
+### Archivos tocados
+
+Editados: `servidor/emotes.js`, `pruebas/emotes.test.js`, `README.md`, `BITACORA.md`.
+
+### Cómo verlo funcionando
+
+```bash
+npm test    # 869 tests, incluidos los 5 nuevos de pruebas/emotes.test.js
+```
+
+### Qué quedó sin probar
+
+No hay una prueba dedicada al toggle `EMOTES_7TV_RESPALDO=0` (existe el mismo patrón que
+`EMOTES_7TV` y no se agregó una prueba nueva sólo para el apagado). Tampoco se probó el caso
+de una bajada colgada específicamente en el pedido de respaldo (lo cubre el mismo mecanismo de
+`PLAZO` que ya tiene su propia prueba para la bajada directa).
+
+---
+
 ## 2026-09-22 — Los emotes de 7TV, en el multichat, para Kick y para Twitch
 
 **864 pruebas en verde** (eran 825), con 39 nuevas. Cada guarda se comprobó al revés: se mutó

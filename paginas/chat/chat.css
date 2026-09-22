@@ -313,6 +313,45 @@ html, body{
 
 /* ---------- caja de escritura ---------- */
 
+/* ---------- /chat/<slug>: con que cuenta escribe cada espectador ----------
+
+   Va pegada arriba de la caja de escribir, con el mismo fondo, para
+   que se lean como una sola cosa: "escribis como fulana" y, al lado,
+   con que cuenta podes escribir y que te falta conectar. */
+
+.barra-conectar{
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--espacio-2);
+  padding: var(--espacio-2) var(--espacio-3);
+  background: var(--fondo-tarjeta);
+  border-top: 1px solid var(--borde);
+}
+
+.texto-conectar{
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: 0.85em;
+  color: var(--texto-tenue);
+}
+
+/* Los dos "Conectar" son enlaces (el login es una navegacion de
+   arriba) y tienen que verse como los botones de al lado. */
+a.boton-chip{
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.chip-kick{ border-color: var(--kick); color: var(--kick); }
+.chip-twitch{ border-color: var(--twitch); color: var(--twitch); }
+
+/* Con la barra puesta, la caja de abajo no repite el borde. El
+   :not([hidden]) importa: en /chat la barra no existe y ahi la caja
+   tiene que conservar su propio borde de arriba. */
+.barra-conectar:not([hidden]) + .caja-escritura{ border-top: 0; }
+
 .caja-escritura{
   flex: none;
   display: flex;

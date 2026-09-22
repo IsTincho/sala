@@ -91,7 +91,19 @@
     <button type="button" id="boton-cerrar-aviso" aria-label="Cerrar aviso">×</button>
   </div>
 
-  <!-- en /chat/<slug> no se ve: escribir como espectador es la Fase 5.2 -->
+  <!-- sólo en /chat/<slug>: con qué cuenta escribe cada espectador.
+       Los dos botones son enlaces porque el login es una navegación de
+       arriba (así vuelve la cookie con SameSite=Lax). Aparece sólo la
+       red que el creador abrió y que la persona todavía no conectó. -->
+  <div id="barra-conectar" class="barra-conectar" hidden>
+    <span id="texto-conectar" class="texto-conectar"></span>
+    <a id="conectar-kick" class="boton-chip chip-kick" href="/oauth/kick/entrar?rol=espectador" hidden>Conectar Kick</a>
+    <a id="conectar-twitch" class="boton-chip chip-twitch" href="/oauth/twitch/entrar?rol=espectador" hidden>Conectar Twitch</a>
+    <button type="button" id="boton-salir" class="boton-chip" hidden>Salir</button>
+  </div>
+
+  <!-- en /chat es la ventana del creador; en /chat/<slug> aparece
+       cuando la persona conectó alguna red que el creador abrió -->
   <footer class="caja-escritura" id="caja-escritura">
     <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
       placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>

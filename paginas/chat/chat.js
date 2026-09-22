@@ -17,14 +17,20 @@
 
    Y un modo mas, que no sale de un parametro sino del CAMINO:
      /chat/<slug>   el chat de esa sala, abierto a su comunidad
-                    (Fase 5.1, PLAN-MULTICHAT.md). Solo lectura: sin
-                    salud (es de la cuenta del creador) y sin caja de
-                    escribir (escribir como espectador es la 5.2). Le
-                    pregunta a /api/chat/<slug>/abierto si esta abierto
-                    y con que redes; cerrado, muestra "este chat esta
-                    cerrado" y se vuelve a fijar sola cada tanto. El
-                    slug sale del camino y de ningun otro lado: ?canal=
-                    no lo cambia.
+                    (PLAN-MULTICHAT.md). Sin salud (es de la cuenta del
+                    creador). Le pregunta a /api/chat/<slug>/abierto si
+                    esta abierto y con que redes; cerrado, muestra
+                    "este chat esta cerrado" y se vuelve a fijar sola
+                    cada tanto. El slug sale del camino y de ningun
+                    otro lado: ?canal= no lo cambia.
+
+                    Y se puede escribir (Fases 5.2 y 5.3): cada quien
+                    conecta SU Kick y/o SU Twitch y el mensaje sale en
+                    el chat de verdad con su nombre. El selector
+                    muestra solo las redes que conecto Y que el creador
+                    abrio; con las dos, "las dos" manda uno solo a las
+                    dos. Que se puede hacer lo dice /api/chat/<slug>/yo,
+                    nunca la pagina por su cuenta.
 
    Nada de innerHTML con datos que vengan de la red: el texto de
    un mensaje lo escribe gente desconocida, asi que todo pasa por
@@ -108,6 +114,14 @@
   const pantallaCerrado = document.getElementById('pantalla-cerrado');
   const tituloCerrado   = document.getElementById('titulo-cerrado');
   const textoCerrado    = document.getElementById('texto-cerrado');
+
+  const barraConectar   = document.getElementById('barra-conectar');
+  const textoConectar   = document.getElementById('texto-conectar');
+  const conectarKick    = document.getElementById('conectar-kick');
+  const conectarTwitch  = document.getElementById('conectar-twitch');
+  const botonSalir      = document.getElementById('boton-salir');
+
+  const NOMBRE_RED = { kick: 'Kick', twitch: 'Twitch' };
 
   // ---------- listas de mensajes: una por cada zona de scroll ----------
   // cada entrada guarda su propio estado de pausa/autoscroll, porque en
@@ -398,16 +412,30 @@
 
   // ---------- caja de escritura ----------
 
+  // Dos claves distintas: en /chat la persona elige entre los canales
+  // del creador y en /chat/<slug> entre SUS cuentas. Una sola clave
+  // haria que abrir el chat de alguien te cambiara el destino de tu
+  // propia ventana de streamer.
   const CLAVE_DESTINO = 'sala-chat-destino';
+  const CLAVE_RED     = 'sala-chat-red';
+  const claveDelSelector = () => (modoPublico ? CLAVE_RED : CLAVE_DESTINO);
   const LIMITE_VISIBLE_CARACTERES = 500;
 
-  try {
-    const guardado = localStorage.getItem(CLAVE_DESTINO);
+  function leerGuardado() {
+    try { return localStorage.getItem(claveDelSelector()) ?? ''; }
+    catch { return ''; }   // localStorage puede no estar disponible (file://, modo privado)
+  }
+
+  // en modo publico las opciones las arma `armarSelector` cuando se
+  // sabe que redes tiene la persona: elegir antes de saberlo dejaria
+  // puesta una red que capaz no conecto.
+  if (!modoPublico) {
+    const guardado = leerGuardado();
     if (guardado) selectDestino.value = guardado;
-  } catch { /* localStorage puede no estar disponible (file://, modo privado) */ }
+  }
 
   selectDestino.addEventListener('change', () => {
-    try { localStorage.setItem(CLAVE_DESTINO, selectDestino.value); } catch { /* nada, no es critico */ }
+    try { localStorage.setItem(claveDelSelector(), selectDestino.value); } catch { /* nada, no es critico */ }
   });
 
   function ajustarAlturaCampo() {
@@ -502,15 +530,30 @@
     envioEnCurso = true;
     botonEnviar.disabled = true;
 
-    fetch('/api/chat/enviar', {
+    // En /chat/<slug> el mensaje sale con la cuenta de QUIEN MIRA y va
+    // a la sala del camino; en /chat, con la del creador. Es la misma
+    // caja y el mismo resultado por red, así que sólo cambian la
+    // dirección y el nombre del campo.
+    const ruta = modoPublico
+      ? `/api/chat/${encodeURIComponent(slugPublico)}/enviar`
+      : '/api/chat/enviar';
+    const cuerpo = modoPublico
+      ? { red: selectDestino.value, texto }
+      : { texto, destino: selectDestino.value };
+
+    fetch(ruta, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ texto, destino: selectDestino.value }),
+      body: JSON.stringify(cuerpo),
     })
       .then(async r => {
         let datos = null;
         try { datos = await r.json(); } catch { /* sin cuerpo o invalido */ }
+
+        // Una red cuyo permiso dejó de valer se desconectó sola del
+        // lado del servidor: hay que volver a ofrecer su botón.
+        if (modoPublico && Array.isArray(datos?.reconectar) && datos.reconectar.length) consultarYo();
 
         if (r.status === 200) {
           campoTexto.value = '';
@@ -522,7 +565,16 @@
         } else if (r.status === 400) {
           mostrarAviso(datos?.error || 'mensaje invalido');
         } else if (r.status === 401) {
-          mostrarAviso('no hay sesión de dueño: entrá con Kick en /panel');
+          mostrarAviso(modoPublico
+            ? (datos?.error || 'conectá tu cuenta de nuevo para poder escribir')
+            : 'no hay sesión de dueño: entrá con Kick en /panel');
+          if (modoPublico) consultarYo();
+        } else if (r.status === 403) {
+          // el creador cerró el chat, o le sacó esta red, mientras la
+          // página estaba abierta: el corte es del servidor y la
+          // pantalla se pone al día.
+          mostrarAviso(datos?.error || 'acá no se puede escribir');
+          if (modoPublico) { consultarAbierto(); consultarYo(); }
         } else if (r.status === 429) {
           iniciarCuentaRegresiva(datos?.esperar ?? 5);
         } else if (r.status === 502) {
@@ -575,7 +627,86 @@
     document.title = 'Chat de ' + slugPublico + ' · Sala';
     barraSalud.hidden = true;
     bandaSesion.hidden = true;
+    // hasta que /yo conteste no se sabe si esta persona puede escribir
     cajaEscritura.hidden = true;
+
+    // El login es una navegación de arriba y por eso son enlaces: así
+    // la cookie vuelve (SameSite=Lax) y así se puede abrir en otra
+    // pestaña. `destino` es ESTE chat, para volver a donde estaba.
+    const volverAca = encodeURIComponent('/chat/' + slugPublico);
+    conectarKick.setAttribute('href', `/oauth/kick/entrar?rol=espectador&destino=${volverAca}`);
+    conectarTwitch.setAttribute('href', `/oauth/twitch/entrar?rol=espectador&destino=${volverAca}`);
+
+    botonSalir.addEventListener('click', () => {
+      botonSalir.disabled = true;
+      // Salir borra los tokens de las dos redes, no sólo la cookie: lo
+      // hace el servidor, acá sólo se refresca lo que se ve.
+      fetch('/api/espectador/salir', { method: 'POST', credentials: 'same-origin' })
+        .then(() => consultarYo())
+        .catch(() => mostrarAviso('no se pudo salir: probá de nuevo'))
+        .finally(() => { botonSalir.disabled = false; });
+    });
+  }
+
+  // ---------- /chat/<slug>: con qué cuenta escribe esta persona ----------
+
+  // El selector muestra SÓLO las redes que la persona conectó y que el
+  // creador abrió. Con las dos aparece "las dos", que es un solo envío
+  // (y un solo mensaje para el freno de dos segundos). Con una sola no
+  // hay nada que elegir y se esconde.
+  function armarSelector(redes) {
+    const opciones = redes.slice();
+    if (opciones.length > 1) opciones.push('ambas');
+
+    const antes = selectDestino.value;
+    selectDestino.textContent = '';
+    for (const valor of opciones) {
+      const op = document.createElement('option');
+      op.value = valor;
+      op.setAttribute('value', valor);
+      op.textContent = valor === 'ambas' ? 'Las dos' : NOMBRE_RED[valor];
+      selectDestino.appendChild(op);
+    }
+
+    // lo que ya estaba elegido gana, después lo guardado de la última
+    // vez, y si ninguno sirve la primera opción
+    const elegida = [antes, leerGuardado()].find(v => opciones.includes(v)) ?? opciones[0] ?? '';
+    selectDestino.value = elegida;
+    selectDestino.hidden = opciones.length < 2;
+  }
+
+  function aplicarYo(datos) {
+    const abiertas = Array.isArray(datos?.redes) ? datos.redes : [];
+    const conectadas = datos?.conectadas ?? {};
+    const puede = Array.isArray(datos?.puedeEscribir) ? datos.puedeEscribir : [];
+
+    // Se ofrece conectar sólo lo que sirve acá: una red que el creador
+    // no abrió no tiene por qué pedirle permisos a nadie.
+    conectarKick.hidden = !abiertas.includes('kick') || Boolean(conectadas.kick);
+    conectarTwitch.hidden = !abiertas.includes('twitch') || Boolean(conectadas.twitch);
+    botonSalir.hidden = !datos?.entrado;
+
+    if (puede.length) {
+      armarSelector(puede);
+      cajaEscritura.hidden = false;
+      const como = REDES.filter(r => conectadas[r])
+        .map(r => `${conectadas[r].nombre || ''} en ${NOMBRE_RED[r]}`.trim());
+      textoConectar.textContent = 'Escribís como ' + como.join(' y ');
+    } else {
+      cajaEscritura.hidden = true;
+      textoConectar.textContent = datos?.entrado
+        ? 'Conectá una de las redes que abrió este chat para poder escribir.'
+        : 'Conectá tu cuenta y escribí con tu nombre, en el chat de verdad.';
+    }
+
+    barraConectar.hidden = false;
+  }
+
+  function consultarYo() {
+    return fetch(`/api/chat/${encodeURIComponent(slugPublico)}/yo`, { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(datos => { if (datos) aplicarYo(datos); })
+      .catch(() => { /* un corte suelto no tiene por qué esconder la caja */ });
   }
 
   function mostrarCerrado(titulo, texto) {
@@ -634,6 +765,10 @@
       desconectarPublico();
       mostrarCerrado('Este chat está cerrado',
         'El creador todavía no lo abrió a su comunidad. Esta página se fija sola cada tanto.');
+      // Y no se escribe: el corte de verdad lo hace el servidor (403),
+      // pero dejar la caja puesta sería ofrecer algo que no anda.
+      barraConectar.hidden = true;
+      cajaEscritura.hidden = true;
       programarConsultaAbierto();
       return;
     }
@@ -643,6 +778,10 @@
     areaMensajes.hidden = false;
     aplicarFiltro();
     conectarPublico();
+    // Qué redes abrió el creador acaba de cambiar (o es la primera
+    // vez): el selector se arma con eso cruzado con lo que tiene la
+    // persona, así que se vuelve a preguntar.
+    consultarYo();
   }
 
   function consultarAbierto() {

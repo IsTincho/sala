@@ -606,14 +606,31 @@ const turnos = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(
 const ABIERTO_LAS_DOS = { abierto: true, redes: ['kick', 'twitch'] };
 const CERRADO = { abierto: false, redes: [] };
 
+/* Lo que contesta /api/chat/<slug>/yo. Quien mira sin conectar nada es
+   el caso por defecto: leer no pide login. */
+const SIN_CONECTAR = { entrado: false, abierto: true, redes: ['kick', 'twitch'], conectadas: {}, puedeEscribir: [] };
+const CON_KICK = {
+  entrado: true, abierto: true, redes: ['kick', 'twitch'],
+  conectadas: { kick: { nombre: 'unaespectadora' } }, puedeEscribir: ['kick'],
+};
+const CON_LAS_DOS = {
+  entrado: true, abierto: true, redes: ['kick', 'twitch'],
+  conectadas: { kick: { nombre: 'unaespectadora' }, twitch: { nombre: 'UnaEspectadora' } },
+  puedeEscribir: ['kick', 'twitch'],
+};
+
 /**
  * La misma página, abierta en /chat/<slug>. El bus de mentira anota
  * cada conexión y deja ver si se cerró.
  */
-function abrirPublico({ ruta = '/chat/ana', busqueda = '', abierto = ABIERTO_LAS_DOS, estado = 200 } = {}) {
+function abrirPublico({ ruta = '/chat/ana', busqueda = '', abierto = ABIERTO_LAS_DOS, estado = 200,
+                       yo = SIN_CONECTAR } = {}) {
   const pedidos = [];
   const conexiones = [];
   let respuesta = { estado, datos: abierto };
+  let quienSoy = yo;
+  /* Lo que contesta /enviar. Por defecto, salio en todo lo que se pidio. */
+  let respuestaEnvio = { estado: 200, datos: { ok: true } };
 
   const responder = async (url, opciones = {}) => {
     const r = String(url);
@@ -621,6 +638,17 @@ function abrirPublico({ ruta = '/chat/ana', busqueda = '', abierto = ABIERTO_LAS
     if (/^\/api\/chat\/[^/]+\/abierto$/.test(r)) {
       const { estado: s, datos } = respuesta;
       return { ok: s === 200, status: s, json: async () => datos };
+    }
+    if (/^\/api\/chat\/[^/]+\/yo$/.test(r)) {
+      return { ok: true, status: 200, json: async () => quienSoy };
+    }
+    if (/^\/api\/chat\/[^/]+\/enviar$/.test(r)) {
+      const { estado: s, datos } = respuestaEnvio;
+      return { ok: s === 200, status: s, json: async () => datos };
+    }
+    if (r === '/api/espectador/salir') {
+      quienSoy = SIN_CONECTAR;
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
@@ -647,11 +675,20 @@ function abrirPublico({ ruta = '/chat/ana', busqueda = '', abierto = ABIERTO_LAS
     llega: (tipo, datos) => conexiones.at(-1)?.fn(tipo, datos),
     /** lo que va a contestar /abierto la proxima vez */
     contestar: (datos, s = 200) => { respuesta = { estado: s, datos }; },
+    /** lo que va a contestar /yo la proxima vez */
+    contestarYo: datos => { quienSoy = datos; },
+    /** lo que va a contestar /enviar la proxima vez */
+    contestarEnvio: (datos, s = 200) => { respuestaEnvio = { estado: s, datos }; },
+    /** el ultimo POST a /enviar, ya parseado */
+    ultimoEnvio() {
+      const p = pedidos.filter(x => /\/enviar$/.test(x.url)).at(-1);
+      return p ? { url: p.url, cuerpo: JSON.parse(p.opciones.body) } : null;
+    },
     consultasAbierto: () => pedidos.filter(x => /\/abierto$/.test(x.url)).length,
   };
 }
 
-test('/chat/<slug> abierto: Kick y Twitch mezclados, sin salud y sin caja de escribir', async () => {
+test('/chat/<slug> abierto: Kick y Twitch mezclados, y sin la salud del creador', async () => {
   const p = abrirPublico();
   await asentarse();
 
@@ -667,7 +704,7 @@ test('/chat/<slug> abierto: Kick y Twitch mezclados, sin salud y sin caja de esc
   assert.equal(p.el('lista-mezclada').dataset.filtro, 'todas');
   assert.equal(p.el('columna-mezclada').hidden, false, 'la vista por defecto es la mezclada');
 
-  assert.equal(p.el('caja-escritura').hidden, true, 'escribir es la Fase 5.2');
+  assert.equal(p.el('caja-escritura').hidden, true, 'sin ninguna red conectada no hay con qué escribir');
   assert.equal(p.el('barra-salud').hidden, true);
   assert.equal(p.el('banda-sesion').hidden, true);
   assert.equal(p.el('pantalla-cerrado').hidden, true);
@@ -817,6 +854,175 @@ test('?demo=1 en /chat/<slug> no toca la red ni muestra la salud del creador', a
   assert.ok(p.el('lista-mezclada').children.length >= 5);
   assert.equal(p.el('banda-resuscribir').hidden, true);
   assert.equal(p.el('caja-escritura').hidden, true);
+  p.cerrar();
+});
+
+/* ============ /chat/<slug>: escribir con la cuenta de cada uno ============ */
+
+test('sin conectar nada: los dos botones, y ninguna caja de escribir', async () => {
+  const p = abrirPublico();
+  await asentarse();
+
+  assert.equal(p.el('barra-conectar').hidden, false);
+  assert.equal(p.el('conectar-kick').hidden, false);
+  assert.equal(p.el('conectar-twitch').hidden, false);
+  assert.equal(p.el('boton-salir').hidden, true, 'no hay de dónde salir');
+  assert.equal(p.el('caja-escritura').hidden, true, 'leer no pide login, escribir sí');
+
+  /* El login vuelve a ESTE chat, y con el rol de espectador: con otro
+     rol pediría permisos de creador. */
+  const kick = p.el('conectar-kick').getAttribute('href');
+  assert.match(kick, /^\/oauth\/kick\/entrar\?rol=espectador&destino=%2Fchat%2Fana$/);
+  assert.match(p.el('conectar-twitch').getAttribute('href'),
+    /^\/oauth\/twitch\/entrar\?rol=espectador&destino=%2Fchat%2Fana$/);
+  p.cerrar();
+});
+
+test('con una sola red conectada no hay selector, y dice con qué cuenta escribís', async () => {
+  const p = abrirPublico({ yo: CON_KICK });
+  await asentarse();
+
+  assert.equal(p.el('caja-escritura').hidden, false);
+  assert.equal(p.el('select-destino').hidden, true, 'con una sola red no hay nada que elegir');
+  assert.equal(p.el('select-destino').value, 'kick');
+  assert.equal(p.el('conectar-kick').hidden, true, 'ya la conectó');
+  assert.equal(p.el('conectar-twitch').hidden, false, 'la otra sigue ofrecida');
+  assert.equal(p.el('boton-salir').hidden, false);
+  assert.match(p.el('texto-conectar').textContent, /unaespectadora/);
+  p.cerrar();
+});
+
+test('con las dos conectadas aparece "las dos", y es UN solo envío', async () => {
+  const p = abrirPublico({ yo: CON_LAS_DOS });
+  await asentarse();
+
+  const opciones = p.el('select-destino').children.map(o => o.getAttribute('value'));
+  assert.deepEqual(opciones, ['kick', 'twitch', 'ambas']);
+  assert.equal(p.el('select-destino').hidden, false);
+  assert.equal(p.el('conectar-kick').hidden, true);
+  assert.equal(p.el('conectar-twitch').hidden, true);
+
+  p.el('select-destino').value = 'ambas';
+  p.el('campo-texto').value = 'hola a las dos';
+  p.el('boton-enviar').disparar('click');
+  await asentarse();
+
+  const envio = p.ultimoEnvio();
+  assert.equal(envio.url, '/api/chat/ana/enviar');
+  assert.deepEqual(envio.cuerpo, { red: 'ambas', texto: 'hola a las dos' },
+    'un pedido solo: el servidor lo manda a las dos y cuenta como uno');
+  assert.equal(p.el('campo-texto').value, '', 'salió: se limpia la caja');
+  p.cerrar();
+});
+
+test('la red que el creador NO abrió no se ofrece ni para conectar', async () => {
+  const p = abrirPublico({
+    abierto: { abierto: true, redes: ['kick'] },
+    yo: { entrado: false, abierto: true, redes: ['kick'], conectadas: {}, puedeEscribir: [] },
+  });
+  await asentarse();
+
+  assert.equal(p.el('conectar-kick').hidden, false);
+  assert.equal(p.el('conectar-twitch').hidden, true,
+    'pedirle a alguien permisos de una red que este chat no usa sería pedir de más');
+  p.cerrar();
+});
+
+test('tener Twitch conectado no alcanza si el creador no lo abrió', async () => {
+  const p = abrirPublico({
+    abierto: { abierto: true, redes: ['kick'] },
+    yo: {
+      entrado: true, abierto: true, redes: ['kick'],
+      conectadas: { kick: { nombre: 'una' }, twitch: { nombre: 'Una' } },
+      puedeEscribir: ['kick'],
+    },
+  });
+  await asentarse();
+
+  assert.deepEqual(p.el('select-destino').children.map(o => o.getAttribute('value')), ['kick'],
+    'sin "las dos": a Twitch no se puede escribir acá');
+  p.cerrar();
+});
+
+test('salió en una y falló en la otra: se dice cuál y por qué', async () => {
+  const p = abrirPublico({ yo: CON_LAS_DOS });
+  await asentarse();
+
+  p.contestarEnvio({
+    ok: true,
+    kick: { ok: true, motivo: '' },
+    twitch: { ok: false, motivo: 'el AutoMod lo retuvo' },
+  });
+  p.el('campo-texto').value = 'algo';
+  p.el('boton-enviar').disparar('click');
+  await asentarse();
+
+  const aviso = p.el('texto-aviso-envio').textContent;
+  assert.match(aviso, /Kick/);
+  assert.match(aviso, /el AutoMod lo retuvo/, 'el motivo de Twitch, tal cual');
+  assert.equal(p.el('aviso-envio').hidden, false);
+  p.cerrar();
+});
+
+test('un 403 pone la pantalla al día: el creador cerró el chat mientras tanto', async () => {
+  const p = abrirPublico({ yo: CON_KICK });
+  await asentarse();
+  const antes = p.consultasAbierto();
+
+  p.contestarEnvio({ error: 'este chat esta cerrado' }, 403);
+  p.contestar(CERRADO);
+  p.contestarYo({ entrado: true, abierto: false, redes: [], conectadas: { kick: { nombre: 'una' } }, puedeEscribir: [] });
+  p.el('campo-texto').value = 'tarde';
+  p.el('boton-enviar').disparar('click');
+  await asentarse();
+
+  assert.match(p.el('texto-aviso-envio').textContent, /cerrado/);
+  assert.ok(p.consultasAbierto() > antes, 'vuelve a preguntar en vez de quedarse con la pantalla vieja');
+  assert.equal(p.el('caja-escritura').hidden, true);
+  assert.equal(p.el('pantalla-cerrado').hidden, false);
+  p.cerrar();
+});
+
+test('con el chat cerrado no hay barra de conectar ni caja', async () => {
+  const p = abrirPublico({ abierto: CERRADO, yo: CON_LAS_DOS });
+  await asentarse();
+
+  assert.equal(p.el('barra-conectar').hidden, true);
+  assert.equal(p.el('caja-escritura').hidden, true);
+  assert.ok(!p.pedidos.some(x => /\/yo$/.test(x.url)), 'de un chat cerrado no se pregunta nada más');
+  p.cerrar();
+});
+
+test('salir vuelve a dejar la página como la de cualquiera que mira', async () => {
+  const p = abrirPublico({ yo: CON_LAS_DOS });
+  await asentarse();
+  assert.equal(p.el('caja-escritura').hidden, false);
+
+  p.el('boton-salir').disparar('click');
+  await asentarse();
+
+  assert.ok(p.pedidos.some(x => x.url === '/api/espectador/salir' && x.opciones.method === 'POST'));
+  assert.equal(p.el('caja-escritura').hidden, true);
+  assert.equal(p.el('boton-salir').hidden, true);
+  assert.equal(p.el('conectar-kick').hidden, false, 'y se puede volver a entrar');
+  p.cerrar();
+});
+
+test('una red que perdió el permiso se vuelve a ofrecer sola', async () => {
+  const p = abrirPublico({ yo: CON_LAS_DOS });
+  await asentarse();
+
+  /* El servidor la desconectó al recibir un 401 de Twitch: avisa con
+     `reconectar` y la página vuelve a preguntar qué le quedó. */
+  p.contestarEnvio({ ok: true, reconectar: ['twitch'], kick: { ok: true, motivo: '' },
+    twitch: { ok: false, motivo: 'Twitch rechazo tu permiso' } });
+  p.contestarYo(CON_KICK);
+  p.el('campo-texto').value = 'chau twitch';
+  p.el('boton-enviar').disparar('click');
+  await asentarse();
+
+  assert.equal(p.el('conectar-twitch').hidden, false, 'el botón vuelve');
+  assert.deepEqual(p.el('select-destino').children.map(o => o.getAttribute('value')), ['kick']);
   p.cerrar();
 });
 

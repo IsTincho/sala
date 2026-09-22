@@ -22,8 +22,9 @@
   <p>
     Sala es un servicio que le deja a un streamer de Kick pasar un video en una
     página propia, sincronizado para todos los que estén mirando, con su cámara
-    y el chat real de su canal al lado. Si creás tu Sala, esto es lo que
-    acordamos.
+    y el chat real de su canal al lado. Y abrirle a su comunidad un chat donde
+    se ven Kick y Twitch juntos y cada quien escribe con su propia cuenta. Si
+    creás tu Sala, esto es lo que acordamos.
   </p>
 
   <h2>1. El contenido es tuyo, y respondés por él</h2>
@@ -55,18 +56,50 @@
   <h2>3. Qué guardamos de vos y de tu gente</h2>
   <ul>
     <li>
-      <b>De vos:</b> tu identificador y tu nombre de Kick, y los permisos
-      (tokens) que nos diste para leer tu chat y escribir en él. Los tokens se
-      guardan cifrados. Si desvinculás tu cuenta, se borran.
+      <b>De vos:</b> tu identificador y tu nombre de Kick (y los de Twitch, si
+      lo vinculaste), y los permisos (tokens) que nos diste para leer tu chat y
+      escribir en él. Los tokens se guardan cifrados. Si desvinculás tu cuenta,
+      se borran.
     </li>
     <li>
-      <b>De quien entra a tu Sala:</b> su identificador y su nombre de Kick, y
-      su permiso para escribir en el chat con su cuenta. Nada más: no guardamos
-      mail, ni dirección IP, ni lo que escribió. Cuando toca «Salir», se borra.
+      <b>De quien entra a tu Sala o a tu chat abierto:</b> por cada red que
+      conecte —Kick, Twitch o las dos—, su identificador en esa red, su nombre
+      para mostrar y el permiso (token) que dio para escribir con su cuenta.
+      Los tokens se guardan cifrados. <b>Nada más:</b> no guardamos mail, ni
+      dirección IP, ni lo que escribió, ni en qué salas estuvo.
     </li>
     <li>
-      <b>Lo que se escribe</b> va al chat de Kick y vuelve por ahí. Es un chat
-      de Kick, con las reglas de Kick.
+      <b>Si bloqueás a alguien</b> en tu chat, queda anotado en tu sala su
+      identificador en esa red y el nombre que tenía, para que puedas
+      reconocerlo y soltarlo cuando quieras.
+    </li>
+    <li>
+      <b>Lo que se escribe</b> va al chat de Kick o al de Twitch y vuelve por
+      ahí. Son sus chats, con sus reglas: sus baneos, su modo sólo-seguidores y
+      su AutoMod se aplican igual que si la persona escribiera desde su web.
+    </li>
+    <li>
+      <b>Números, no personas:</b> se muestra cuánta gente está conectada a un
+      chat, nunca quiénes.
+    </li>
+  </ul>
+
+  <h3>Cómo se borra lo de un espectador</h3>
+  <ul>
+    <li>
+      <b>Tocando «Salir»</b> en el chat o en la Sala: borra los tokens de las
+      dos redes y la sesión, en el momento. No es un logout que deja el permiso
+      guardado del otro lado.
+    </li>
+    <li>
+      <b>Solo, a los 60 días</b> de la última vez que se usó. Guardar el
+      permiso de alguien que no vuelve es un riesgo sin ningún beneficio; si
+      vuelve, lo conecta de nuevo en dos clicks.
+    </li>
+    <li>
+      <b>Desde la plataforma:</b> quitarle el permiso a la app desde la
+      configuración de Kick o de Twitch también lo corta, y acá el token deja
+      de servir y se descarta.
     </li>
   </ul>
 

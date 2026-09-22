@@ -15,19 +15,34 @@
    ESTE MODULO NO SABE DE HTTP, Y ES A PROPOSITO
 
    Devuelve `{ ok, motivo, estado, caduco }` y no toca `res` ni
-   cookies. Quien decide que hacer con eso es cada ruta, porque no
-   deciden lo mismo:
+   cookies. Quien decide que hacer con eso es cada ruta, pero las dos
+   hacen lo mismo con un permiso vencido: DESCONECTAN ESA RED Y NADA
+   MAS. La Sala, ademas, cierra la sesion si con eso la persona se
+   quedo sin ninguna red.
 
-     - la Sala, con un token que ya no sirve, CIERRA LA SESION y borra
-       al espectador entero. Es un producto de una sola red: si Kick lo
-       rechaza no queda nada que hacer ahi, y dejar vivo un token de
-       Twitch al que ninguna sesion apunta seria guardar credenciales
-       de alguien que no las puede usar ni borrar.
-     - el chat abierto DESCONECTA SOLO ESA RED y deja la sesion en pie,
-       porque la otra red puede seguir andando.
+   ASI NO ERA, Y EL MOTIVO ESCRITO ERA FALSO. La Sala llamaba a
+   `espectadores.olvidar` —el documento entero, las dos redes— con este
+   argumento: "es un producto de una sola red, y un token de Twitch al
+   que ninguna sesion apunta es una credencial que su dueño no puede ni
+   usar ni borrar". La premisa no se cumple desde la Fase 5.3: el
+   espectador es UNO SOLO para todo el dominio y la MISMA cookie vale
+   en /chat/<slug>, asi que despues de ese borrado sí habia una sesion
+   apuntando al token de Twitch: la que estaba usando en la otra
+   pagina. Borrarlo era hacerle perder una cuenta que andaba por un
+   problema en la otra.
 
    `caduco` es justamente eso: "este permiso no sirve mas", sin decir
    que hay que hacer al respecto.
+
+   ---------------------------------------------------------------
+   UN 403 NO ES UN PERMISO VENCIDO
+
+   Las dos plataformas contestan 401 cuando el token no sirve y 403
+   cuando quien escribe no puede escribir EN ESE CANAL: baneado, modo
+   solo-seguidores, solo-suscriptores. Tratarlos igual —como se hacia
+   hasta el 2026-09-22— le borraba el permiso a alguien que lo tenia
+   perfecto y lo mandaba a reconectar su cuenta para volver a chocar
+   contra el mismo baneo. Solo el 401 marca `caduco`.
 
    ---------------------------------------------------------------
    UN 200 DE TWITCH NO QUIERE DECIR QUE SALIO
@@ -40,6 +55,7 @@
    esperando una respuesta que nadie va a ver.
    ============================================================ */
 
+import * as creadores from './creadores.js';
 import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
 import * as metricas from './metricas.js';
@@ -56,6 +72,36 @@ export function redesDelPedido(red) {
 }
 
 /**
+ * Las redes en las que el creador de ESTA sala bloqueo a esta persona.
+ *
+ * Una sola implementacion para las dos puertas, y por eso vive aca y no
+ * en un manejador: `/api/sala/:slug/chat` y `/api/chat/:slug/enviar`
+ * caen en el mismo canal de Kick, asi que un bloqueo que valga en una
+ * sola no es un bloqueo. El creador bloquea a una PERSONA (por su id en
+ * esa red), no a una pantalla.
+ *
+ * @param {string} slug
+ * @param {object} v      el espectador leido (`espectadores.leer`)
+ * @param {string[]} redes
+ */
+export async function bloqueadasPara(slug, v, redes) {
+  const c = await creadores.chatAbierto(slug);
+  return redes.filter(red => v?.[red] && creadores.estaBloqueado(c, red, v[red].usuarioId));
+}
+
+/**
+ * El texto tal como va a viajar.
+ *
+ * EXISTE PARA QUE LO QUE SE MIDE SEA LO QUE SE MANDA. El tope se
+ * comprobaba sobre el texto recortado y despues se mandaba el crudo:
+ * 400 letras y 400 espacios pasaban como 400 caracteres y llegaban a
+ * Twitch como 800. Kick zafaba de casualidad porque `kick.js` vuelve a
+ * recortar adentro; Twitch manda `message: texto` tal cual, asi que con
+ * "las dos" el mismo mensaje salia distinto en cada red.
+ */
+export const comoViaja = texto => String(texto ?? '').trim();
+
+/**
  * Por que este texto no se puede mandar a estas redes, o ''.
  *
  * Los dos topes dicen "500" y no son el mismo numero: Kick cuenta
@@ -66,7 +112,7 @@ export function redesDelPedido(red) {
  * ahi ya no se puede deshacer.
  */
 export function porQueNoSePuedeMandar(texto, redes) {
-  const cuerpo = String(texto ?? '').trim();
+  const cuerpo = comoViaja(texto);
   if (!cuerpo) return 'el mensaje esta vacio';
 
   if (redes.includes('kick')) {
@@ -107,9 +153,12 @@ const mal = (motivo, estado = 502, caduco = false) => ({ ok: false, motivo, esta
  */
 export async function aUnaRed(slug, espId, red, texto) {
   if (!REDES.includes(red)) return mal(`red desconocida: ${red}`, 400);
+  /* Acá y no en cada ruta: lo que viaja es lo que se midio, venga de
+     donde venga. */
+  const cuerpo = comoViaja(texto);
   return red === 'twitch'
-    ? aTwitch(slug, espId, texto)
-    : aKick(slug, espId, texto);
+    ? aTwitch(slug, espId, cuerpo)
+    : aKick(slug, espId, cuerpo);
 }
 
 async function aKick(slug, espId, texto) {
@@ -140,8 +189,14 @@ async function aKick(slug, espId, texto) {
       const espera = espectadores.anotar429(slug, e.retryAfter);
       return { ...mal('Kick esta frenando los envios del canal', 429), esperar: Math.ceil(espera / 1000) };
     }
-    if (estado === 401 || estado === 403) {
-      return mal('Kick rechazo tu permiso: conecta Kick de nuevo', estado, true);
+    if (estado === 401) {
+      return mal('Kick rechazo tu permiso: conecta Kick de nuevo', 401, true);
+    }
+    if (estado === 403) {
+      /* No es el token: es el canal. Kick contesta 403 a quien esta
+         baneado o a quien escribe en un chat en modo solo-seguidores.
+         Reconectar la cuenta no lo arregla, asi que no se le toca. */
+      return mal('Kick no te deja escribir en este canal', 403);
     }
     return mal(recortar(e));
   }
@@ -183,8 +238,14 @@ async function aTwitch(slug, espId, texto) {
          es mod), no por canal: se frena a quien lo pidio y a nadie mas. */
       return { ...mal('Twitch esta frenando tus envios', 429), esperar: 5 };
     }
-    if (estado === 401 || estado === 403) {
-      return mal('Twitch rechazo tu permiso: conecta Twitch de nuevo', estado, true);
+    if (estado === 401) {
+      return mal('Twitch rechazo tu permiso: conecta Twitch de nuevo', 401, true);
+    }
+    if (estado === 403) {
+      /* Mismo caso que en Kick: 403 de Helix es "este canal no te deja
+         escribir" (baneado, solo seguidores, solo suscriptores), no
+         "tu token vencio". */
+      return mal('Twitch no te deja escribir en este canal', 403);
     }
     return mal(recortar(e));
   }

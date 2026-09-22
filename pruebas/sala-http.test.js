@@ -86,10 +86,16 @@ let sesionEspectador = '';
 let sesionOtroEspectador = '';
 let claveSubida = '';
 
-const pedirJson = async (ruta, { metodo = 'GET', cookie = '', clave = '', cuerpo } = {}) => {
+/* El origen que manda un navegador que abrió este sitio. Va por
+   defecto en todos los pedidos porque eso es lo que hace un navegador
+   de verdad; los tests de CSRF lo cambian a mano. */
+const NUESTRO = 'https://sala.example';
+
+const pedirJson = async (ruta, { metodo = 'GET', cookie = '', clave = '', cuerpo, origen = NUESTRO } = {}) => {
   const cabeceras = {};
   if (cookie) cabeceras.Cookie = cookie;
   if (clave) cabeceras['X-Clave-Subida'] = clave;
+  if (origen) cabeceras.Origin = origen;
   if (cuerpo !== undefined) cabeceras['Content-Type'] = 'application/json';
   const r = await fetch(raiz + ruta, {
     method: metodo,
@@ -1009,6 +1015,146 @@ test('/yo y /salir también validan el slug', async () => {
   const buena = await pedirJson(`/api/sala/${SLUG}/yo`);
   assert.equal(buena.estado, 200);
   assert.equal(buena.datos.entrado, false);
+});
+
+/* ==================================================== CSRF
+
+   Los dos POST de /api/sala/ hacen lo mismo que sus hermanos de
+   /api/chat/: uno escribe con el nombre de la persona en el chat de un
+   tercero y el otro le borra los tokens. El argumento entero está en
+   `servidor/origenes.js` y vale igual acá: la cookie es `SameSite=Lax`,
+   así que sin el `Origin` una página ajena podía hacer que alguien
+   escribiera —o que se quedara sin cuenta— sin darse cuenta. */
+
+test('escribir en la Sala desde una página ajena no llega a Kick', async () => {
+  espectadores.reiniciar();
+  pedidosAKick = [];
+  const cookie = await nuevoEspectador('1010', 'la del origen ajeno');
+
+  const r = await pedirJson(`/api/sala/${SLUG}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'desde otro sitio' },
+    origen: 'https://malo.example',
+  });
+  assert.equal(r.estado, 403, `contestó ${r.estado}`);
+  assert.equal(pedidosAKick.length, 0, 'ni siquiera se intentó');
+
+  /* Sin `Origin` tampoco: los navegadores lo mandan en todo POST de
+     fetch, así que exigirlo no rompe a nadie que use la página. */
+  espectadores.reiniciar();
+  const sinOrigen = await pedirJson(`/api/sala/${SLUG}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'sin origen' }, origen: '',
+  });
+  assert.equal(sinOrigen.estado, 403, `contestó ${sinOrigen.estado}`);
+  assert.equal(pedidosAKick.length, 0);
+});
+
+test('salir de la Sala desde una página ajena no le borra la cuenta a nadie', async () => {
+  const cookie = await nuevoEspectador('1011', 'la que no se quiere ir');
+
+  const r = await pedirJson(`/api/sala/${SLUG}/salir`, {
+    metodo: 'POST', cookie, origen: 'https://malo.example',
+  });
+  assert.equal(r.estado, 403, `contestó ${r.estado}`);
+  assert.ok(await espectadores.leer('1011'), 'una página ajena no puede cerrarle la sesión a nadie');
+
+  /* Y desde una página nuestra sigue saliendo, que es el control
+     negativo: sin él, un 403 clavado pasaría igual. */
+  const propio = await pedirJson(`/api/sala/${SLUG}/salir`, { metodo: 'POST', cookie });
+  assert.equal(propio.estado, 200);
+  assert.equal(await espectadores.leer('1011'), null);
+});
+
+/* ============================ el slug que llega con basura */
+
+test('un slug con espacios no revienta: se normaliza igual que en /api/chat/', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA: `apiSalaChat` normalizaba con
+   * `.toLowerCase()` y sin `trim`, mientras que `creadores.existe` sí
+   * recorta. O sea que " istincho" pasaba la guarda y después reventaba
+   * adentro de `vinculos.identidad`, fuera de todo try/catch: un 500
+   * con stack trace en los logs, desde una ruta que alcanza cualquiera
+   * con una cookie.
+   */
+  espectadores.reiniciar();
+  pedidosAKick = [];
+  respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true, message_id: 'm' } }, cabeceras: {} };
+  const cookie = await nuevoEspectador('1012', 'la del slug raro');
+
+  const r = await pedirJson(`/api/sala/%20${SLUG}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'con un espacio adelante' },
+  });
+  assert.notEqual(r.estado, 500, 'un slug con un espacio no puede ser un 500');
+  assert.equal(r.estado, 200, `contestó ${r.estado}`);
+  assert.equal(JSON.parse(pedidosAKick.at(-1).cuerpo).broadcaster_user_id, 4242,
+    'y cae en el canal de esa sala, no en otro');
+
+  /* Las otras dos rutas de /api/sala/ ya normalizaban así. */
+  espectadores.reiniciar();
+  assert.equal((await pedirJson(`/api/sala/%20${SLUG}/yo`, { cookie })).estado, 200);
+});
+
+/* ====================== el permiso vencido y el baneo no son lo mismo */
+
+test('un 401 de Kick no le borra el Twitch a nadie', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA: la Sala llamaba a `espectadores.olvidar`,
+   * que desde la Fase 5.3 borra el documento ENTERO. El espectador es
+   * uno solo para todo el dominio, así que un permiso de Kick vencido
+   * mientras miraba una peli le borraba de paso el Twitch que estaba
+   * usando en /chat/<slug>, que no tiene nada que ver.
+   */
+  espectadores.reiniciar();
+  const id = '1013';
+  await espectadores.conectar(id, 'kick', {
+    usuarioId: id, nombre: 'la de las dos redes',
+    accessToken: 'acceso-kick', refreshToken: 'refresco-kick',
+    venceEn: Date.now() + 3600_000, scopes: 'user:read chat:write',
+  });
+  await espectadores.conectar(id, 'twitch', {
+    usuarioId: 'tw-1013', nombre: 'la de las dos redes', login: 'lasdos',
+    accessToken: 'acceso-twitch', refreshToken: 'refresco-twitch',
+    venceEn: Date.now() + 3600_000, scopes: 'user:write:chat',
+  });
+  const cookie = cookieEspectador(await sesion.crear({ tipo: 'espectador', usuario: id, nombre: 'la de las dos redes' }));
+  respuestaDeKick = { estado: 401, cuerpo: { error: 'unauthorized' }, cabeceras: {} };
+
+  const r = await pedirJson(`/api/sala/${SLUG}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'se me venció el permiso' },
+  });
+  assert.equal(r.estado, 401, `contestó ${r.estado}`);
+
+  const v = await espectadores.leer(id);
+  assert.ok(v, 'el espectador no se puede haber borrado entero');
+  assert.deepEqual(espectadores.redesDe(v), ['twitch'],
+    'se va el Kick que Kick rechazó, y el Twitch que anda se queda');
+  assert.equal(v.twitch.accessToken, 'acceso-twitch', 'y su token de Twitch no se tocó');
+
+  respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true } }, cabeceras: {} };
+  await espectadores.olvidar(id);
+});
+
+test('un 403 de Kick es un baneo del canal, no un permiso vencido', async () => {
+  /*
+   * LOS DOS SE TRATABAN IGUAL, y son cosas distintas: 401 es "este
+   * token no sirve más" y 403 es "vos no podés escribir acá" (baneado,
+   * sólo seguidores, sólo suscriptores). Tratar el segundo como el
+   * primero le borraba el permiso a alguien que lo tenía perfecto, y lo
+   * mandaba a reconectar su cuenta para volver a chocar contra el mismo
+   * baneo.
+   */
+  espectadores.reiniciar();
+  const cookie = await nuevoEspectador('1014', 'la baneada en el canal');
+  respuestaDeKick = { estado: 403, cuerpo: { error: 'banned' }, cabeceras: {} };
+
+  const r = await pedirJson(`/api/sala/${SLUG}/chat`, {
+    metodo: 'POST', cookie, cuerpo: { texto: 'estoy baneada' },
+  });
+  assert.equal(r.estado, 403, `contestó ${r.estado}: un baneo no es un 401`);
+  assert.ok(await espectadores.leer('1014'), 'un baneo del canal no le borra el permiso a nadie');
+  assert.equal((r.cabeceras.get('set-cookie') ?? ''), '', 'ni le cierra la sesión');
+
+  respuestaDeKick = { estado: 200, cuerpo: { data: { is_sent: true } }, cabeceras: {} };
+  await espectadores.olvidar('1014');
 });
 
 /* ============================== el bus público y el chat de Twitch */

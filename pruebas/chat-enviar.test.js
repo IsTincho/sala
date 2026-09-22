@@ -524,6 +524,71 @@ test('el tope de texto frena antes de gastar un pedido', async () => {
   assert.equal(pedidosTwitch.length, 0);
 });
 
+test('lo que se mide es lo que viaja: los espacios no esquivan el tope de Twitch', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA: el tope se medía sobre el texto recortado y
+   * después se mandaba el CRUDO. 400 letras y 400 espacios pasaban
+   * como 400 caracteres y llegaban a Twitch como 800, que es más que
+   * su tope. Kick zafaba de casualidad, porque `kick.js` vuelve a
+   * recortar adentro: o sea que con "las dos" el mismo mensaje salía
+   * distinto en cada red.
+   */
+  const texto = 'a'.repeat(400) + ' '.repeat(400);
+
+  const r = await enviar(conLasDos, { red: 'ambas', texto });
+  assert.equal(r.estado, 200, `contestó ${r.estado}`);
+
+  const enKick = JSON.parse(pedidosKick.at(-1).cuerpo).content;
+  const enTwitch = JSON.parse(pedidosTwitch.at(-1).cuerpo).message;
+  assert.equal(enTwitch.length, 400, `a Twitch le llegaron ${enTwitch.length} caracteres`);
+  assert.equal(enKick, enTwitch, 'y tiene que ser el mismo texto en las dos redes');
+});
+
+test('si el permiso no sirve en NINGUNA red, es 401 y no 502', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA: con todas las redes caídas y sin 429, la
+   * ruta contestaba 502 aunque el motivo fuera "tu permiso venció". Un
+   * 502 le dice a la persona "el servidor está roto, probá más tarde"
+   * cuando lo que tiene que hacer es volver a conectar la cuenta; la
+   * rama de la página para el 401 no se ejecutaba nunca por acá.
+   */
+  const id = 'esp_sinpermisoenninguna';
+  const cookie = await nuevoEspectador(id, ['kick', 'twitch']);
+  respuestaKick = { estado: 401, cuerpo: { error: 'unauthorized' }, cabeceras: {} };
+  respuestaTwitch = { estado: 401, cuerpo: { error: 'unauthorized' }, cabeceras: {} };
+
+  const r = await enviar(cookie, { red: 'ambas', texto: 'no tengo permiso en ninguna' });
+  assert.equal(r.estado, 401, `contestó ${r.estado}`);
+  assert.equal(r.datos.ok, false);
+  assert.deepEqual(r.datos.reconectar, ['kick', 'twitch']);
+
+  /* Y sin ninguna red no queda documento: un espectador sin redes no
+     es nadie. */
+  assert.equal(await espectadores.leer(id), null);
+});
+
+test('un 403 de la plataforma no le desconecta la cuenta a nadie', async () => {
+  /*
+   * 401 y 403 se trataban igual, y son cosas distintas: 401 es "este
+   * token no sirve más" y 403 es "vos no podés escribir en este canal"
+   * (baneado, sólo seguidores, sólo suscriptores). Desconectar la red
+   * por un baneo le hace perder el permiso a alguien que lo tenía
+   * perfecto, y lo manda a reconectar para volver a chocar contra lo
+   * mismo.
+   */
+  const id = 'esp_baneadaenelcanal';
+  const cookie = await nuevoEspectador(id, ['twitch']);
+  respuestaTwitch = { estado: 403, cuerpo: { error: 'forbidden' }, cabeceras: {} };
+
+  const r = await enviar(cookie, { red: 'twitch', texto: 'estoy baneada' });
+  assert.equal(r.estado, 403, `contestó ${r.estado}: un baneo del canal no es un 502 ni un 401`);
+  assert.deepEqual(r.datos.reconectar, [], 'no hay nada que reconectar');
+
+  const v = await espectadores.leer(id);
+  assert.deepEqual(espectadores.redesDe(v), ['twitch'], 'su Twitch tiene que seguir conectado');
+  await espectadores.olvidar(id);
+});
+
 test('uno cada dos segundos por persona, y "ambas" cuenta como UNO', async () => {
   const primero = await enviar(conLasDos, { red: 'ambas', texto: 'uno' });
   assert.equal(primero.estado, 200);
@@ -682,7 +747,66 @@ test('el bloqueo es de una sala, no del servicio', async () => {
   });
   assert.equal(enBeto.estado, 200, 'el bloqueo de Ana no puede callarlo en la sala de Beto');
 
+  /*
+   * PERO SÍ VALE POR LA OTRA PUERTA DE LA MISMA SALA.
+   *
+   * `/api/sala/<ana>/chat` y `/api/chat/<ana>/enviar` caen en el MISMO
+   * canal de Kick, y hasta el 2026-09-22 sólo la segunda miraba la
+   * lista de bloqueados: al bloqueado le alcanzaba con abrir la página
+   * de la Sala para seguir escribiendo con su nombre. El bloqueo es
+   * sobre una persona, no sobre una pantalla.
+   */
+  await creadores.ponerSalaAbierta(ANA, true);
+  try {
+    espectadores.reiniciar();
+    pedidosKick = [];
+    const enLaSala = await pedir(`/api/sala/${ANA}/chat`, {
+      metodo: 'POST', cookie: conKick, cuerpo: { texto: 'por la puerta de la Sala' },
+    });
+    assert.equal(enLaSala.estado, 403, `contestó ${enLaSala.estado}: el bloqueo tiene una sola llave`);
+    assert.equal(pedidosKick.length, 0, 'no se le puede haber pedido nada a Kick');
+
+    /* Control negativo: desbloqueada, esa misma puerta escribe. Sin
+       esto, un 403 clavado pasaría igual. */
+    await panelChat({ desbloquear: { red: 'kick', id: `kick-${ID_KICK}` } });
+    espectadores.reiniciar();
+    const despues = await pedir(`/api/sala/${ANA}/chat`, {
+      metodo: 'POST', cookie: conKick, cuerpo: { texto: 'ya no estoy bloqueada' },
+    });
+    assert.equal(despues.estado, 200, `contestó ${despues.estado}`);
+  } finally {
+    await creadores.ponerSalaAbierta(ANA, false);
+  }
+
   await panelChat({ desbloquear: { red: 'kick', id: `kick-${ID_KICK}` } });
+});
+
+test('el chat cerrado no calla la Sala: son dos productos', async () => {
+  /*
+   * LA DECISIÓN, ESCRITA. La Sala no mira `chatAbierto.activo`, y es a
+   * propósito: ese interruptor decide si se ofrece la página pública
+   * del Chat Global, y la Sala la abre `salaAbierta`. Atarlos sería un
+   * apagón silencioso, porque el chat abierto NACE CERRADO: toda Sala
+   * prendida se quedaría sin caja de escribir sin que su dueño tocara
+   * nada.
+   */
+  await abrirChat(false);
+  await creadores.ponerSalaAbierta(ANA, true);
+  try {
+    espectadores.reiniciar();
+    const porElChat = await enviar(conKick, { red: 'kick', texto: 'por el chat cerrado' });
+    assert.equal(porElChat.estado, 403, 'el chat abierto sí está cerrado');
+
+    espectadores.reiniciar();
+    pedidosKick = [];
+    const porLaSala = await pedir(`/api/sala/${ANA}/chat`, {
+      metodo: 'POST', cookie: conKick, cuerpo: { texto: 'por la Sala, que está abierta' },
+    });
+    assert.equal(porLaSala.estado, 200, `contestó ${porLaSala.estado}`);
+    assert.equal(pedidosKick.length, 1);
+  } finally {
+    await creadores.ponerSalaAbierta(ANA, false);
+  }
 });
 
 /* ================================================== CSRF */

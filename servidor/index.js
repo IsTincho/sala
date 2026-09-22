@@ -1025,13 +1025,17 @@ async function apiHora(url, req, res) {
  * abre el panel de nadie.
  */
 async function conDuenoDeLaSala(url, req, res, p, fn) {
-  const slug = String(p.slug ?? '').toLowerCase();
+  /* `creadores.normalizar` y no `.toLowerCase()` a secas: es el mismo
+     que usa `existe`, que ademas recorta. Sin el, un slug con un
+     espacio (`/api/sala/%20istincho/...`) pasa la guarda con una forma
+     y sigue viaje con otra. */
+  const slug = creadores.normalizar(p.slug);
   if (!await salaPermitida(slug)) return json(res, 404, { error: 'esa sala no existe' });
 
   const suyo = await sesion.leer(req, 'dueno');
   if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
 
-  if (String(suyo.slug ?? '').toLowerCase() !== slug) {
+  if (creadores.normalizar(suyo.slug) !== slug) {
     return json(res, 403, { error: 'esa sala no es tuya' });
   }
   return fn(slug, suyo);
@@ -1098,7 +1102,7 @@ async function apiSalaYo(url, req, res, p) {
      sala), pero eran las dos unicas rutas de /api/sala/ que no pasaban
      por aca, y una excepcion sin motivo es una excepcion que alguien
      copia. */
-  if (!await salaPermitida(String(p.slug ?? '').toLowerCase())) {
+  if (!await salaPermitida(creadores.normalizar(p.slug))) {
     return json(res, 404, { error: 'esa sala no existe' });
   }
 
@@ -1131,11 +1135,20 @@ async function apiSalaYo(url, req, res, p) {
   });
 }
 
-/** Cierra la sesion del espectador y OLVIDA su token. */
+/**
+ * Cierra la sesion del espectador y OLVIDA su token.
+ *
+ * Con `origenAjeno` DESPUES del 404 y antes de la cookie, igual que su
+ * hermana `/api/espectador/salir`: este POST le borra a alguien los
+ * tokens de las dos redes, que es exactamente la clase de cosa que una
+ * pagina ajena no puede poder hacer con la cookie de al lado. El
+ * argumento entero esta en `servidor/origenes.js`.
+ */
 async function apiSalaSalir(url, req, res, p) {
-  if (!await salaPermitida(String(p.slug ?? '').toLowerCase())) {
+  if (!await salaPermitida(creadores.normalizar(p.slug))) {
     return json(res, 404, { error: 'esa sala no existe' });
   }
+  if (origenAjeno(req, res)) return;
 
   const suyo = await sesion.leer(req, 'espectador');
   if (suyo) {
@@ -1159,19 +1172,69 @@ async function apiSalaSalir(url, req, res, p) {
  *   2. la espera del CANAL, si Kick nos frenó hace poco: el 429 es del
  *      canal, no de la persona, y seguir mandando solo consigue mas;
  *   3. la espera de la persona, uno cada dos segundos.
+ *
+ * ---------------------------------------------------------------
+ * EL BLOQUEO DEL CREADOR VALE ACA TAMBIEN, EL CHAT CERRADO NO
+ *
+ * Son dos puertas al MISMO canal de Kick, y hasta el 2026-09-22 solo
+ * una miraba la lista de bloqueados: a quien el creador callaba en
+ * `/chat/<slug>` le alcanzaba con abrir `/sala/<slug>` para seguir
+ * escribiendo con su nombre. El bloqueo es una decision sobre una
+ * PERSONA y no sobre una pantalla, asi que lo miran las dos
+ * (`envio.bloqueadasPara`, una sola implementacion).
+ *
+ * `chatAbierto.activo`, en cambio, NO se mira aca, y es a proposito:
+ * son dos productos distintos. Ese interruptor decide si se ofrece la
+ * pagina publica del Chat Global; la Sala la abre `salaAbierta`, que es
+ * lo que ya contesto el 404 de arriba. Atarlos seria ademas un apagon
+ * silencioso: el chat abierto NACE CERRADO, asi que el dia que esto
+ * saliera, toda Sala prendida se quedaria sin caja de escribir sin que
+ * su dueño tocara nada. Lo mismo con `chatAbierto.redes`: que el
+ * creador arme su pagina de chat solo con Twitch no quiere decir que
+ * cerro el Kick de su Sala.
  */
 async function apiSalaChat(url, req, res, p) {
-  const slug = String(p.slug ?? '').toLowerCase();
+  const slug = creadores.normalizar(p.slug);
   if (!await salaPermitida(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  /* Mismo motivo que en /api/chat/:slug/enviar, y en el mismo lugar:
+     despues del 404 (que no cuenta si la sala existe) y antes de leer
+     la cookie. Este POST hace que alguien escriba con SU nombre en el
+     chat de un tercero. */
+  if (origenAjeno(req, res)) return;
 
   const suyo = await sesion.leer(req, 'espectador');
   if (!suyo) return json(res, 401, { error: 'entra con Kick para poder escribir' });
+
+  const v = await espectadores.leer(suyo.usuario);
+  if (!v) {
+    /* La sesion sobrevivio a los tokens (se revoco el permiso, o cambio
+       la CLAVE_CIFRADO): no sirve para nada y se cierra, en vez de
+       dejar una caja de escribir que va a fallar siempre. */
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 401, { error: 'tu sesion ya no vale: entra con Kick de nuevo' },
+      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+  /* Alguien que conecto SOLO Twitch (se puede, desde /chat/<slug>) no
+     tiene con que escribir aca, y su sesion NO se cierra: su Twitch
+     sigue valiendo en el chat abierto. Es lo mismo que le contesta
+     /api/sala/:slug/yo. */
+  if (!v.kick) return json(res, 401, { error: 'entra con Kick para poder escribir' });
+
+  const bloqueadas = await envio.bloqueadasPara(slug, v, ['kick']);
+  if (bloqueadas.length) {
+    /* Se corta antes de gastar un pedido, y se dice el motivo: un 403
+       mudo lo dejaria reintentando. El bloqueo es de ESTA herramienta;
+       desde kick.com sigue pudiendo escribir. */
+    return json(res, 403, { error: 'el creador te bloqueó en este chat', bloqueado: bloqueadas });
+  }
 
   let pedido;
   try { pedido = await leerJson(req); }
   catch { return json(res, 400, { error: 'json invalido' }); }
 
-  const cuerpo = String(pedido?.texto ?? '');
+  /* El texto que se MIDE es el que va a VIAJAR: `comoViaja` recorta una
+     sola vez y `envio` manda exactamente esto. */
+  const cuerpo = envio.comoViaja(pedido?.texto);
   const problema = envio.porQueNoSePuedeMandar(cuerpo, ['kick']);
   if (problema) return json(res, 400, { error: problema });
 
@@ -1202,7 +1265,8 @@ async function apiSalaChat(url, req, res, p) {
    *
    * El mismo camino y los mismos frenos que usa /api/chat/:slug/enviar.
    * Lo unico que decide cada ruta es que hacer cuando el permiso ya no
-   * sirve: aca se cierra la sesion, porque la Sala es de una sola red.
+   * sirve: aca ademas se cierra la sesion, si con eso la persona se
+   * quedo sin ninguna red.
    */
   const r = await envio.aUnaRed(slug, suyo.usuario, 'kick', cuerpo);
 
@@ -1214,9 +1278,25 @@ async function apiSalaChat(url, req, res, p) {
   }
 
   if (r.caduco) {
-    await espectadores.olvidar(suyo.usuario);
+    /*
+     * SE DESCONECTA KICK, NO SE BORRA LA CUENTA.
+     *
+     * Hasta el 2026-09-22 esto llamaba a `espectadores.olvidar`, que
+     * desde la Fase 5.3 borra el documento ENTERO. Pero el espectador
+     * es UNO SOLO para todo el dominio: el mismo documento y la misma
+     * cookie sirven en /chat/<slug>. O sea que un permiso de Kick
+     * vencido mientras alguien miraba una peli le borraba de paso el
+     * token de Twitch que estaba usando en la otra pagina.
+     *
+     * La sesion se cierra solo si no le quedo ninguna red: con Twitch
+     * vivo, la sesion sigue identificandola donde todavia le sirve.
+     */
+    await espectadores.desconectar(suyo.usuario, 'kick');
+    const queda = await espectadores.leer(suyo.usuario);
+    if (queda) return json(res, 401, { error: r.motivo, reconectar: ['kick'] });
+
     await sesion.cerrar(req, 'espectador');
-    return json(res, 401, { error: r.motivo },
+    return json(res, 401, { error: r.motivo, reconectar: ['kick'] },
       { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
   }
 
@@ -1225,6 +1305,10 @@ async function apiSalaChat(url, req, res, p) {
     return json(res, 429, { error: r.motivo, esperar: segundos },
       { 'Retry-After': String(segundos) });
   }
+  /* 403 es "no podes escribir en este canal" (baneado, solo seguidores)
+     y no "tu permiso no sirve": se pasa tal cual y no se le toca el
+     token a nadie. Ver `envio.js`. */
+  if (r.estado === 403) return json(res, 403, { error: r.motivo });
   if (r.estado === 503) return json(res, 503, { error: r.motivo });
   return json(res, 502, { error: r.motivo });
 }
@@ -2415,7 +2499,7 @@ async function apiChatEnviarEspectador(url, req, res, p) {
      ahi manda la moderacion de cada una. Se corta antes de gastar un
      pedido, y se dice cual es el motivo: un 403 mudo lo dejaria
      reintentando. */
-  const bloqueadas = redes.filter(red => creadores.estaBloqueado(c, red, v[red].usuarioId));
+  const bloqueadas = await envio.bloqueadasPara(slug, v, redes);
   if (bloqueadas.length) {
     return json(res, 403, {
       error: 'el creador te bloqueó en este chat',
@@ -2427,7 +2511,9 @@ async function apiChatEnviarEspectador(url, req, res, p) {
     return json(res, 403, { error: `el permiso que diste en ${nombresDeRedes(sinPermiso)} no incluye escribir` });
   }
 
-  const cuerpo = String(pedido?.texto ?? '');
+  /* El texto que se MIDE es el que va a VIAJAR, y el mismo en las dos
+     redes: `comoViaja` recorta una sola vez. */
+  const cuerpo = envio.comoViaja(pedido?.texto);
   const problema = envio.porQueNoSePuedeMandar(cuerpo, redes);
   if (problema) return json(res, 400, { error: problema });
 
@@ -2476,6 +2562,23 @@ async function apiChatEnviarEspectador(url, req, res, p) {
   }
 
   const motivos = redes.map(red => r[red].motivo).filter(Boolean).join(' · ');
+
+  /* No salio por ningun lado Y NINGUNA RED TIENE PERMISO: eso es un
+     401, no un 502. La pagina tiene una rama para el 401 ("conectá tu
+     cuenta de nuevo") que por este camino no se ejecutaba nunca, y un
+     502 le dice a la persona "el servidor esta roto, probá mas tarde"
+     cuando lo que hay que hacer es volver a conectar. Con una sola red
+     caduca y la otra rota sigue siendo 502: ahi el 401 seria mentira
+     sobre la otra mitad, y `reconectar` ya dice cual hay que volver a
+     conectar. */
+  if (redes.every(red => r[red].caduco)) {
+    return json(res, 401, { ...salida, error: motivos || 'tu permiso ya no sirve' });
+  }
+  /* Y un 403 de la plataforma (baneado, solo seguidores) se pasa como
+     403: no es una falla del servidor. */
+  if (redes.every(red => r[red].estado === 403)) {
+    return json(res, 403, { ...salida, error: motivos || 'no podes escribir en este canal' });
+  }
   return json(res, 502, { ...salida, error: motivos || 'no se pudo enviar' });
 }
 

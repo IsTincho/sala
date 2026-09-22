@@ -6,9 +6,10 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ## 2026-09-22 — Dos revisiones adversariales: las fases 5.2–5.4 y el cierre de la Sala
 
-Dos revisiones independientes sobre lo que ya estaba deployado. **819 pruebas en verde** (eran
-797), con 22 nuevas. Cada arreglo se comprobó al revés: se mutó el código a como estaba y se
-verificó que la prueba nueva **falla**. Ninguna pasó por casualidad.
+Dos revisiones independientes sobre lo que ya estaba deployado, más una tercera sobre los
+arreglos. **825 pruebas en verde** (eran 797), con 28 nuevas. Cada arreglo se comprobó al revés:
+se mutó el código a como estaba y se verificó que la prueba nueva **falla**. Ninguna pasó por
+casualidad.
 
 ### Lo más grande: dos puertas al mismo chat, una sola con llave
 
@@ -167,6 +168,47 @@ concurrencia. Si hay que probar una carrera, se llama al módulo.
   `canalPermitido &&` de `salaPermitida` no decide nada hoy, queda anotado como defensa en
   profundidad y por qué se deja.
 
+### La revisión de la revisión
+
+Antes de cerrar, una pasada adversarial sobre los cinco commits de arriba. Encontró **dos cosas
+mías** y cuatro huecos, y entraron todas:
+
+1. **El arreglo de los términos no se ejecutaba nunca en producción.** `crear` los anota si nunca
+   se anotaron… pero el único llamador real (`kickVolver`) le pasaba `terminos: ''` justo cuando
+   la fila ya existía, que es exactamente el caso que el arreglo atiende. La prueba que escribí
+   pasaba porque llamaba al módulo a mano: **el pecado de esta misma tanda**, cometido por mí en
+   el mismo día en que lo estaba corrigiendo en otro archivo. Ahora la versión viaja siempre
+   (`crear` ya se niega a pisar una anotada) y la prueba va por el viaje entero del login,
+   `/oauth/kick/entrar` → `/oauth/kick/volver`.
+2. **`/eventos/:slug` se suscribía con el slug crudo.** La misma clase de bicho que el 500 de
+   `/api/sala/%20ana/chat`, por la única puerta que no miré: `canalPermitido` recorta antes de
+   comparar, así que `/eventos/%20istincho` pasaba la guarda y abría un canal llamado
+   `" istincho"`. Una entrada nueva en el Map por conexión, la presencia contada en una clave que
+   no es la sala, y —lo que se ve— **un chat mudo para siempre** para el que entrara así, porque
+   lo que difunde el webhook cae en `istincho`.
+3. **El interruptor ahora detiene la película ANTES de escribirse.** Son dos escrituras sin nada
+   que las haga atómicas y hay que elegir de qué lado caer si el proceso muere en el medio
+   (deployar en medio del stream es la forma normal de trabajar acá). Cortando primero queda
+   "peli cortada y Sala todavía abierta": se ve y se arregla tocando el interruptor. Al revés
+   quedaría "Sala cerrada con un reloj guardado", que es el estado contra el que hubo que
+   ponerle una guarda a `restaurarRelojes`.
+4. **`guardarCobro` borraba el cliente guardado** cuando el webhook traía la suscripción pero no
+   al cliente: `cobro-paddle.js` normaliza lo que falta a `''`, y `''` no es nullish, así que el
+   `??` lo tomaba por un valor. Preexistente, con prueba nueva.
+5. `escribir` **espera** el parche por si alguna vez es `async` (sin eso sería una promesa, el
+   spread no aportaría ninguna clave y la escritura quedaría en un no-op silencioso), y queda
+   escrito por qué lee con `almacen.obtener` y no con el `obtener` de este módulo, que pasa por
+   la caché de 5 s.
+6. El comentario de `/api/sala/:slug/salir` seguía justificando el borrado de las dos redes con
+   la premisa que `envio.js` declara falsa. El comportamiento se defiende igual —ahí lo pidió la
+   persona, y pidió irse— pero con el argumento correcto: la sesión es una sola para todo el
+   dominio, así que después de cerrarla no queda ninguna apuntando a esos tokens.
+
+Y tres huecos que no cazaba nadie, ahora con prueba: **una red caduca y la otra rota sigue siendo
+502** (el `every` no tenía quien lo fijara), **quien conectó sólo Twitch no escribe en la Sala** y
+no se le gasta el freno de dos segundos, y **apagar una Sala sin nada puesto no le difunde un
+"detenido"** a todo el que esté leyendo el chat.
+
 ### Huecos de cobertura tapados
 
 1. `/api/admin/sala` con un `abierta` que no es booleano: sin el `typeof`, `{abierta:"false"}`
@@ -195,17 +237,24 @@ concurrencia. Si hay que probar una carrera, se llama al módulo.
   de alguien baneado. Lo que sí está probado es que 401 y 403 se tratan distinto.
 - **El panel del creador no muestra todavía que lo bloquearon en la Sala**: `/api/sala/:slug/yo`
   no devuelve `bloqueado` como su hermana de `/api/chat/`. El 403 al escribir sí lo dice.
+- **Nada fija que `escribir` lea con `almacen.obtener` y no con el `obtener` cacheado.** Se probó
+  la mutación y la suite queda en verde: la caché se invalida en cada escritura, así que la
+  carrera sólo vuelve por la ventana en la que otro lector la repuebla con una foto vieja, y no
+  se encontró forma de provocarla sin ensuciar el módulo. Queda el comentario en la línea.
+- **`ponerLaSala` no es atómica.** Son dos escrituras: se eligió el orden que falla del lado
+  inofensivo (ver arriba), no se resolvió el problema.
 
 ### Archivos tocados
 
 `servidor/{index,envio,creadores,espectadores}.js`, `paginas/panel/panel.js`,
-`pruebas/{sala-http,sala-cerrada,chat-enviar,creadores,espectadores,pagina-panel}.test.js`,
+`paginas/panel.html`,
+`pruebas/{sala-http,sala-cerrada,chat-enviar,creadores,espectadores,pagina-panel,multicanal}.test.js`,
 `README.md`, `BITACORA.md`.
 
 ### Cómo verlo funcionando
 
 ```bash
-npm test                                   # 819 tests
+npm test                                   # 825 tests
 npm run local
 # el bloqueo vale por las dos puertas: las dos contestan 403
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Origin: http://localhost:8778' \

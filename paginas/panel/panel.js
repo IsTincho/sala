@@ -177,7 +177,7 @@
     linkTwitch.classList.add('apagado');
     linkTwitch.setAttribute('aria-disabled', 'true');
     for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave, tarjetaWebhook, tarjetaPlan,
-                     tarjetaChatAbierto]) {
+                     tarjetaChatAbierto, tarjetaInterruptorSala]) {
       t.hidden = true;
     }
     botonDesvincularTwitch.hidden = true;

@@ -119,7 +119,8 @@ test('sin sesión no se muestra nada de la sala y se dice por qué', async () =>
   await asentarse();
 
   assert.match(p.el('tarjeta-estado').textContent, /todavía no entraste con Kick/);
-  for (const id of ['tarjeta-sala', 'tarjeta-videos', 'tarjeta-metricas', 'tarjeta-clave', 'tarjeta-webhook']) {
+  for (const id of ['tarjeta-sala', 'tarjeta-videos', 'tarjeta-metricas', 'tarjeta-clave', 'tarjeta-webhook',
+                    'tarjeta-interruptor-sala']) {
     assert.equal(p.el(id).hidden, true, id);
   }
   /* Y no se puede vincular Twitch sin haber entrado con Kick. */
@@ -146,6 +147,9 @@ test('si la sesión se cae con el panel abierto, se avisa', async () => {
   await p.api().consultar();
   assert.match(p.el('tarjeta-estado').textContent, /todavía no entraste con Kick/);
   assert.equal(p.el('tarjeta-sala').hidden, true);
+  /* Y el interruptor de la Sala también: una sesión caída no puede
+     dejar en pantalla un control que el servidor va a rechazar. */
+  assert.equal(p.el('tarjeta-interruptor-sala').hidden, true);
 
   p.cerrar();
 });

@@ -11,8 +11,9 @@ chat abierto: bloquear a alguien, que los tokens de quien no vuelve se borren so
 contador de conectados, el QR del link, el manifest por sala y el texto nuevo de
 `/terminos`.
 
-**758 pruebas en verde** (eran 716), la suite corrida cuatro veces seguidas sin un solo
-flake. **10 mutaciones, las 10 cazadas.**
+**760 pruebas en verde** (eran 716), la suite corrida cuatro veces seguidas sin un solo
+flake. **12 mutaciones, 10 cazadas y 2 declaradas** (las dos son carreras que el almacén
+en archivos no deja provocar; ver abajo).
 
 ### Bloquear a alguien, en esta herramienta
 
@@ -131,6 +132,23 @@ probado: la cola misma (`pruebas/almacen.test.js`: una por vez, claves distintas
 esperan, una que falla no deja la cola trabada) y el caso de los espectadores, que sí se
 puede provocar llamando al módulo directo.
 
+### Salir tiene que salir
+
+La otra que apareció revisando, y es de la misma familia. `sesion.leer` manda el refresco
+del "último visto" **sin await**, a propósito: que el pedido no espere a Mongo por un dato
+que a nadie le importa cuándo se guarda. Pero `cerrar` llamaba a `leer` antes de borrar,
+así que esa escritura suelta podía aterrizar **después** del borrado y la sesión volvía a
+existir.
+
+La cookie ya no está del lado del navegador, pero el documento quedaría en la base hasta
+que lo pode el vencimiento, y quien hubiera copiado esa cookie antes seguiría entrando.
+Justo en la ruta que promete borrar todo. Y aparece **siempre que alguien se va después de
+cinco minutos** de abierta la página, que es el caso normal.
+
+`leer` acepta ahora `{ estirar: false }` y `cerrar` lo usa. Lo que queda, declarado: si
+OTRO pedido de la misma persona estira la sesión en el mismo instante en que esta la
+cierra, el documento puede sobrevivir igual. Es mucho más raro y lo limpia `podar`.
+
 ### Los términos
 
 Sección 3 reescrita: qué se guarda por red, que los tokens van cifrados, y **las tres
@@ -181,8 +199,11 @@ agregados en `espectadores`, `chat-enviar`, `chat-abierto`, `pagina-chat`, `pagi
   antes), así que el botón de bloquear ahí bloquearía en SU sala mientras mira el chat del
   dueño. Para el dueño del servicio, que es quien usa esa ventana hoy, está bien.
 - **El número de versión de los términos**, que decide el dueño.
-- **La carrera de dos bloqueos a la vez no tiene prueba que la cace** (ver arriba): con
-  Mongo de verdad se podría provocar, con archivos no.
+- **Dos carreras sin prueba que las cace, declaradas**: la de dos bloqueos a la vez y la
+  de `cerrar` estirando la sesión que borra. Las dos se pueden provocar con Mongo (dos
+  viajes sin orden garantizado) y no con el almacén en archivos, donde las escrituras
+  salen en orden. Las dos tienen prueba de la INTENCIÓN (que los tres bloqueos queden,
+  que la sesión no resucite); lo que no se puede es provocar el fallo.
 - La Fase 5.5 (creadores que sólo usan Twitch) sigue afuera del plan, por decisión del
   dueño.
 

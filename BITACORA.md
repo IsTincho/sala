@@ -4,6 +4,223 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — Dos revisiones adversariales: las fases 5.2–5.4 y el cierre de la Sala
+
+Dos revisiones independientes sobre lo que ya estaba deployado. **819 pruebas en verde** (eran
+797), con 22 nuevas. Cada arreglo se comprobó al revés: se mutó el código a como estaba y se
+verificó que la prueba nueva **falla**. Ninguna pasó por casualidad.
+
+### Lo más grande: dos puertas al mismo chat, una sola con llave
+
+`/api/chat/<slug>/enviar` y `/api/sala/<slug>/chat` caen en el **mismo canal de Kick** y
+comparten `envio.js`, pero sólo la primera miraba la lista de bloqueados. Al que el creador
+callaba en su Chat Global le alcanzaba con abrir `/sala/<slug>` para seguir escribiendo con su
+nombre. Ahora las dos pasan por `envio.bloqueadasPara`, una sola implementación.
+
+**Lo que NO se ató, y es la decisión de esta tanda:** la Sala **no** mira
+`chatAbierto.activo`. Son dos productos. Ese interruptor decide si se ofrece la página pública
+del Chat Global; la Sala la abre `salaAbierta`, que es lo que contesta el 404 de la puerta. El
+argumento que cierra la discusión no es de arquitectura sino de consecuencias: **el chat
+abierto nace cerrado**, así que atarlos habría dejado sin caja de escribir a toda Sala
+prendida el mismo día del deploy, sin que su dueño tocara nada. El bloqueo, en cambio, es una
+decisión sobre una **persona** y no sobre una pantalla, así que vale por las dos puertas. Lo
+mismo con `chatAbierto.redes`: que alguien arme su página de chat sólo con Twitch no quiere
+decir que cerró el Kick de su Sala.
+
+### Un 403 de la plataforma borraba una cuenta entera
+
+Dos mitades del mismo error, las dos arregladas:
+
+- **401 y 403 se trataban igual.** `envio.js` marcaba `caduco` para los dos, y 403 en Kick y en
+  Twitch quiere decir "**no podés escribir en este canal**" (baneado, sólo-seguidores,
+  sólo-suscriptores), que no tiene nada que ver con que el permiso venza. Le borraba el permiso
+  a alguien que lo tenía perfecto y lo mandaba a reconectar su cuenta para volver a chocar
+  contra el mismo baneo. Ahora sólo el 401 es `caduco`; el 403 se cuenta y no se toca nada.
+- **La Sala llamaba a `espectadores.olvidar`**, que desde la 5.3 borra el documento entero, o
+  sea **las dos redes**. El comentario de cabecera de `envio.js` lo justificaba con una premisa
+  que dejó de ser cierta en esa misma fase ("un token de Twitch al que ninguna sesión apunta"):
+  el espectador es **uno solo para todo el dominio** y la misma cookie vale en `/chat/<slug>`,
+  así que sí había una sesión apuntando a ese token. Medido: por la ruta nueva quedaba
+  `['twitch']` y por la vieja quedaba `null`. Ahora desconecta sólo Kick, y la sesión se cierra
+  únicamente si no le quedó ninguna red. El comentario se corrigió junto con el código.
+
+Y de paso: en el chat abierto, que fallen **todas** las redes por permiso vencido ahora contesta
+**401** y no 502. La rama de la página para el 401 ("conectá tu cuenta de nuevo") no se ejecutaba
+nunca por ese camino, y un 502 le dice a la persona "el servidor está roto" cuando lo que tiene
+que hacer es volver a conectar. Con una caduca y la otra rota sigue siendo 502: ahí el 401 sería
+mentira sobre la otra mitad, y `reconectar` ya dice cuál hay que reconectar.
+
+### CSRF a medias, y el tope que se esquivaba con espacios
+
+- `origenAjeno` estaba en `/api/chat/:slug/enviar` y en `/api/espectador/salir`, pero **no** en
+  las dos POST de `/api/sala/`. Medido: `POST /api/sala/ana/salir` con `Origin: https://malo.example`
+  cerraba la sesión y contestaba 200. El argumento escrito en `origenes.js` vale igual para
+  esas dos, así que van con la misma guarda y en el mismo lugar: después del 404 (que no cuenta
+  si la sala existe) y antes de leer la cookie.
+- **El tope se medía sobre el texto recortado y se mandaba el crudo.** 400 letras y 400 espacios
+  pasaban como 400 caracteres y llegaban a Twitch como 800; Kick zafaba de casualidad porque
+  `kick.js` recorta adentro, o sea que con "las dos" salía un texto distinto en cada red. Ahora
+  `envio.comoViaja` recorta una vez y es ese texto el que viaja, en las dos redes.
+- **Un slug con un espacio era un 500 con stack.** `apiSalaChat` normalizaba con `.toLowerCase()`
+  sin `trim` mientras `creadores.existe` sí recorta, así que `/api/sala/%20ana/chat` pasaba la
+  guarda con una forma y reventaba adentro de `vinculos.identidad` con otra, fuera de todo
+  try/catch, desde una ruta que alcanza cualquiera con cookie. Ahora usa `creadores.normalizar`,
+  como la ruta nueva.
+
+### La carrera grande: toda escritura del creador por la misma cola
+
+La cola de `almacen.enCola` estaba un piso más arriba —en `ponerChatAbierto` y en
+`ponerSalaAbierta`—, así que **sólo protegía a esas dos funciones entre sí**. `ponerPlan`,
+`anotarUso`, `marcarSuscrito`, `crear` y el webhook de cobro escribían por afuera, y como
+`poner` reemplaza el documento entero, el segundo en guardar borraba lo del primero.
+
+**Medido, 20 de 20 veces:** habilitarle la Sala a alguien desde `/admin` justo cuando entra su
+pago **pierde el plan pagado**, en silencio. Lo mismo con los bytes de `anotarUso`.
+
+El arreglo es de raíz: la cola vive adentro de `escribir`, que es por donde pasa toda escritura
+del módulo, y `escribir` acepta una **función** del documento guardado para quien necesita mirar
+lo que había (la lista de bloqueados, el alta que no puede pisar un plan). Eso obligó a sacar la
+cola de afuera de los dos interruptores: `enCola` adentro de `enCola` sobre la misma clave es un
+abrazo mortal, y por eso el alta del dueño sin fila se hace **antes** de entrar a la cola. Queda
+anotado en el comentario de `escribir`, porque es la trampa que se va a repetir.
+
+La misma clase de error, un módulo más allá: **`espectadores.tocar` encolaba la escritura pero
+guardaba la foto que `leer` había sacado afuera de la cola.** Serializaba y guardaba lo viejo
+igual: leer a alguien mientras conecta una red le borraba la red recién conectada, 20 de 20
+veces (la revisión lo daba por no disparable hoy; con `Promise.all` dispara siempre). `conectar`
+y `desconectar` ya releían adentro; ésta era la única que no.
+
+### Apagar la Sala no apagaba la película
+
+El interruptor escribía el campo y nada más. Quien ya estaba mirando se quedaba con el sobre
+`reloj` entero —título, URL de R2 y el instante en que empezó— y **la posición la calcula sola
+la página**, así que seguía viendo la peli hasta el final aunque para el servidor esa Sala ya no
+existiera. Y el dueño se quedaba sin palanca para cortar: con la Sala cerrada,
+`POST /api/sala/:slug/reloj` contesta 404 como todo lo demás, así que el único camino era
+reabrir, detener y volver a cerrar.
+
+**Decisión entre las dos salidas posibles:** se eligió que **apagar detenga**, y no dejar pasar
+`detener` con la Sala cerrada. Así no queda nada corriendo que haya que ir a parar, la puerta
+sigue contestando lo mismo para las cuatro rutas y para cualquier acción, y no hay que abrirle
+una excepción a una guarda uniforme (una excepción es algo que alguien copia, y además
+anunciaría que ahí adentro hay un reloj). Está escrito en el test que prueba los 404.
+
+Detener difunde `reloj: detenido` por el bus —que sigue abierto, porque es el del chat— y borra
+el reloj guardado, así que tampoco revive solo al reabrir. Vale por las dos rutas del
+interruptor, el panel del dueño y `/admin`, porque las dos pasan por la misma función.
+
+La otra mitad: **`restaurarRelojes` ya no repone la película de una Sala apagada.** Corría en
+cada arranque, y acá deployar en medio del stream es la forma normal de trabajar. Sale exportada
+de `index.js` para poder probarla sin levantar el servidor entero.
+
+Esto no toca el filtro de `canales.estadoDe`, que sigue siendo la defensa de atrás para un reloj
+que quedó de antes o para una fila escrita a mano; su prueba ahora apaga la Sala **por el módulo**
+y lo dice, porque por la ruta ya no quedaría reloj que filtrar y pasaría sin probar nada.
+
+### La que costaba plata
+
+`/api/panel/suscribirse` era **la única ruta del grupo sin la guarda del interruptor**: un creador
+con la Sala apagada tocaba "Suscribirme por 5 USD al mes" y salía un pedido de verdad al
+proveedor de cobro. Lo único que se cobra es pasar una película, que es justo lo que no se
+ofrece. La pantalla acompañaba: el botón quedaba vivo y al lado decía "tu sala se puede abrir y
+leer el chat, pero todavía no puede reproducir. Suscribite…", las dos cosas mentira. Cerrado en
+el servidor **y** en la pantalla, con el mismo argumento que ya estaba escrito para la subida:
+primero se dice que la función no está, y recién si está se habla de plata.
+
+### Un test que no probaba nada
+
+`'dos bloqueos al mismo tiempo no se pisan'` (chat-enviar) **pasaba igual sacándole la cola a
+`creadores.js`**. Tres POST disparados juntos no llegan juntos a la parte que importa: cada
+pedido pasa antes por la cookie y por el cuerpo, y con eso terminan llegando de a uno. Se lo
+dejó diciendo lo que cubre de verdad —la ruta del panel— con el motivo escrito, y la carrera se
+prueba donde sí ocurre, llamando al módulo derecho (`creadores.test.js`, "tres bloqueos al mismo
+tiempo no se pisan": sin cola falta alguno 20 de 20 veces).
+
+Es la misma trampa de siempre en este repo: una prueba de concurrencia **por HTTP** no prueba
+concurrencia. Si hay que probar una carrera, se llama al módulo.
+
+### Los dos casos dudosos, decididos
+
+1. **`tocar` con el snapshot de afuera: es bug**, y no "hoy no se dispara". Con `Promise.all`
+   dispara 20 de 20. Arreglado arriba.
+2. **`ponerChatAbierto` serializada sólo contra sí misma: es bug**, y el más caro de los dos
+   (pierde un plan pagado). Arreglado de raíz, no con un `enCola` más en cada call site.
+
+### Lo demás que entró, más chico
+
+- **Las cáscaras de las páginas no se sirven por su nombre de archivo.** `/sala.html`,
+  `/panel.html` y `/admin.html` contestaban 200 a cualquiera: los archivos viven en `paginas/` y
+  de ahí salen los estáticos, así que pedirlos por el nombre salteaba la guarda de su ruta. No
+  dejaba entrar a ningún dato, pero se comía dos argumentos escritos en el código (que una Sala
+  apagada "no existe para nadie", y que `/admin` conteste 404 para no anunciar que hay un panel
+  de administración y con qué nombre).
+- **Al dueño del servicio el login ahora le anota los términos si nunca se anotaron.** Su fila
+  puede nacer de un interruptor (`ponerSalaAbierta` se la crea) y quedaba con `terminos.version`
+  vacío para siempre, porque su login posterior ya la veía existente. Una versión ya anotada
+  sigue sin pisarse: eso sería "reaceptar" lo que nadie leyó esta vez.
+- **`/api/panel/sala` contesta 403 cuando la escritura devolvió `null`**, como su hermana
+  `/api/panel/chat`, en vez de un `ok: true` sobre algo que no se escribió.
+- **Dos comentarios que prometían de más**, corregidos con lo medido: la indistinguibilidad entre
+  "Sala apagada" y "sala que no existe" es **de esas rutas y no del sitio** (con la Sala apagada,
+  `/chat/<slug>`, `/api/chat/<slug>/abierto`, `/eventos/<slug>` y el manifest siguen contestando
+  200 para un slug que existe: es inevitable, el chat abierto es lo que se ofrece); y el
+  `canalPermitido &&` de `salaPermitida` no decide nada hoy, queda anotado como defensa en
+  profundidad y por qué se deja.
+
+### Huecos de cobertura tapados
+
+1. `/api/admin/sala` con un `abierta` que no es booleano: sin el `typeof`, `{abierta:"false"}`
+   **cerraba** la Sala en silencio (por la coerción del módulo) en vez de dar 400.
+2. El orden "404 de la Sala apagada **antes** que el 503 de R2": ninguna prueba lo miraba, porque
+   todas configuran R2. La nueva le saca las variables por un rato (r2.js lee `process.env` en
+   cada llamada) y las devuelve en el `finally`.
+3. `creadores.ponerSalaAbierta` con un valor que no es booleano: la coerción `valor === true` es
+   la defensa en profundidad del punto 1 y no tenía prueba.
+
+### Lo que queda sin cubrir, dicho con todas las letras
+
+- **Las carreras se prueban con el backend de archivo, no con Mongo.** Con archivo, `obtener`
+  resuelve de memoria y cede el turno igual, que es lo que hace que estas pruebas fallen sin la
+  cola; con Mongo cada lectura es una ida y vuelta, o sea que la ventana es **más** grande, no
+  menos. Ninguna prueba de este repo toca Mongo de verdad: eso sigue igual que siempre.
+- **La cola es por proceso.** Con dos instancias en Railway, dos escrituras al mismo documento
+  desde instancias distintas se siguen pisando. Hoy hay una sola y ya está anotado que varias
+  rompen otras cosas antes (el Map del chat abierto, el índice inverso). El día que haya dos, la
+  respuesta no es esta cola sino `findOneAndUpdate` con operadores de Mongo.
+- **Cerrar la Sala no despublica los bytes de R2.** El bucket es público: quien ya tenga una URL
+  la sigue pudiendo abrir. Es inherente a servir video sin pasar por el servidor, que es la regla
+  de la casa. Anotado en el README al lado de "no existe para nadie".
+- **Que Kick conteste 403 a un baneado** —y no otra cosa— sale de su documentación, no de una
+  prueba contra la API real. Si algún día contestara 401 ahí, volveríamos a desconectar la cuenta
+  de alguien baneado. Lo que sí está probado es que 401 y 403 se tratan distinto.
+- **El panel del creador no muestra todavía que lo bloquearon en la Sala**: `/api/sala/:slug/yo`
+  no devuelve `bloqueado` como su hermana de `/api/chat/`. El 403 al escribir sí lo dice.
+
+### Archivos tocados
+
+`servidor/{index,envio,creadores,espectadores}.js`, `paginas/panel/panel.js`,
+`pruebas/{sala-http,sala-cerrada,chat-enviar,creadores,espectadores,pagina-panel}.test.js`,
+`README.md`, `BITACORA.md`.
+
+### Cómo verlo funcionando
+
+```bash
+npm test                                   # 819 tests
+npm run local
+# el bloqueo vale por las dos puertas: las dos contestan 403
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Origin: http://localhost:8778' \
+  -H 'Content-Type: application/json' -b 'sala_espectador=…' \
+  -d '{"texto":"hola"}' localhost:8778/api/sala/istincho/chat
+# sin Origin no pasa ninguna de las dos
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -b 'sala_espectador=…' \
+  localhost:8778/api/sala/istincho/salir        # 403
+# la cáscara no se abre por su nombre de archivo
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8778/sala.html    # 404
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8778/admin.html   # 404
+```
+
+---
+
 ## 2026-09-22 — La Sala queda apagada: el producto es el multichat
 
 Decisión del dueño, no un hallazgo técnico: **por ahora lo que se ofrece es el chat de Kick

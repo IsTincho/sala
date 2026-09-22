@@ -64,6 +64,7 @@ Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pu
 | `EMOTES_7TV` | Poner `0` apaga los emotes de 7TV sin tocar código | Prendido |
 | `EMOTES_KB` | Cuánto puede pesar **un** emote de 7TV | 128 KB |
 | `EMOTES_POR_MENSAJE` | Cuántos emotes de 7TV puede meter un solo mensaje | 30 |
+| `EMOTES_PLAZO_MS` | Cuánto puede durar **una bajada entera** de 7TV antes de darla por perdida | 20 s |
 
 > **El token de R2 pasó a ser una variable de Railway, y hasta la Fase 2 no lo era.**
 > Hasta acá el único que subía era el dueño, con su script y su token en `herramientas/.env`. Desde que sube cualquier creador, no se le puede dar el token del bucket: con él leería, pisaría y borraría los videos de todos. La forma de dar permiso acotado es una **URL prefirmada**, y firmar es, por definición, tener el secreto. Lo que **no** cambia es que el video no pasa por Railway: el servidor firma una URL de unos cientos de bytes y los gigas van del creador a R2 y de R2 al espectador, directo.
@@ -342,7 +343,7 @@ Entra por el **mismo array `emotes`** del formato único, con `fuente: "7tv"`. L
 
 El id con el que se pregunta es el **`user_id` de Kick** (el mismo que usamos como `broadcaster_user_id` para el webhook) o el de Twitch, según la red. Ojo, que es el error fácil: el `channel_id` de Kick da 404 en 7TV.
 
-**Los globales de 7TV van incluidos**, en una tabla sola para todo el proceso. Son los que ve cualquiera con la extensión puesta en cualquier canal, tenga o no el streamer cuenta de 7TV; dejarlos afuera haría que el multichat muestre menos de lo que la gente ya ve. Si un creador le pone a un emote suyo el nombre de uno global, gana el suyo.
+**Los globales de 7TV van incluidos**, en una tabla sola para todo el proceso. Son los que ve cualquiera con la extensión puesta en cualquier canal, tenga o no el streamer cuenta de 7TV; dejarlos afuera haría que el multichat muestre menos de lo que la gente ya ve. Son 45 emotes y pesan poco: mediana 4,5 KB en 2x y 852 KB el set entero (medido el 2026-09-22 contra `7tv.io/v3/emote-sets/global`). Si un creador le pone a un emote suyo el nombre de uno global, gana el suyo.
 
 **Ganan los nativos.** Si una palabra cae, aunque sea en parte, adentro del rango de un emote de Kick o de Twitch, se deja como está. No es un empate arbitrario: en Kick el texto que se ve no es el que la persona escribió —`partirTextoDeKick()` reemplaza `[emote:4148074:HYPERCLAP]` por la palabra `HYPERCLAP` para que sirva de `alt`—, así que esa palabra quedaría lista para resolverse **dos veces**. Y el nativo es el que la persona efectivamente eligió del selector de su plataforma.
 
@@ -368,7 +369,11 @@ El peso no hay que ir a medirlo: 7TV lo dice en la misma respuesta, para cada ta
 
 #### Cuándo se refresca
 
-Sin esperar nunca. Un mensaje de chat sale al toque: si la tabla todavía no está, sale sin emotes de 7TV y la bajada queda agendada. En la práctica eso es **un** mensaje por creador y por arranque, porque al vencer se sigue sirviendo la tabla vieja mientras se baja la nueva.
+Sin esperar nunca. Un mensaje de chat sale al toque: si la tabla todavía no está, sale sin emotes de 7TV y la bajada queda agendada.
+
+**Cuántos mensajes salen pelados**, con el número medido y no con la frase linda: todos los que lleguen *mientras* se baja la tabla. Con un creador solo y 7TV contestando rápido es uno. Pero la bajada tarda lo que tarda y además hay un tope de seis simultáneas: medido con 20 creadores mandando un mensaje cada 250 ms y 7TV a 600 ms, salieron 130 mensajes sin emotes y el peor creador se comió 11 seguidos. Pasa una sola vez por creador y por arranque —al vencer se sigue sirviendo la tabla vieja mientras se baja la nueva, así que ahí no hay hueco— y lo que se pierde es un adorno, no el mensaje.
+
+**El tope de seis bajadas simultáneas tiene plazo propio, y eso no es un detalle.** Una bajada empieza pidiéndole el id al almacén, y el cliente de Mongo se crea sin `socketTimeoutMS`: un socket medio abierto no vence nunca. Sin un plazo que cubra la bajada **entera** —no sólo el `fetch`—, seis promesas colgadas se quedan con los seis lugares y 7TV queda apagado para todos los creadores, para siempre, sin un pedido y sin una línea de log. Por eso hay `EMOTES_PLAZO_MS` y por eso el tope lleno se avisa (como mucho una vez por minuto).
 
 Tres vencimientos, y no uno:
 

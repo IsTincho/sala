@@ -149,6 +149,9 @@ export function olvidarCache() {
   cache.clear();
   indice = null;
   indiceHasta = 0;
+  /* La del chat abierto tambien: es lo que simula un reinicio del
+     proceso en las pruebas, y un reinicio la pierde. */
+  chatEnMemoria.clear();
 }
 
 /* ------------------------------------------------- indice inverso
@@ -464,7 +467,166 @@ export async function borrar(slug) {
   const s = normalizar(slug);
   const habia = await almacen.quitar('creadores', s);
   invalidar(s);
+  chatEnMemoria.delete(s);
   indice = null;
   indiceHasta = 0;
   return habia;
+}
+
+/* ---------------------------------------------------- chat abierto
+
+   Fase 5.1 (PLAN-MULTICHAT.md). Cada creador puede abrir su Chat
+   Global a la comunidad: `/chat/<slug>` muestra las redes que eligio,
+   mezcladas y en vivo, a cualquiera y sin login. Cerrado, que es como
+   nace, el bus publico de su sala manda solo Kick, como siempre (la
+   Sala depende de eso).
+
+   Se guarda en el documento del creador:
+
+     "chatAbierto": { "activo": false, "redes": ["kick", "twitch"] }
+
+   Entra en TODOS los planes, "pendiente" y "vencido" incluidos: no
+   cuesta ancho de banda (no hay video) y es lo que hace que un creador
+   pruebe la herramienta. Por eso aca no se mira el plan.
+
+   ---------------------------------------------------------------
+   POR QUE HAY UNA COPIA EN MEMORIA, Y POR QUE NO VENCE
+
+   El filtro del bus pregunta "¿que redes ve el publico de esta sala?"
+   en CADA mensaje y por CADA conexion abierta (`canales.leDaEl`), y
+   tiene que contestar sin esperar: un `await` a Mongo por mensaje no
+   existe. Asi que la respuesta vive en un Map, se lee del almacen la
+   primera vez que alguien la necesita, y despues la cambia solo
+   `ponerChatAbierto`.
+
+   No vence como la cache de arriba, a proposito: una cache que vence
+   hay que recargarla, y recargar es otra vez un `await` en el camino
+   del mensaje. Con una sola instancia en Railway la memoria no se
+   desincroniza (la misma nota que el indice inverso); el dia que haya
+   dos, esto tambien hay que moverlo.
+
+   La carrera que si hay: alguien se conecta, se lee el valor VIEJO del
+   almacen, y en el medio el creador cierra el chat. Se resuelve con una
+   regla de dos lineas: la carga solo escribe el Map si todavia esta
+   vacio, y la escritura del creador lo pisa siempre. En cualquier
+   orden gana la escritura.
+
+   Y si el almacen falla al cargar, no se memoriza nada: se contesta
+   "cerrado" por esta vez y el proximo pedido vuelve a intentar. Un
+   corte de Mongo de un segundo no puede dejar un chat cerrado (ni
+   abierto) hasta el proximo deploy. */
+
+export const REDES_CHAT = Object.freeze(['kick', 'twitch']);
+
+/* Como nace: cerrado, y con las dos redes elegidas para cuando se
+   abra. "Las dos" y no "solo Kick" porque la gracia del chat abierto
+   es justamente ver Kick y Twitch juntos; si el creador no vinculo
+   Twitch, de esa red no llega nada y el panel se lo dice. */
+export const CHAT_POR_DEFECTO = Object.freeze({ activo: false, redes: REDES_CHAT });
+
+const chatEnMemoria = new Map();   // slug -> { activo, redes } (congelado)
+
+/** Las redes validas de una lista, sin repetir y en el orden de siempre. */
+const redesValidas = lista =>
+  (Array.isArray(lista) ? REDES_CHAT.filter(r => lista.includes(r)) : []);
+
+/** El ajuste de un documento, completado y limpio. Nunca tira. */
+export function chatAbiertoDelDoc(doc) {
+  const guardado = doc?.chatAbierto;
+  const redes = redesValidas(guardado?.redes);
+  return Object.freeze({
+    activo: guardado?.activo === true,
+    redes: Object.freeze(redes.length ? redes : [...REDES_CHAT]),
+  });
+}
+
+/**
+ * Lo que se sabe AHORA del chat abierto de esta sala, sin esperar.
+ * `undefined` si todavia no se cargo. Es lo que usa el filtro del bus.
+ */
+export const chatAbiertoSabido = slug => chatEnMemoria.get(normalizar(slug));
+
+/**
+ * El chat abierto de una sala. La primera vez lo lee del almacen;
+ * despues contesta de memoria.
+ *
+ * Lee con `almacen.obtener` y no con `obtener` a proposito: la de
+ * arriba se traga los errores del almacen y contesta null, que aca es
+ * indistinguible de "no tiene documento" (el caso normal del dueño del
+ * servicio antes de su primer login). Hay que saber si la lectura
+ * fallo para no memorizar un "cerrado" que no es verdad.
+ */
+export async function chatAbierto(slug) {
+  const s = normalizar(slug);
+  const sabido = chatEnMemoria.get(s);
+  if (sabido) return sabido;
+
+  let doc;
+  try {
+    doc = await almacen.obtener('creadores', s);
+  } catch (e) {
+    console.warn(`[creadores] ${s}: no se pudo leer el chat abierto:`, e.name);
+    return CHAT_POR_DEFECTO;
+  }
+  /* Con Mongo caido el almacen no tira: contesta lo del disco efimero,
+     que es nada. Se usa para esta vez y no se memoriza, por la misma
+     razon que el catch de arriba. */
+  if (almacen.degradado()) return chatAbiertoDelDoc(doc);
+
+  /* Si mientras se leia el creador escribio, gana lo que escribio. */
+  if (!chatEnMemoria.has(s)) chatEnMemoria.set(s, chatAbiertoDelDoc(doc));
+  return chatEnMemoria.get(s);
+}
+
+/**
+ * Por que no se puede guardar este pedido, o '' si se puede.
+ *
+ * Los dos campos son opcionales (lo que no viene queda como estaba),
+ * pero lo que viene tiene que ser exacto: una red que no existe o una
+ * lista vacia no se "arreglan" en silencio, porque el creador creeria
+ * que eligio algo que no quedo guardado.
+ */
+export function porQueNoSePuedeAbrir({ activo, redes } = {}) {
+  if (activo !== undefined && typeof activo !== 'boolean') return 'activo tiene que ser true o false';
+  if (redes !== undefined) {
+    if (!Array.isArray(redes)) return 'redes tiene que ser una lista';
+    if (!redes.length) return 'elegí al menos una red';
+    const raras = redes.filter(r => !REDES_CHAT.includes(r));
+    if (raras.length) return `no existe la red ${String(raras[0]).slice(0, 20)}`;
+  }
+  return '';
+}
+
+/**
+ * Abre, cierra o cambia las redes del chat abierto de una sala.
+ * Devuelve el ajuste que quedo, o null si la sala no existe.
+ *
+ * EL DUEÑO DEL SERVICIO PUEDE NO TENER DOCUMENTO: su sala existe por
+ * `KICK_SLUG`, no por la base (ver `existe`). Para el, el ajuste va al
+ * mismo lugar que el de todos —su documento en `creadores`— y si no lo
+ * tiene se le crea con los mismos valores que el alta. El plan que
+ * quede escrito ahi no se lee nunca: `planDe` contesta 'dueno' antes de
+ * mirar el documento. Y su primer login despues solo completa el id y
+ * el nombre, sin tocar nada de esto (`crear` con documento existente).
+ */
+export async function ponerChatAbierto(slug, pedido = {}) {
+  const s = normalizar(slug);
+  const problema = porQueNoSePuedeAbrir(pedido);
+  if (problema) throw new Error(problema);
+
+  let doc = await almacen.obtener('creadores', s);
+  if (!doc) {
+    if (!esDueno(s)) return null;
+    await crear({ slug: s });
+    doc = await almacen.obtener('creadores', s);
+  }
+
+  const antes = chatAbiertoDelDoc(doc);
+  const nuevo = Object.freeze({
+    activo: pedido.activo ?? antes.activo,
+    redes: Object.freeze(pedido.redes !== undefined ? redesValidas(pedido.redes) : [...antes.redes]),
+  });
+  await escribir(s, { chatAbierto: { activo: nuevo.activo, redes: [...nuevo.redes] } });
+  chatEnMemoria.set(s, nuevo);
+  return nuevo;
 }

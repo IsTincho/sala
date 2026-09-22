@@ -79,6 +79,15 @@ let reintentarDesde = 0;
 /** Para mostrar en la pagina de estado donde esta guardando de verdad. */
 export const dondeGuarda = () => ({ modo, motivo });
 
+/**
+ * Si Mongo esta configurado pero ahora mismo se esta guardando en
+ * archivo. En ese estado una lectura NO tira: contesta lo que haya en
+ * el disco efimero del contenedor, que casi siempre es nada. Quien
+ * guarde en memoria lo que lee (el chat abierto de `creadores.js`) lo
+ * tiene que saber, o memoriza un "no hay nada" que no es verdad.
+ */
+export const degradado = () => Boolean(URI) && modo !== 'mongo';
+
 function validar(coleccion) {
   if (!COLECCIONES.includes(coleccion)) {
     throw new Error(`coleccion desconocida: ${coleccion}`);

@@ -19,8 +19,10 @@
      /panel                   el panel del creador (el dueño incluido)
      /admin                   la lista de creadores, solo para el dueño
      /chat                    el Chat Global (Kick + Twitch)
+     /chat/:slug              el Chat Global de una sala, abierto a su gente
      /sala/:slug              la Sala: camara, peli y chat
      /api/chat/*              salud, envio y resuscripcion del chat
+     /api/chat/:slug/abierto  si el chat de esa sala esta abierto
      /api/estado              como esta el servidor
      /api/hora                la hora del servidor, para sincronizar
      /api/videos              el catalogo (lo escribe herramientas/subir.py)
@@ -1276,6 +1278,10 @@ async function apiPanel(url, req, res) {
       conectados: canales.conectados(slug),
       metricas: metricas.resumen(slug),
       claveSubida: await videos.estadoClave(slug),
+      /* El chat abierto de la Fase 5.1. El link NO viaja: lo arma la
+         pagina con el origen desde el que la estan mirando, que detras
+         de un proxy no es el de Railway. */
+      chatAbierto: { ...(await creadores.chatAbierto(slug)) },
       almacen: almacen.dondeGuarda(),
       uso: {
         bytes: uso.bytes,
@@ -1671,6 +1677,46 @@ function compilar(patron) {
  */
 const canalPermitido = slug => creadores.existe(slug);
 
+/* ------------------------------------------ que redes ve el publico */
+
+const SOLO_KICK = Object.freeze(['kick']);
+
+/**
+ * Las redes que recibe una conexion SIN la cookie del dueño de esta
+ * sala. Corre en cada evento y por cada conexion, asi que es
+ * sincronica: lee lo que `creadores.chatAbierto` ya dejo cargado.
+ *
+ * Si no se sabe (todavia no se cargo, o el almacen fallo), solo Kick:
+ * es lo que el bus publico mando siempre y lo que necesita la Sala.
+ * Ante la duda, lo cerrado.
+ */
+function redesPublicas(slug) {
+  const c = creadores.chatAbiertoSabido(slug);
+  return c?.activo ? c.redes : SOLO_KICK;
+}
+
+/**
+ * `?redes=kick` en /eventos: una conexion puede pedir MENOS de lo que
+ * le toca, nunca mas. Lo usa la Sala, que muestra el chat de Kick
+ * aunque el creador haya abierto su chat con Twitch: la gente que mira
+ * la peli escribe a Kick, y un mensaje de Twitch ahi es uno que no
+ * puede contestar.
+ *
+ * Lo que no se entiende se ignora (devuelve null = "no pidio nada en
+ * particular"). Ignorar es seguro justamente porque esto solo achica:
+ * lo que decide el maximo es `redesPublicas` o la cookie.
+ */
+function redesPedidas(url) {
+  const crudo = url.searchParams.get('redes');
+  if (!crudo) return null;
+  const pedidas = creadores.REDES_CHAT.filter(r => crudo.split(',').includes(r));
+  return pedidas.length ? pedidas : null;
+}
+
+/** Lo que le toca, achicado a lo que pidio. */
+const recortar = (permitidas, pedidas) =>
+  (pedidas ? permitidas.filter(r => pedidas.includes(r)) : permitidas);
+
 /**
  * SSE. Un HEAD no abre stream: la respuesta no lleva cuerpo, asi que
  * el handler escribiria eventos en el vacio y el pedido no terminaria
@@ -1735,14 +1781,43 @@ async function eventos(url, req, res, p) {
    * Efecto secundario buscado: la Fase 3 hereda la puerta cerrada. El
    * dia que haya varios creadores, "que ve cada conexion" ya es una
    * pregunta que este codigo se hace.
+   *
+   * ---------------------------------------------------------------
+   * DESDE LA FASE 5.1 HAY TRES CASOS, NO DOS
+   *
+   *   el dueño de ESTA sala     todas las redes, siempre.
+   *   cualquier otro            lo que diga el chat abierto de la sala:
+   *                             sus redes si esta abierto, solo Kick si
+   *                             no (ver `redesPublicas`).
+   *
+   * "De ESTA sala" es nuevo y es un arreglo: antes bastaba CUALQUIER
+   * cookie de creador para recibir las dos redes de cualquier sala, o
+   * sea que Ana, con su sesion, podia leer el Twitch de istincho con un
+   * curl. Con un solo creador daba lo mismo; con varios, no.
+   *
+   * Y la regla de "cualquier otro" no se fija al conectar: se pregunta
+   * en cada evento. Si el creador cierra el chat o le saca Twitch con
+   * gente mirando, el proximo mensaje de Twitch ya no sale por el cable
+   * a esas conexiones, sin esperar a que reconecten.
    */
-  const esDueno = Boolean(await sesion.leer(req, 'dueno'));
+  const slug = creadores.normalizar(p.slug);
+  const suyo = await sesion.leer(req, 'dueno');
+  const esSuDueno = Boolean(suyo) && creadores.normalizar(suyo.slug) === slug;
+
+  /* La politica se carga ANTES de suscribir: `suscribir` manda el
+     buffer de los ultimos 200 mensajes en el acto, y lo tiene que
+     mandar ya filtrado con la regla de verdad y no con la de "todavia
+     no se". */
+  if (!esSuDueno) await creadores.chatAbierto(slug);
 
   /* El pedido se murio mientras se resolvia todo lo de arriba: no hay a
      quien suscribir. Ver el comentario del principio. */
   if (cerrado || res.writableEnded) return res;
 
-  canales.suscribir(p.slug, req, res, { redes: esDueno ? null : ['kick'] });
+  const pide = redesPedidas(url);
+  canales.suscribir(p.slug, req, res, {
+    redes: esSuDueno ? pide : () => recortar(redesPublicas(slug), pide),
+  });
 
   anotarPresencia(p.slug);
   req.on('close', () => anotarPresencia(p.slug));
@@ -1797,6 +1872,125 @@ async function paginaSala(url, req, res, p) {
 }
 
 /**
+ * `/chat/:slug`: el Chat Global de una sala, abierto a su comunidad
+ * (Fase 5.1). Es la MISMA pagina que /chat; `chat.js` se da cuenta por
+ * el camino de la URL de que esta en modo publico.
+ *
+ * 404 si la sala no existe, con el mismo criterio que /sala/:slug. Si
+ * existe y el creador no abrio el chat, la pagina se sirve igual y
+ * muestra "este chat esta cerrado": lo pregunta a
+ * `/api/chat/:slug/abierto`, y asi puede pasar de cerrado a abierto (y
+ * al reves) sin que nadie recargue. El corte de verdad no es la
+ * pantalla: es que el bus no le manda Twitch a nadie (ver `eventos`).
+ *
+ * ---------------------------------------------------------------
+ * POR QUE SE LE TOCA EL HTML
+ *
+ * `chat.html` pide sus archivos con rutas RELATIVAS (`comun/base.css`,
+ * `chat/chat.js`) a proposito: asi `?demo=1` anda abriendo el archivo
+ * suelto, con file://, sin servidor. Desde `/chat/istincho` esas mismas
+ * rutas apuntan a `/chat/comun/base.css`, que no existe, y la pagina
+ * cargaria sin estilos y sin codigo.
+ *
+ * Asi que se sirve el mismo archivo con dos cambios, y nada mas:
+ *   - `<base href="/">`, que hace que las relativas resuelvan desde la
+ *     raiz. Es una raiz del sitio y no un host: detras de otro dominio
+ *     que reenvie todo (el proxy de Cloudflare Pages) sigue andando.
+ *   - sin el manifest de la PWA. El que hay es el de la ventana del
+ *     creador (`start_url: /chat`): un espectador que "instalara" este
+ *     chat terminaria abriendo el de otra persona. El manifest por sala
+ *     es de la Fase 5.4.
+ * `/chat` a secas no pasa por aca y se sirve byte por byte como antes.
+ */
+async function paginaChatAbierto(url, req, res, p) {
+  /* La misma trampa que /sala/:slug: `/chat/:slug` tapa todo lo que
+     cuelga de /chat/, y ahi viven chat.css, chat.js y demo.js. Un slug
+     no lleva punto, asi que lo que no parece slug va a los estaticos. */
+  if (!videos.slugValido(p.slug)) {
+    if (await estatico(url, req, res)) return;
+    return texto(res, 404, 'no existe');
+  }
+  if (!await canalPermitido(p.slug)) return texto(res, 404, 'esa sala no existe');
+
+  let html;
+  try { html = await fsp.readFile(path.join(PAGINAS, 'chat.html'), 'utf8'); }
+  catch { return texto(res, 404, 'no existe'); }
+
+  const cuerpo = paraUnaSala(html);
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    'Content-Length': Buffer.byteLength(cuerpo),
+  });
+  if (req.method === 'HEAD') return res.end();
+  return res.end(cuerpo);
+}
+
+/** chat.html como lo necesita `/chat/:slug`. Ver `paginaChatAbierto`. */
+export function paraUnaSala(html) {
+  const conBase = html.replace(/<head>/i, '<head>\n<base href="/">');
+  /* Si alguien cambia la cabecera y esto deja de encontrarla, que se
+     note en las pruebas y no en una pagina sin estilos en produccion. */
+  if (conBase === html) throw new Error('chat.html no tiene <head>');
+  return conBase.replace(/<link rel="manifest"[^>]*>\r?\n?/i, '');
+}
+
+/**
+ * Si el chat de esta sala esta abierto y con que redes. Publico: es lo
+ * que pregunta `/chat/:slug` para saber que mostrar.
+ *
+ * Cerrado no dice que redes eligio el creador: de un chat cerrado no
+ * se cuenta nada. Y contesta de la misma memoria que usa el filtro del
+ * bus, asi que lo que la pagina dice y lo que el cable manda no pueden
+ * contradecirse.
+ */
+async function apiChatAbierto(url, req, res, p) {
+  const slug = creadores.normalizar(p.slug);
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  const c = await creadores.chatAbierto(slug);
+  return json(res, 200, { abierto: c.activo, redes: c.activo ? [...c.redes] : [] });
+}
+
+/**
+ * Abre o cierra el chat de SU sala, y elige las redes. Cookie de
+ * creador.
+ *
+ * EL SLUG SALE DE LA COOKIE, como en todo /api/panel: si el cuerpo trae
+ * un `slug`, no se lee. Un creador no puede abrir ni cerrar el chat de
+ * otro.
+ *
+ * El cambio vale en el acto para la gente que ya esta mirando: el
+ * filtro del bus lo pregunta en cada mensaje, y ademas se avisa por el
+ * bus (`chat-abierto`) para que `/chat/:slug` muestre "cerrado" sin
+ * esperar a su proxima consulta. Ese aviso no lleva `red`, asi que pasa
+ * por todos los filtros; la Sala lo ignora.
+ */
+async function apiPanelChat(url, req, res) {
+  return conCreador(req, res, async (slug) => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const cambios = {};
+    if (pedido?.activo !== undefined) cambios.activo = pedido.activo;
+    if (pedido?.redes !== undefined) cambios.redes = pedido.redes;
+    const problema = creadores.porQueNoSePuedeAbrir(cambios);
+    if (problema) return json(res, 400, { error: problema });
+
+    const c = await creadores.ponerChatAbierto(slug, cambios);
+    if (!c) return json(res, 403, { error: 'tu sesion no corresponde a ninguna sala' });
+
+    console.log(`[chat] ${slug}: chat abierto ${c.activo ? `con ${c.redes.join(' y ')}` : 'cerrado'}`);
+    canales.difundir(slug, {
+      tipo: 'chat-abierto',
+      abierto: c.activo,
+      redes: c.activo ? [...c.redes] : [],
+    });
+    return json(res, 200, { ok: true, chatAbierto: { activo: c.activo, redes: [...c.redes] } });
+  });
+}
+
+/**
  * /admin. La pagina se sirve SOLO al dueño del servicio.
  *
  * Es la unica pagina del proyecto que se protege del lado del
@@ -1823,6 +2017,8 @@ const RUTAS = [
   ['DELETE', '/api/panel/clave',       apiClaveRevocar],
   ['DELETE', '/api/panel/twitch',      apiTwitchDesvincular],
   ['POST',   '/api/panel/suscribirse', apiSuscribirse],
+  ['POST',   '/api/panel/chat',        apiPanelChat],
+  ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
   ['POST',   '/api/subida',            apiSubidaFirmar],
   ['POST',   '/api/subida/borrar',     apiSubidaBorrar],
   ['GET',    '/api/admin/creadores',   apiAdminCreadores],
@@ -1839,6 +2035,7 @@ const RUTAS = [
   ['GET',    '/terminos',              servirPagina('terminos.html')],
   ['GET',    '/admin',                 paginaAdmin],
   ['GET',    '/chat',                  servirPagina('chat.html')],
+  ['GET',    '/chat/:slug',            paginaChatAbierto],
   ['GET',    '/sala/:slug',            paginaSala],
   ['GET',    '/eventos/:slug',         eventos],
   ['GET',    '/oauth/kick/entrar',     kickEntrar],

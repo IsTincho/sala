@@ -314,3 +314,32 @@ test('el filtro es de cada conexion y no se puede cambiar desde afuera', () => {
   canales.difundir('inmutable', { tipo: 'chat', red: 'twitch', texto: 'colado' });
   assert.equal(res.datos.slice(1).length, 0);
 });
+
+test('un filtro que es una funcion se pregunta en cada evento, no al conectar', () => {
+  /* EL CHAT ABIERTO (Fase 5.1). El creador puede cerrarlo, o sacarle
+     Twitch, con gente conectada. Con una lista fija al conectar, esa
+     gente seguiria recibiendo Twitch hasta cerrar la pestaña: el corte
+     solo valdria para el que llega despues. Con una funcion, el
+     proximo mensaje ya pasa por la regla nueva. */
+  let abiertas = ['kick', 'twitch'];
+  const { res } = conectar('en-vivo', { redes: () => abiertas });
+
+  canales.difundir('en-vivo', { tipo: 'chat', red: 'twitch', texto: 'con el chat abierto' });
+  abiertas = ['kick'];
+  canales.difundir('en-vivo', { tipo: 'chat', red: 'twitch', texto: 'despues de cerrar' });
+  canales.difundir('en-vivo', { tipo: 'chat', red: 'kick', texto: 'kick sigue' });
+  abiertas = ['kick', 'twitch'];
+  canales.difundir('en-vivo', { tipo: 'chat', red: 'twitch', texto: 'reabierto' });
+
+  assert.deepEqual(res.datos.slice(1).map(m => m.texto),
+    ['con el chat abierto', 'kick sigue', 'reabierto']);
+  assert.ok(!res.escrito.includes('despues de cerrar'), 'el mensaje viajo igual');
+});
+
+test('el buffer del que llega tambien pasa por la funcion', () => {
+  canales.recordar('funcion-tarde', { tipo: 'chat', red: 'twitch', texto: 'viejo de twitch' });
+  canales.recordar('funcion-tarde', { tipo: 'chat', red: 'kick', texto: 'viejo de kick' });
+
+  const { res } = conectar('funcion-tarde', { redes: () => ['kick'] });
+  assert.deepEqual(res.datos.slice(1).map(m => m.texto), ['viejo de kick']);
+});

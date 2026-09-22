@@ -120,12 +120,23 @@ function escribir(res, id, tipo, datos) {
 
    `redes` null = todas (es lo que pide /chat, con la cookie del
    dueño). Los eventos sin `red` —estado, reloj, presencia— pasan
-   siempre: no son de ninguna red. */
+   siempre: no son de ninguna red.
+
+   `redes` puede ser tambien una FUNCION, y entonces se pregunta en
+   cada evento. Existe por el chat abierto (Fase 5.1): el creador puede
+   cerrarlo o sacarle Twitch con gente conectada, y ese corte tiene que
+   valer para el proximo mensaje, no para la proxima reconexion. Con una
+   lista fija, quien se conecto con el chat abierto seguiria recibiendo
+   Twitch hasta cerrar la pestaña. Quien decide que contesta la funcion
+   es la ruta (`index.js`); este modulo sigue sin saber que es un chat
+   abierto. */
+const redesDe = suyo => (typeof suyo?.redes === 'function' ? suyo.redes() : suyo?.redes);
+
 const leDaEl = (opciones, evento) => {
-  const redes = opciones?.redes;
-  if (!redes) return true;
   const red = evento?.red;
   if (typeof red !== 'string') return true;
+  const redes = redesDe(opciones);
+  if (!redes) return true;
   return redes.includes(red);
 };
 
@@ -168,15 +179,22 @@ export const estadoDe = c => ({
  * seria regalarle el chat en vivo a cualquier sitio que lo quiera
  * embeber.
  *
- * @param {{redes?:string[]}} [opciones]  que redes quiere esta
- *        conexion. Sin `redes` llega todo; con `['kick']` llega solo
- *        Kick. Quien decide es la ruta, no este modulo: ver `leDaEl`.
+ * @param {{redes?:string[]|(() => string[]|null)}} [opciones]  que
+ *        redes quiere esta conexion. Sin `redes` llega todo; con
+ *        `['kick']` llega solo Kick; con una funcion, lo que conteste
+ *        en cada evento. Quien decide es la ruta, no este modulo: ver
+ *        `leDaEl`.
  */
 export function suscribir(slug, req, res, opciones = {}) {
   const c = canal(slug);
   /* Se copia la lista: quien llama no puede cambiarle el filtro a una
-     conexion ya abierta modificando el array que paso. */
-  const suyo = { redes: Array.isArray(opciones.redes) ? [...opciones.redes] : null };
+     conexion ya abierta modificando el array que paso. La funcion, en
+     cambio, se guarda tal cual: que conteste distinto con el tiempo es
+     justamente para lo que esta. */
+  const suyo = {
+    redes: typeof opciones.redes === 'function' ? opciones.redes
+      : Array.isArray(opciones.redes) ? [...opciones.redes] : null,
+  };
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',

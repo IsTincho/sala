@@ -401,6 +401,43 @@ test('?redes=kick achica lo que llega, pero no agranda nada', async () => {
   }
 });
 
+test('el bus.js de verdad, pidiendo solo Kick como la Sala, no recibe Twitch', async () => {
+  /* De punta a punta: el cliente SSE de las páginas arma el pedido y
+     el servidor lo respeta. Una prueba de cada mitad por separado
+     pasaría con el nombre del parámetro distinto en cada lado. */
+  const { EventSourceFalso, fijarRaiz } = await import('./fijos/eventsource-falso.js');
+  fijarRaiz(raiz);
+  globalThis.EventSource = EventSourceFalso;
+  globalThis.window = globalThis.window ?? {};
+  await import('../paginas/comun/bus.js');
+
+  await abrirChat(sesionAna, { activo: true, redes: ['kick', 'twitch'] });
+  const recibidos = [];
+  const conexion = globalThis.window.Sala.conectar(ANA, (tipo, datos) => recibidos.push({ tipo, datos }),
+    { redes: ['kick'] });
+  const textos = () => recibidos.filter(r => r.tipo === 'chat').map(r => r.datos.texto);
+  const esperarTexto = async t => {
+    const limite = Date.now() + 3000;
+    while (!textos().includes(t)) {
+      if (Date.now() > limite) throw new Error(`no llegó "${t}"; llegaron: ${textos().join(', ')}`);
+      await new Promise(ok => setTimeout(ok, 15));
+    }
+  };
+  try {
+    const limite = Date.now() + 3000;
+    while (!recibidos.some(r => r.tipo === 'estado') && Date.now() < limite) {
+      await new Promise(ok => setTimeout(ok, 15));
+    }
+    mensaje(ANA, 'twitch', 'twitch para la sala');
+    mensaje(ANA, 'kick', 'kick para la sala');
+    await esperarTexto('kick para la sala');
+    assert.ok(!textos().includes('twitch para la sala'), 'a la Sala le llegó Twitch');
+  } finally {
+    conexion.cerrar();
+    await abrirChat(sesionAna, { activo: false });
+  }
+});
+
 /* ============================================ el dueño y la memoria */
 
 test('el dueño del servicio abre el suyo aunque no tenga documento', async () => {

@@ -30,8 +30,17 @@
 
   /* Conecta al bus de un slug y llama a alRecibir(tipo, datos) por
      cada evento. Devuelve un objeto con cerrar() y el estado actual
-     de la conexion, para que la pagina pueda mostrarlo. */
-  function conectar(slug, alRecibir) {
+     de la conexion, para que la pagina pueda mostrarlo.
+
+     `opciones.redes` pide MENOS redes de las que el servidor le daria
+     a esta conexion (`?redes=kick`). Nunca mas: quien decide el maximo
+     es el servidor. Lo usa la Sala, que muestra solo el chat de Kick
+     aunque el creador haya abierto su chat con Twitch. No es un filtro
+     del navegador: lo que no se pide no sale por el cable. */
+  function conectar(slug, alRecibir, opciones = {}) {
+    const redes = Array.isArray(opciones.redes) ? opciones.redes.filter(Boolean) : [];
+    const ruta = `/eventos/${encodeURIComponent(slug)}` +
+      (redes.length ? `?redes=${redes.map(encodeURIComponent).join(',')}` : '');
     let fuente = null;
     let cerrado = false;
     let espera = ESPERA_INICIAL;
@@ -78,7 +87,7 @@
 
       let candidata;
       try {
-        candidata = new EventSource(`/eventos/${encodeURIComponent(slug)}`);
+        candidata = new EventSource(ruta);
       } catch (e) {
         // por ejemplo abierta como archivo suelto (file://): no hay
         // forma de conectar, se avisa por consola y listo.
@@ -127,9 +136,9 @@
   let conexionActual = null;
 
   window.Sala = {
-    conectar(slug, alRecibir) {
+    conectar(slug, alRecibir, opciones) {
       if (conexionActual) conexionActual.cerrar();
-      conexionActual = conectar(slug, alRecibir);
+      conexionActual = conectar(slug, alRecibir, opciones);
       return conexionActual;
     },
   };

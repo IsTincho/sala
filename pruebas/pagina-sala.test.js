@@ -104,6 +104,7 @@ const mensaje = (extra = {}) => ({
 
 function abrir({ busqueda = '', ruta = '/sala/istincho', yo = null, respuestas = {}, conHls = true } = {}) {
   let alRecibir = null;
+  let opcionesDelBus;
   const pedidos = [];
   const { HlsFalso, instancias } = hacerHlsFalso();
 
@@ -125,7 +126,7 @@ function abrir({ busqueda = '', ruta = '/sala/istincho', yo = null, respuestas =
     ruta,
     busqueda,
     fetch: responder,
-    Sala: { conectar: (_slug, fn) => { alRecibir = fn; return { estado: 'conectado' }; } },
+    Sala: { conectar: (_slug, fn, opciones) => { alRecibir = fn; opcionesDelBus = opciones; return { estado: 'conectado' }; } },
     globales: conHls ? { Hls: HlsFalso } : {},
   });
 
@@ -136,6 +137,8 @@ function abrir({ busqueda = '', ruta = '/sala/istincho', yo = null, respuestas =
     api: () => pagina.ventana.SalaPagina,
     llega: (tipo, datos) => alRecibir?.(tipo, datos),
     get conectadoAlBus() { return Boolean(alRecibir); },
+    /** lo que la página le pidió al bus además del slug */
+    get opcionesDelBus() { return opcionesDelBus; },
   };
 }
 
@@ -734,6 +737,22 @@ test('la página NO filtra por red: el filtro vive en el servidor', async () => 
   assert.equal(p.el('lista-chat').children.length, 1,
     'si la página filtra, el servidor puede romperse sin que se note');
 
+  p.cerrar();
+});
+
+test('la Sala le pide al servidor sólo Kick, aunque el creador abra su chat con Twitch', async () => {
+  /*
+   * Desde la Fase 5.1 el bus público de una sala manda Twitch si el
+   * creador abrió su chat con Twitch. La Sala es el chat de Kick: se lo
+   * pide así al SERVIDOR (`?redes=kick`), que no lo manda. No es un
+   * filtro de esta página, y la prueba de arriba lo sigue exigiendo.
+   */
+  const p = abrir();
+  await arrancada();
+  /* Se compara el contenido: el objeto viene del contexto de la página
+     (otro `vm`), con otro prototipo, y un deepEqual directo lo tira por
+     eso y no por lo que dice. */
+  assert.deepEqual([...(p.opcionesDelBus?.redes ?? [])], ['kick']);
   p.cerrar();
 });
 

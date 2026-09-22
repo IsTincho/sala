@@ -743,6 +743,13 @@
       avisar('no hay canal en la dirección: probá con /sala/<canal>');
       return;
     }
+    /* `redes: ['kick']`: la Sala es el chat de Kick. Si el creador abre
+       su chat a la comunidad con Twitch (Fase 5.1), el bus público de
+       esta sala pasa a mandar Twitch, y acá no tiene nada que hacer: la
+       gente de la peli escribe a Kick y no puede contestarle a alguien
+       de Twitch. Se le pide al SERVIDOR que no lo mande, así que esta
+       página sigue sin filtrar nada (ver la prueba "la página NO
+       filtra por red"). */
     const conexion = window.Sala.conectar(slug, (tipo, datos) => {
       if (tipo === 'chat') return manejarMensaje(datos);
       if (tipo === 'reloj') return aplicarReloj(datos);
@@ -751,7 +758,7 @@
         mostrarConectados(datos.conectados);
         aplicarReloj(datos.reloj);
       }
-    });
+    }, { redes: ['kick'] });
 
     /* El estado de la conexión se mira solo: el bus reconecta pero no
        avisa, y una sala muda sin cartel es una sala rota que parece

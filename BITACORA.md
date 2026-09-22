@@ -4,6 +4,121 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — La Sala queda apagada: el producto es el multichat
+
+Decisión del dueño, no un hallazgo técnico: **por ahora lo que se ofrece es el chat de Kick
+y Twitch juntos, y la Sala —pasar una película en una página propia— queda cerrada y
+escondida.** No se borró una línea. Es un interruptor por creador, `salaAbierta`, que nace
+apagado y que se vuelve a prender desde `/panel` (la del dueño del servicio) o desde
+`/admin` (la de cualquier otro).
+
+**796 pruebas en verde** (eran 760), con 35 nuevas repartidas entre `pruebas/sala-cerrada.test.js`
+(el archivo nuevo), `creadores`, `pagina-panel` y `pagina-admin`. **Cuatro mutaciones
+probadas, cuatro cazadas.**
+
+### Apagar tiene que querer decir "no existe", no "hay un botón menos"
+
+Esconder los controles del panel no apaga nada: la función entera queda a un `curl` de
+distancia. Así que el corte está en el servidor, en dos lugares y con dos criterios
+distintos, a propósito.
+
+**Las que llevan el slug en la URL** —`/sala/:slug` y las cuatro de `/api/sala/:slug/`—
+contestan **exactamente lo mismo** que una sala que no existe: mismo código y mismo cuerpo.
+Un 403, o un 404 con otro texto, ya anunciaría que ahí hay algo apagado esperando que
+alguien insista, y una Sala cerrada no es un permiso que falte sino una función que no se
+está ofreciendo. El interruptor se mira **en el mismo lugar** que la existencia, o sea antes
+de la cookie: mirarlo después haría que la diferencia entre el 401 y el 404 cuente justo lo
+que el 404 viene a no contar. Hay una prueba que compara los dos cuerpos byte por byte.
+
+**Las que sacan el slug de la cookie o de la clave de subida** —`/api/panel/clave`,
+`/api/subida`, `/api/subida/borrar`, `/api/videos`— también dan 404, pero **sí dicen por
+qué**. No es una incoherencia: quien llega hasta ahí ya demostró que la sala es suya, así
+que "existe, pero está apagada" no le cuenta nada que no sepa, y un 404 mudo sobre su propio
+panel lo mandaría a buscar un bug que no hay.
+
+El chequeo va **antes que el del plan**, y eso tiene su propia prueba: contestar "tu plan no
+sube videos" con la Sala apagada manda a alguien a pagar por algo que no se le va a dar.
+`/api/subida/borrar` se apagó también, aunque borrar sea "menos" que subir: dejarlo abierto
+haría que `subir.py --borrar` ande a medias (firma los DELETE de R2 y después no puede sacar
+la ficha del catálogo). Media función es peor que ninguna.
+
+### La fuga que esto encontró de paso: el reloj por el bus público
+
+`/eventos/:slug` es **también** el bus del chat abierto, así que sigue siendo público con la
+Sala apagada. Pero el evento `estado` que se manda al conectar lleva siempre el reloj del
+canal, y los eventos sin `red` pasan todos los filtros por definición (es la regla explícita
+de `canales.js`). O sea: un creador que dejaba una película puesta y después apagaba su Sala
+**seguía regalando el título, la URL y el segundo exacto** a cualquier `curl /eventos/<slug>`.
+
+Se corta en `canales.estadoDe`, que gana un segundo parámetro `conReloj` (por defecto `true`,
+así ningún caller existente cambia de comportamiento). Quien decide es la ruta: el dueño de
+**esa** sala lo ve siempre —su `/api/panel` le cuenta el mismo reloj, y que el panel diga
+"reproduciendo" y su propio bus diga "nada puesto" sería una contradicción que tendría que
+resolver él—, y cualquier otro sólo si la Sala está prendida.
+
+**No hizo falta filtrar además los eventos `reloj` en vivo**, y se comprobó antes de
+decidirlo: lo único que los genera es `reloj.aplicarYDifundir`, al que sólo se llega por
+`POST /api/sala/:slug/reloj` y por el borrado de un video, y las dos contestan 404 antes de
+tocar nada. Lo que se escapaba era la foto vieja, no el evento nuevo.
+
+### El dueño del servicio no es la excepción, por una vez
+
+`existe()` sí lo trata aparte: contesta `true` sin tocar el almacén, y es lo que hace que su
+Sala funcione con la colección `creadores` vacía. Copiar ese criterio en el interruptor
+habría dejado prendida **justamente la única Sala que hoy tiene una película puesta**, que
+es la que había que apagar. Así que nace apagada para todos, y para escribirle el ajuste se
+le crea la fila si no la tiene, igual que hace el chat abierto.
+
+Al revés que con el plan, desde `/admin` el dueño **sí** se puede tocar a sí mismo: su plan
+no sale de la base y este interruptor sí, y es el mismo campo del mismo documento que toca
+desde su panel.
+
+### Sin copia en memoria, y por qué el chat abierto sí la tiene
+
+El del chat abierto vive en un `Map` porque el filtro del bus lo pregunta en cada mensaje y
+por cada conexión, donde no hay un `await` disponible. Éste no: todo lo que lo pregunta ya es
+una ruta asincrónica. Alcanza con `obtener()`, que trae su cache de cinco segundos y que toda
+escritura invalida. Una copia menos para desincronizarse el día que haya dos instancias.
+
+La escritura va **en cola** (`almacen.enCola`), como todas las de este módulo: `escribir` es
+leer-cambiar-guardar sobre el documento entero, así que prender la Sala mientras se guarda un
+bloqueo o el uso de R2 se pisarían en silencio. Hay una prueba que lanza las dos a la vez.
+
+### Las páginas y los términos
+
+`/crear` vendía la Sala como si estuviera disponible —el primer párrafo, los tres pasos y el
+botón—. Ahora vende el multichat y dedica una tarjeta a decir con todas las letras que la
+Sala está construida pero apagada y que se habilita a pedido. `/terminos` aclara lo mismo
+arriba y en el punto de los planes. `/` era la única otra línea que nombraba las pelis.
+
+**`TERMINOS_VERSION` NO sube, y queda escrito por qué.** El texto no cambia qué se guarda, ni
+de quién es el contenido, ni las reglas de los reintegros: describe el servicio como está,
+que es lo que su propio punto 7 llama un cambio de redacción. Subirla obligaría a reaceptar
+algo que no les cambia nada a los que entren, y obligaría a tocar a la vez el literal de
+`creadores.js` y el `terminos=1` del `<a>` de `crear.html` —si los dos no coinciden, el alta
+de un creador nuevo se rompe con "Falta aceptar los terminos"—. Sigue en `'1'`.
+
+### Lo que quedó pendiente
+
+- **`POST /api/panel/suscribirse` sigue andando con la Sala apagada.** Alguien podría pagar
+  un plan cuyo único beneficio —reproducir— está apagado. Hoy no puede pasar porque el cobro
+  no está configurado (faltan las variables de Paddle), pero el día que se configure hay que
+  decidir si el botón se esconde mientras la Sala esté cerrada. No se tocó: es alcance nuevo.
+- **`PLAN.md` sigue diciendo "nada construido"** en su línea de estado. Ya estaba viejo antes
+  de esto; es el plan original y se deja como documento histórico.
+
+### Archivos
+
+`servidor/creadores.js` (el campo, `salaAbierta()`, `ponerSalaAbierta()`), `servidor/index.js`
+(`salaPermitida`, `salaCerrada`, las dos rutas nuevas, el `conReloj` de `/eventos`),
+`servidor/canales.js` (`estadoDe` con `conReloj`), `paginas/panel.html` y `paginas/panel/panel.js`
+(la tarjeta del interruptor), `paginas/admin.html` y `paginas/admin/admin.js` (la columna
+*Sala*), `paginas/crear.html`, `paginas/index.html`, `paginas/terminos.html`,
+`pruebas/sala-cerrada.test.js` (nuevo) y los ajustes de `creadores`, `sala-http`, `multicanal`,
+`pagina-panel` y `pagina-admin`.
+
+---
+
 ## 2026-09-22 — Fase 5.4: moderación propia, vencimiento y el chat como app
 
 La última de [`PLAN-MULTICHAT.md`](PLAN-MULTICHAT.md). Seis cosas chicas que cierran el

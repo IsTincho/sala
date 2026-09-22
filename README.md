@@ -4,7 +4,9 @@ Servicio web para un streamer de Kick. Tres cosas:
 
 - **Chat Global**: el chat de Kick y el de Twitch juntos en una ventana aparte, con una caja para escribir a los dos.
 - **Chat abierto**: el mismo chat, pero para la comunidad del creador (`/chat/<slug>`). Leer no pide login; para escribir, cada quien conecta **su** Kick y/o **su** Twitch y el mensaje sale en el chat de verdad con su nombre, en una red o en las dos.
-- **Sala**: pasar una película o serie en una página propia, con la cámara de Kick al lado y el chat real de Kick a la derecha. Los espectadores se loguean con Kick y lo que escriben cae en el chat de verdad del stream.
+- **Sala**: pasar una película o serie en una página propia, con la cámara de Kick al lado y el chat real de Kick a la derecha. Los espectadores se loguean con Kick y lo que escriben cae en el chat de verdad del stream. **Apagada desde el 2026-09-22**: ver abajo.
+
+> **Lo que se ofrece hoy es el multichat.** La Sala está entera y probada, pero **nace cerrada para todos** —incluido el dueño del servicio— y con el interruptor apagado `/sala/<slug>` no existe para nadie. Es un interruptor por creador (`salaAbierta`), no un borrado: se prende desde `/panel` (la del dueño del servicio) o desde `/admin` (la de cualquiera). Ver [La Sala](#la-sala).
 
 Plan completo en [`PLAN.md`](PLAN.md). Qué está hecho, en [`BITACORA.md`](BITACORA.md). Cómo trabajan los agentes, en [`AGENTES.md`](AGENTES.md).
 
@@ -179,8 +181,8 @@ Reglas que no se negocian:
 | `/crear` | El alta. Aceptar los términos y entrar con Kick: crea la sala con plan "pendiente" |
 | `/terminos` | El texto que se acepta al crear la sala |
 | `/admin` | La lista de creadores, su plan y su uso. **Da 404 a todo el que no sea el dueño del servicio**: un 403 ya anunciaría que existe |
-| `/sala/:slug` | **La Sala**: cámara, película en HLS y chat de Kick. Da 404 si el canal no existe |
-| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404. Qué redes manda depende de quién pregunta y del chat abierto de la sala (ver "Qué redes ve cada conexión"). `?redes=kick` pide menos, nunca más |
+| `/sala/:slug` | **La Sala**: cámara, película en HLS y chat de Kick. Da 404 si el canal no existe **o si tiene la Sala apagada**, y el 404 es el mismo en los dos casos |
+| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404. Qué redes manda depende de quién pregunta y del chat abierto de la sala (ver "Qué redes ve cada conexión"). `?redes=kick` pide menos, nunca más. El `estado` inicial lleva el reloj **sólo si la Sala de ese creador está prendida**, o si quien escucha es el dueño de *esa* sala |
 | `/api/estado` | JSON con modo, almacén, canales y qué variables faltan |
 | `/oauth/kick/entrar` · `/oauth/kick/volver` | Login con Kick (OAuth 2.1 + PKCE) |
 | `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch. Con `?rol=espectador` es el login de un espectador y pide **sólo `user:write:chat`**: leer entra con el token del creador. El rol viaja en el `state` del servidor, nunca en la query del callback. **Mismo redirect** en los dos casos |
@@ -195,25 +197,33 @@ Reglas que no se negocian:
 | `/api/espectador/salir` | `POST` con `Origin` propio: cierra la sesión y **borra los tokens de las dos redes**. Sin slug: la cuenta de espectador es del dominio, no de una sala |
 | `/chat/:slug/manifest.webmanifest` | El manifest de la PWA de **esa** sala: `start_url` y `scope` son `/chat/<slug>`, así cada espectador instala el chat de su streamer y abre ahí. 404 si la sala no existe |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
-| `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie |
-| `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script |
+| `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie. **404 con la Sala apagada** |
+| `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script. **404 con la Sala apagada** |
 | `/api/sala/:slug/reloj` | Play, pausa, reanudar, saltar y detener. Cookie del dueño **de esa sala**, y **402 si su plan no reproduce** |
 | `/api/sala/:slug/chat` | El mensaje de un espectador, que sale en kick.com con SU cuenta, **en el canal de esa sala**. Cookie de espectador. 503 sólo si esa sala todavía no vinculó Kick |
 | `/api/sala/:slug/yo` | Si esta persona entró y si puede escribir. Nunca la lista de quién está en la sala |
 | `/api/sala/:slug/salir` | Cierra la sesión del espectador y **olvida su token**: el refresh token es de esa persona, no del dueño |
 
-| `/api/panel` | Todo lo que muestra `/panel` en un pedido: plan, salud, reloj, videos, métricas, clave, uso de R2 y el chat abierto (`chatAbierto: { activo, redes }`). El link del chat abierto no viaja: lo arma la página con el origen desde el que se la mira. Cookie de creador |
-| `/api/panel/clave` | `POST` genera la clave de subida de su sala (se devuelve una sola vez), `DELETE` la revoca |
+| `/api/panel` | Todo lo que muestra `/panel` en un pedido: plan, salud, reloj, videos, métricas, clave, uso de R2 y el chat abierto (`chatAbierto: { activo, redes }`). Trae también `salaAbierta`, para que el panel no pinte los controles de una película que el servidor va a rechazar. **Esta ruta no se apaga**: el creador tiene que poder ver su panel igual. El link del chat abierto no viaja: lo arma la página con el origen desde el que se la mira. Cookie de creador |
+| `/api/panel/clave` | `POST` genera la clave de subida de su sala (se devuelve una sola vez), `DELETE` la revoca. **404 con la Sala apagada** |
 | `/api/panel/twitch` | `DELETE` desvincula Twitch de su sala: cierra la conexión y borra el token |
 | `/api/panel/suscribirse` | `POST` devuelve la URL del checkout del proveedor de cobro |
+| `/api/panel/sala` | `POST { abierta }` prende o apaga **su** Sala. Existe para cualquier creador con sesión y contesta **403 al que no sea el dueño del SERVICIO**: `esDueno` se pregunta acá, contra `KICK_SLUG`, no en la base. Un `abierta` que no sea `true`/`false` da 400 |
 | `/api/panel/chat` | `POST { activo?, redes?, bloquear?, desbloquear? }` abre o cierra el chat abierto de **su** sala, elige las redes (`kick`, `twitch` o las dos) y maneja la lista de bloqueados. Lo que no viene queda como estaba; una red desconocida o una lista vacía da 400. **El slug sale de la cookie**: un `slug` en el cuerpo no se lee. Los bloqueados se tocan **de a uno** (`{ red, id, nombre? }`), nunca la lista entera: con dos pestañas del panel abiertas, mandar la lista completa haría que la segunda pise el bloqueo de la primera. Entra en todos los planes. Vale en el acto para la gente conectada y se avisa por el bus (`chat-abierto`) |
-| `/api/subida` | `POST` firma las URL de subida a R2 de su prefijo `<slug>/<id>/`. **402 si su plan no sube, 409 si no entra en su tope de GB.** Acepta la cookie **o** la cabecera `X-Clave-Subida`: el script corre en una terminal |
-| `/api/subida/borrar` | `POST` firma los DELETE de todo lo que haya bajo `<slug>/<id>/`. Misma autenticación |
-| `/api/admin/creadores` | La lista con plan, vencimiento y uso. Sólo el dueño del servicio |
+| `/api/subida` | `POST` firma las URL de subida a R2 de su prefijo `<slug>/<id>/`. **404 con la Sala apagada** (antes que el plan), 402 si su plan no sube, 409 si no entra en su tope de GB. Acepta la cookie **o** la cabecera `X-Clave-Subida`: el script corre en una terminal |
+| `/api/subida/borrar` | `POST` firma los DELETE de todo lo que haya bajo `<slug>/<id>/`. Misma autenticación, y **404 con la Sala apagada**: media función (borrar sí, subir no) es peor que ninguna |
+| `/api/admin/creadores` | La lista con plan, vencimiento, uso y si tiene la Sala prendida. Sólo el dueño del servicio |
 | `/api/admin/plan` | `POST {slug, plan}`. **Sólo acepta "amigo" y "pendiente"**: los otros dos los pone el webhook de cobro |
+| `/api/admin/sala` | `POST {slug, abierta}` prende o apaga la Sala de cualquier creador. Sólo el dueño del servicio, y es la **única** forma de habilitársela a otro. A diferencia de `/api/admin/plan`, acá el dueño **sí** se puede tocar a sí mismo: su plan no sale de la base y este interruptor sí |
 | `/api/prueba/webhook` | **Sólo con `MODO=local`.** Inyecta un evento sin firma, para desarrollar sin webhooks reales. Con `?tipo=chat.message.sent` entra por el mismo camino que uno real y sale traducido como `chat` |
 
 Las cuatro rutas de `/api/sala/:slug/` dan 404 si el slug no es el del dueño del servicio ni el de un creador dado de alta, igual que `/eventos/:slug` y `/sala/:slug`. Y las cuatro contestan **la sala primero y la cookie después**: un pedido sin sesión a una sala que no existe da 404 y no 401, porque "¿existe esta sala?" es un hecho sobre la sala y ya se puede averiguar con un `GET /sala/<slug>`.
+
+**Y con la Sala apagada contestan exactamente lo mismo.** `/sala/:slug` y las cuatro de `/api/sala/:slug/` no distinguen "no existe" de "existe pero está apagada": mismo código y mismo cuerpo. Un 403, o un 404 con otro texto, ya anunciaría que ahí hay algo esperando que alguien insista, y una Sala cerrada no es un permiso que falte sino una función que no se está ofreciendo. El interruptor se mira **en el mismo lugar** que la existencia, antes de la cookie: mirarlo después haría que la diferencia entre el 401 y el 404 cuente justo lo que el 404 viene a no contar.
+
+Las que sacan el slug de la cookie o de la clave de subida (`/api/panel/clave`, `/api/subida`, `/api/subida/borrar`, `/api/videos`) también dan 404, pero **sí dicen por qué**: quien llega ahí ya demostró que la sala es suya, así que "está apagada" no le cuenta nada que no sepa, y un 404 mudo sobre su propio panel lo mandaría a buscar un bug que no hay. El chequeo va **antes que el del plan**: contestar "tu plan no sube videos" con la Sala apagada manda a alguien a pagar por algo que no se le va a dar.
+
+**Lo que NO se apaga**, porque es el chat abierto y es lo que hoy se ofrece: `/eventos/:slug`, `/chat/:slug`, `/chat/:slug/manifest.webmanifest`, `/api/chat/:slug/*`, `/api/espectador/salir`, `/api/panel` y `/api/panel/chat`.
 
 ---
 
@@ -228,10 +238,11 @@ Cualquier streamer de Kick entra por `/crear`, acepta los términos y se loguea.
 | `pago` | El webhook de cobro | Sí | `GB_PAGO` |
 | `vencido` | El webhook de cobro | No | 0 |
 
-Dos cosas que no se ven en la tabla:
+Tres cosas que no se ven en la tabla:
 
 - **El plan del dueño del servicio no está en la lista.** Sale de `KICK_SLUG` y no de la base: `planDe()` lo contesta antes de leer el documento, y `/admin` no le ofrece ningún botón.
 - **Un vencimiento que ya pasó baja el plan solo**, aunque el campo siga diciendo "pago". El webhook de cobro es lo único del sistema que llega de afuera y puede no llegar; si no llega, el servicio tiene que cortarse, no seguir dando.
+- **El plan no es el único interruptor.** Desde el 2026-09-22 la Sala está apagada para todos y lo que decide si existe es `salaAbierta`, que no tiene nada que ver con el plan: apagada da 404 tenga el plan que tenga, y el chequeo va **antes**. El chat abierto entra en todos los planes y no depende de ninguno de los dos.
 
 ### El tope de canales
 
@@ -342,6 +353,14 @@ Las dos conexiones de Twitch se crean a través de `chat.fijarConexiones()`, que
 ---
 
 ## La Sala
+
+> **APAGADA POR DECISIÓN DEL DUEÑO, 2026-09-22.** Lo que se ofrece hoy es el multichat. Todo lo que dice esta sección sigue siendo cierto y sigue probado: no se borró una línea. Lo que cambió es que hay un interruptor por creador, `salaAbierta`, que **nace apagado para todos** —incluido el dueño del servicio, que por todo lo demás es la excepción de la casa—, y que apagado hace que `/sala/<slug>`, las cuatro rutas de `/api/sala/<slug>/`, la clave de subida, la subida a R2 y el catálogo contesten 404.
+>
+> **Cómo se vuelve a prender.** La del dueño del servicio, desde `/panel`: aparece la tarjeta «La Sala (ver una peli juntos)» con su interruptor (`POST /api/panel/sala {"abierta": true}`). La de cualquier otro creador, desde `/admin`, con el botón **Abrir** de la columna *Sala* (`POST /api/admin/sala {"slug": "…", "abierta": true}`). Ningún creador puede prender la suya: `/api/panel/sala` le contesta 403. Prender la Sala no toca el plan, así que un creador "pendiente" con la Sala prendida sigue sin reproducir hasta que además tenga plan activo.
+>
+> **Por qué el dueño no es la excepción acá.** `existe()` sí lo trata aparte, para que su Sala funcione con la colección `creadores` vacía. Copiar ese criterio en el interruptor habría dejado prendida justamente la única Sala que hoy tiene una película puesta, que es la que había que apagar.
+>
+> **Qué NO se apagó.** El chat abierto entero, que es lo que está en producción: `/chat/:slug`, su manifest, `/api/chat/:slug/*` y el bus `/eventos/:slug`. Ese bus es compartido, así que su evento `estado` dejó de llevar el reloj a quien no sea el dueño de esa sala cuando está apagada: los eventos sin `red` pasan todos los filtros por definición, y sin eso un `curl` seguiría contando qué película quedó puesta.
 
 `/sala/:slug` es tres columnas en escritorio —cámara, película, chat— y en celular se apila: video, cámara chica, chat. La regla que manda sobre el layout: **nunca hay scroll horizontal**.
 

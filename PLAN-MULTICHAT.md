@@ -304,9 +304,57 @@ Casi nada. La app de Kick y la de Twitch ya existen y el redirect es el mismo.
       construir la 5.2/5.3: el sitio se sirve desde dos dominios y el login tiene que
       terminar en el mismo donde empezó. Sin esto, desde el dominio de Cloudflare no se
       puede escribir ni conectar ninguna cuenta.
-- [ ] Revisar el texto nuevo de `/terminos` (qué se guarda del espectador y cómo se
-      borra) y **decidir si sube a Versión 2**. Subirlo obliga a tocar también el link de
-      `/crear`, que lleva `terminos=1` escrito; a los creadores que ya están no los afecta
-      (los términos sólo se piden en el alta).
+- [x] Revisar el texto nuevo de `/terminos` (qué se guarda del espectador y cómo se
+      borra) y **decidir si sube a Versión 2**. **Resuelto el 2026-09-22: NO sube.** El
+      texto cambió sólo para decir que hoy lo que funciona es el chat y que la Sala está
+      apagada; no cambia qué se guarda, ni de quién es el contenido, ni las reglas de los
+      reintegros. El punto 7 del propio texto dice que los cambios de redacción no suben la
+      versión, y subirla obligaría a reaceptar algo que no les cambia nada a los que
+      entren. Así que `TERMINOS_VERSION` sigue en `'1'` y el link de `/crear` sigue con
+      `terminos=1`. **Si algún día sube, hay que tocar las dos cosas a la vez**: el literal
+      de `servidor/creadores.js` y el del `<a>` de `paginas/crear.html`, o el alta de un
+      creador nuevo se rompe con "Falta aceptar los terminos". Hay una prueba que lo
+      exige (`multicanal`, "la version de los terminos de la pagina es la que exige el
+      servidor").
 - [ ] Para las pruebas: una **cuenta secundaria** de Kick y otra de Twitch, para
       escribir como espectador sin usar la tuya.
+
+---
+
+## 9. La Sala queda apagada (2026-09-22)
+
+**Decisión del dueño**: por ahora el producto que se ofrece es el multichat. La
+Sala —pasar una película juntos— queda **cerrada y escondida**, pero no se borra:
+el reloj, el catálogo, la subida a R2 y la página siguen enteros y probados.
+
+Es un campo por creador, `salaAbierta`, que **nace en `false` para todos**,
+incluido el dueño del servicio. Apagado, `/sala/<slug>` y las cuatro rutas de
+`/api/sala/<slug>/` contestan el mismo 404 que una sala que no existe, y la
+clave de subida, `/api/subida`, `/api/subida/borrar` y `/api/videos` contestan
+404 diciendo por qué.
+
+**Cómo se reabre:**
+
+- **La del dueño del servicio**: desde `/panel`, la tarjeta «La Sala (ver una
+  peli juntos)». Por debajo es `POST /api/panel/sala {"abierta": true}`.
+- **La de cualquier otro creador**: desde `/admin`, el botón **Abrir** de la
+  columna *Sala*. Por debajo es `POST /api/admin/sala {"slug": "…", "abierta": true}`.
+  Es la única forma: `/api/panel/sala` le contesta 403 a todo el que no sea el
+  dueño del servicio, porque la Sala no está apagada por falta de permiso sino
+  porque hoy no se ofrece, y es lo único del servicio que gasta almacenamiento y
+  ancho de banda de verdad.
+
+Prender la Sala **no toca el plan**: un creador "pendiente" con la Sala prendida
+sigue sin poder reproducir hasta que además tenga plan activo. Son dos
+interruptores independientes y el de la Sala se mira primero.
+
+**Lo que no se tocó**: el chat abierto entero (fases 5.1 a 5.4). El bus
+`/eventos/:slug` es compartido, así que lo único que cambió ahí es que su evento
+`estado` deja de llevar el reloj a quien no sea el dueño de esa sala cuando está
+apagada.
+
+**Queda anotado como duda abierta**: `POST /api/panel/suscribirse` sigue andando
+con la Sala apagada, o sea que alguien podría pagar un plan cuyo único beneficio
+—reproducir— está apagado. Hoy no puede pasar porque el cobro no está
+configurado (faltan las variables de Paddle), pero el día que se configure hay
+que decidir si el botón de suscribirse se esconde mientras la Sala esté cerrada.

@@ -2,6 +2,8 @@
 
 Servicio web para un streamer de Kick: Chat Global (Kick + Twitch en una ventana aparte), Sala (peli en página propia con el chat real de Kick) y, después, lo mismo para otros creadores.
 
+**Hoy lo que se ofrece es el multichat. La Sala está apagada** (decisión del dueño, 2026-09-22): es un interruptor por creador, `salaAbierta`, no un borrado. Con él apagado `/sala/<slug>` y sus rutas contestan 404. Ver README, sección "La Sala".
+
 ## Leer antes de tocar nada
 
 1. `PLAN.md`: qué se construye y por qué. Manda sobre cualquier idea nueva.

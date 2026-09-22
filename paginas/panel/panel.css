@@ -278,3 +278,27 @@ button:focus-visible, a:focus-visible, select:focus-visible{
 
 .chip-red-kick{ background: var(--kick); }
 .chip-red-twitch{ background: var(--twitch); color: #fff; }
+
+/* ---------- el link del chat abierto, con su QR al lado ---------- */
+
+.fila-link-chat{
+  display: flex;
+  align-items: flex-start;
+  gap: var(--espacio-3);
+  flex-wrap: wrap;
+}
+
+.parte-link-chat{
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+/* Fondo blanco propio: un QR sobre el fondo oscuro del panel no lo
+   lee ninguna camara. */
+.qr-chat{
+  flex: none;
+  width: 128px;
+  height: 128px;
+  border-radius: var(--radio);
+  background: #fff;
+}

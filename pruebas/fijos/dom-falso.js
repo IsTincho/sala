@@ -387,7 +387,7 @@ export function abrirPagina({
 
   const caja = {
     console,
-    URL, URLSearchParams, Response, TextDecoder,
+    URL, URLSearchParams, Response, TextDecoder, TextEncoder,
     /* El navegador lo tiene, y la pagina lo usa para cortar un fetch
        que se colgo. El del test es el de verdad, de Node. */
     AbortController,

@@ -75,6 +75,7 @@
   const notaTwitchChat = el('nota-twitch-chat');
   const linkChatAbierto = el('link-chat-abierto');
   const abrirChatAbierto = el('abrir-chat-abierto');
+  const qrChat = el('qr-chat');
   const bloqueBloqueados = el('bloque-bloqueados');
   const listaBloqueados = el('lista-bloqueados');
   const CONTROLES_DEL_CHAT = [interruptorChat, redChatKick, redChatTwitch];
@@ -416,8 +417,32 @@
     const link = linkDelChat(slug ?? '');
     linkChatAbierto.textContent = link;
     abrirChatAbierto.href = link;
+    pintarQr(link);
     pintarBloqueados(chat.bloqueados);
     tarjetaChatAbierto.hidden = false;
+  }
+
+  /**
+   * El QR del link, para poder ponerlo en pantalla y que lo escaneen.
+   *
+   * Se dibuja acá y no en el servidor porque el link también se arma
+   * acá, con el origen desde el que se mira el panel: si lo armara el
+   * servidor, detrás del proxy de Cloudflare el QR llevaría al dominio
+   * de Railway.
+   *
+   * Va como `src` de un <img> y no como nodos sueltos: no hay innerHTML
+   * de por medio y el navegador lo escala solo sin que se despeine.
+   */
+  function pintarQr(link) {
+    if (!link || !window.SalaQR) { qrChat.hidden = true; return; }
+    try {
+      qrChat.src = window.SalaQR.datosUri(link);
+      qrChat.hidden = false;
+    } catch {
+      /* Un link larguísimo no entra en un QR: mejor sin QR que con el
+         panel roto. */
+      qrChat.hidden = true;
+    }
   }
 
   /**

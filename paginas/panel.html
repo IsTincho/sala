@@ -73,10 +73,17 @@
       </span>
     </fieldset>
 
-    <code class="valor-clave" id="link-chat-abierto"></code>
-    <div class="fila-controles">
-      <button type="button" id="boton-copiar-link-chat" class="boton-panel">Copiar link</button>
-      <a id="abrir-chat-abierto" class="boton-panel" href="/chat/" target="_blank" rel="noopener">Abrir</a>
+    <div class="fila-link-chat">
+      <div class="parte-link-chat">
+        <code class="valor-clave" id="link-chat-abierto"></code>
+        <div class="fila-controles">
+          <button type="button" id="boton-copiar-link-chat" class="boton-panel">Copiar link</button>
+          <a id="abrir-chat-abierto" class="boton-panel" href="/chat/" target="_blank" rel="noopener">Abrir</a>
+        </div>
+      </div>
+      <!-- el mismo link, para la camara: se puede poner en pantalla y
+           que lo escaneen desde el celular -->
+      <img id="qr-chat" class="qr-chat" alt="Código QR del link de tu chat" width="128" height="128" hidden>
     </div>
 
     <!-- la lista sólo aparece si hay alguien: se bloquea desde el
@@ -203,6 +210,7 @@
   <p><a href="/chat">Abrir el Chat Global</a></p>
 </main>
 
+<script src="/comun/qr.js"></script>
 <script src="/panel/panel.js"></script>
 </body>
 </html>

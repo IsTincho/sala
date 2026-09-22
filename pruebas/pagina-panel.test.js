@@ -97,6 +97,9 @@ function abrir({ estadoPanel = () => ({ ok: true, status: 200, json: async () =>
     archivo: 'panel.html',
     script: 'panel/panel.js',
     ruta: '/panel',
+    /* El QR lo dibuja comun/qr.js, que la pagina carga antes del suyo:
+       aca se corre el de verdad, no una imitacion. */
+    antes: ['comun/qr.js'],
     fetch: responder,
     globales,
   });
@@ -832,6 +835,24 @@ test('copiar el link lo manda al portapapeles', async () => {
   p.el('boton-copiar-link-chat').disparar('click');
   await asentarse();
   assert.deepEqual(copiado, ['https://sala.example/chat/istincho']);
+  p.cerrar();
+});
+
+test('el QR lleva al mismo link que dice el panel', async () => {
+  const p = abrir(conChat({ activo: true, redes: ['kick'] }));
+  await asentarse();
+
+  const qr = p.el('qr-chat');
+  assert.equal(qr.hidden, false);
+  assert.match(qr.src, /^data:image\/svg\+xml;charset=utf-8,/);
+  /* Se dibuja acá y no en el servidor porque el link también se arma
+     acá, con el origen desde el que se mira el panel: si lo armara el
+     servidor, detrás del proxy el QR llevaría al dominio de Railway.
+     Que el dibujo sea legible lo prueban pruebas/qr.test.js y
+     herramientas/verificar-qr.mjs; acá alcanza con que sea el de ESTE
+     link y no el de otro. */
+  const esperado = p.ventana.SalaQR.datosUri('https://sala.example/chat/istincho');
+  assert.equal(qr.src, esperado);
   p.cerrar();
 });
 

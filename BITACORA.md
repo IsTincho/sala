@@ -4,6 +4,187 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — Fases 5.2 y 5.3: el espectador escribe, en Kick y en Twitch
+
+Las dos juntas, porque la gracia es que escribir a las dos sea **un solo envío**. En
+`/chat/<slug>`, cada quien conecta **su** Kick y/o **su** Twitch y el mensaje sale en el
+chat de verdad con su nombre. Sigue valiendo lo de la 5.1: **leer no pide login**.
+
+**716 pruebas en verde** (eran 662). `herramientas/` no se tocó.
+
+### Qué hay
+
+- **Botones "Conectar Kick" y "Conectar Twitch"** arriba de la caja de escribir, y un
+  selector que muestra **sólo las redes que la persona conectó Y que el creador abrió**.
+  Con las dos aparece **"las dos"**, que es un pedido solo y un mensaje solo para el
+  freno. Con una sola no hay nada que elegir y el selector se esconde.
+- **`POST /api/chat/:slug/enviar`** `{ red: "kick" | "twitch" | "ambas", texto }`, con
+  cookie de espectador. Los mismos frenos que la Sala y por el mismo camino: el tope de
+  cada red antes de gastar un pedido, la espera del canal si Kick nos frenó, y uno cada
+  dos segundos por persona. **403** si el chat está cerrado, si esa red no está abierta o
+  si la persona no la conectó.
+- **`GET /api/chat/:slug/yo`**: qué conectó y dónde puede escribir **acá**. Habla del que
+  pregunta y de nadie más.
+- **`POST /api/espectador/salir`**: borra los tokens de **las dos redes**, no sólo la
+  cookie. Sin slug, porque la cuenta de espectador es del dominio.
+- **OAuth de espectador para Twitch**: `?rol=espectador`, scope **`user:write:chat`** y
+  nada más (leer entra con el token del creador). **Mismo redirect** que ya estaba: no
+  hay que tocar nada en la app de Twitch por esto. El rol viaja en el `state` del
+  servidor y no en la query del callback, igual que el destino.
+- **El mensaje no se difunde por el bus**: vuelve por el webhook de Kick y por EventSub.
+  Mismo criterio que la Sala. Hay prueba.
+
+### El espectador dejó de ser una cuenta de Kick
+
+Era literal: el documento vivía en `tokens`, bajo `espectador:<user_id de Kick>`. Con
+Twitch adentro no cierra, porque alguien puede conectar **sólo** Twitch y no tener nunca
+un id de Kick. Ahora tiene id propio (`esp_…`) en la colección `espectadores`, y las
+redes le cuelgan con sus tokens cifrados por separado.
+
+**La migración conserva el id viejo.** Esas cookies están en navegadores ahora mismo: si
+la migración estrenara id, todas las sesiones vivas se caerían en el deploy. Al leer un
+espectador que no está en el modelo nuevo se busca el viejo, se convierte **bajo la misma
+clave** y se borra el original, para no dejar dos copias del mismo refresh token. Los
+tokens no se vuelven a cifrar: ya están cifrados con la misma clave y descifrarlos ahí
+sería pasearlos en claro por la memoria sin necesidad. Hay prueba de punta a punta: una
+cookie vieja escribe por la ruta nueva y el documento queda migrado.
+
+**Un vínculo de creador no se confunde con uno viejo.** En `tokens` también viven los
+vínculos (`<slug>:<red>`), así que un creador con el slug "espectador" tendría documentos
+llamados `espectador:kick`. La migración mira el campo `tipo`, y hay prueba.
+
+### Decisiones que se apartan de lo previsto, y por qué
+
+**1. Dos navegadores son dos espectadores.** Antes, como la clave era la cuenta de Kick,
+entrar desde el celular y desde la compu daba un solo documento. Deduplicar ahora pediría
+un índice por red (o recorrer la colección en cada login) y, sobre todo, haría que
+"Salir" en el celular cerrara la sesión de la compu, que no es lo que nadie espera de un
+"salir". Lo que cuesta: el freno de dos segundos es por espectador, así que la misma
+persona con dos navegadores tiene dos frenos. Encima siguen los límites de Kick y de
+Twitch, que son por cuenta.
+
+**2. La espera del 429 sigue siendo de Kick y sólo de Kick.** El 429 de Kick es del
+**canal** y frena a todos, como siempre. El límite de Twitch para escribir es por
+**cuenta** (20 cada 30 s para quien no es mod): frenar el canal entero porque a una
+persona la frenaron callaría a los demás sin motivo. Prueba: con Kick frenado, un mensaje
+a Twitch sale igual.
+
+**3. Un permiso que dejó de valer desconecta UNA red, no la cuenta.** En la Sala, un 401
+de Kick cierra la sesión y borra al espectador entero, y así quedó: es un producto de una
+sola red, y dejar vivo un token de Twitch al que ninguna sesión apunta sería guardar
+credenciales que su dueño no puede ni usar ni borrar. En el chat abierto, en cambio, la
+otra red no tiene la culpa: se desconecta la que falló, la sesión sigue en pie y la
+respuesta trae `reconectar: ["twitch"]` para que la página vuelva a mostrar ese botón.
+
+**4. "Ambas" con una sola red abierta rebota entero.** Mandar a media callado sería
+mentirle a quien eligió las dos; la página no tendría que haber ofrecido esa opción ahí.
+
+**5. Un 200 de Twitch con `is_sent: false` NO es un envío.** Se lee `drop_reason` y el
+motivo se muestra tal cual lo da Twitch. Decir "enviado" cuando el AutoMod lo retuvo es
+la peor mentira posible de un chat: la persona se queda esperando una respuesta que nadie
+va a ver. Con "las dos", el resultado viene **por red**, así que "salió en Kick, falló en
+Twitch: el AutoMod lo retuvo" se dice exactamente. Un error pelado ahí haría que lo
+escriba de nuevo y quede repetido donde sí había salido.
+
+**6. El envío se sacó a `servidor/envio.js`.** La Sala y el chat abierto usan el mismo
+camino: el día que cambie el tope de Kick, o el trato que se le da a un 429, cambia en un
+lado solo. `envio.js` no sabe de HTTP —devuelve `{ ok, motivo, estado, caduco }`— porque
+las dos rutas no hacen lo mismo con un permiso vencido (ver el punto 3). **El contrato de
+`/api/sala/:slug/chat` no cambió**, y sus pruebas de antes siguen tal cual.
+
+**7. El freno de la persona se anota un poco antes que antes.** Estaba después de
+comprobar el vínculo del canal; ahora está justo antes de mandar, en las dos rutas. O
+sea: un 503 de "esta sala no vinculó Kick" ahora también consume el turno. Es un envío
+intentado y el freno es contra el dedo pesado.
+
+### Los dos dominios, que era la parte con trampa
+
+El sitio se sirve desde Railway **y** desde `multichat-osmiumstudio.pages.dev`, un Worker
+de Pages que reenvía todo (`cloudflare/multichat/_worker.js`). Para el navegador son dos
+sitios con dos juegos de cookies; para el servidor, un proceso solo.
+
+`servidor/origenes.js` tiene la lista **explícita**: `URL_BASE` siempre, más lo que diga
+`ORIGENES` separado por comas. Sirve para dos cosas que no pueden contradecirse:
+
+- **CSRF.** Los POST del espectador exigen, además de la cookie `SameSite=Lax`, que el
+  `Origin` sea uno de esa lista. **Sin `Origin` no pasan**: los navegadores lo mandan en
+  todo POST de `fetch`, así que exigirlo no rompe a nadie que use la página, y aceptarlo
+  sin `Origin` dejaría la puerta abierta a cualquier cliente que simplemente no lo mande.
+- **Los redirect de OAuth.** `baseDe` ahora usa **el origen por el que entró el pedido**,
+  si es uno de los nuestros. Si volviera siempre al de `URL_BASE`, quien entra por el
+  dominio lindo terminaría el login en Railway, con la cookie puesta ahí, y al volver al
+  link que tenía abierto no estaría conectado. Como la lista es explícita, un `Host`
+  inventado no puede mandar el redirect a ningún lado.
+
+**Sin `ORIGENES` todo sigue exactamente como antes.** Es opt-in, y prenderlo tiene un
+precio que está anotado en TAREAS-DUENO (tareas 20 y 21): **un dominio en la lista tiene
+que estar registrado como redirect en la app de Kick y en la de Twitch**, o el login
+desde ahí rebota del lado de ellos.
+
+Sólo lo exigen las rutas nuevas. Las de antes (`/api/panel/*`, `/api/sala/:slug/*`) siguen
+con `SameSite=Lax` a secas: cambiarles el contrato no lo pidió nadie y `sesion.js` explica
+por qué el Lax alcanza mientras ninguna cookie sea `SameSite=None`.
+
+### Cómo se verificó
+
+- **Pruebas nuevas**: `pruebas/chat-enviar.test.js` (36, con el servidor levantado de
+  verdad y dobles de `fetch` para Kick y Twitch), 13 en `pagina-chat` y 9 en
+  `espectadores`. Cubren lo pedido: el selector según lo conectado y lo abierto, chat
+  cerrado = 403, `is_sent:false` con su `drop_reason` mostrado, "ambas" con una red
+  caída, el freno de 2 s con "ambas" contando como uno, `Origin` ajeno y `Origin`
+  ausente rechazados, salir borrando las dos redes, y el espectador viejo migrado.
+  También el OAuth de espectador entero, de `/entrar` a `/volver`, sin salir a internet.
+- **En vivo**, con un servidor local limpio (carpeta temporal, sin `servidor/.env`, sin
+  Mongo, clave de cifrado de relleno) y el navegador: `/chat/ana` sin conectar nada
+  muestra los dos botones y ninguna caja; con las dos redes conectadas dice "Escribís
+  como … en Kick y … en Twitch" y el selector ofrece Kick, Twitch y Las dos. Al mandar
+  uno de verdad, **Kick contestó 401 al token de mentira** y se vio el camino completo:
+  se desconectó **sólo** Kick, el botón "Conectar Kick" volvió solo, el texto pasó a
+  "Escribís como … en Twitch" y el mensaje **no** se borró de la caja. En 375 px no hay
+  scroll horizontal. Con `curl`: `Origin` ajeno 403, sin `Origin` 403, el segundo dominio
+  200.
+
+### Archivos tocados
+
+`servidor/{espectadores,envio,origenes,index,almacen,twitch}.js`, `paginas/chat.html`,
+`paginas/chat/{chat.js,chat.css}`. Pruebas: `pruebas/chat-enviar.test.js` (nueva) y
+agregados en `espectadores`, `sala-http` y `pagina-chat`. Docs: `README.md`,
+`TAREAS-DUENO.md` (bloque 6), `PLAN-MULTICHAT.md` (estado).
+
+### Cómo verlo funcionando
+
+```bash
+npm test
+npm run local
+# /panel -> "Chat para tu comunidad" -> prender el interruptor
+# y en otra ventana, sin sesion de creador:
+curl -s localhost:8778/api/chat/<tu-slug>/yo
+# /chat/<tu-slug> -> "Conectar Kick" -> escribir
+```
+
+### Pendiente
+
+- **Nada de esto tocó una API real todavía.** Lo que sólo se ve en producción, y en este
+  orden: (1) que Twitch acepte un token de espectador con **`user:write:chat` solo** en
+  `POST helix/chat/messages` —la doc lo dice, pero es el scope más ajustado posible—;
+  (2) que `GET helix/users` conteste con ese mismo token (se usa para saber el nombre y
+  el `sender_id`); (3) un `drop_reason` de verdad, con una cuenta baneada o el AutoMod
+  prendido; (4) el login desde el dominio de Cloudflare, que depende de las tareas 20 y
+  21 del dueño.
+- **Los espectadores viejos huérfanos no se limpian solos.** La migración corre al leer,
+  así que un documento de `tokens` cuya sesión ya venció se queda ahí. El vencimiento de
+  60 días de la Fase 5.4 tiene que barrer también `tokens/espectador:*`.
+- **La Fase 5.4 no está empezada**: bloqueados por el creador, el vencimiento de 60 días,
+  el contador de conectados, el QR, el manifest por sala y el texto nuevo de
+  `/terminos`. La moderación de cada plataforma sigue aplicándose sola mientras tanto
+  (el mensaje sale como de esa persona), que es lo que dice el plan.
+- **`/chat` de un creador que no es el dueño sigue mirando la sala del dueño.** Es de
+  antes y no cambió.
+- La caja de escribir del chat abierto **no responde mensajes** (`reply_parent_message_id`
+  existe en las dos APIs y el creador ya lo usa). Nadie lo pidió para el espectador.
+
+---
+
 ## 2026-09-22 — Fase 5.1: el chat abierto, sólo lectura
 
 Primera fase de [`PLAN-MULTICHAT.md`](PLAN-MULTICHAT.md). Cada creador puede **abrir su

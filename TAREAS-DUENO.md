@@ -143,6 +143,31 @@ La Fase 3 está construida. Todo esto es lo que falta para encenderla; sin nada 
 
 - [ ] **19. Pedirle a Kick la verificación de la app, antes de llegar a 500 salas.** La app sin verificar admite 1.000 canales suscriptos a `chat.message.sent`. Pasado ese número, las suscripciones nuevas fallan y **el chat de los que entren queda mudo sin ningún error visible**. `/crear` corta solo en 900 y `/admin` te avisa a partir de la mitad, pero el trámite con Kick lleva tiempo: conviene empezarlo cuando el aviso aparezca, no cuando el tope llegue.
 
+## Bloque 6 — Para que la comunidad escriba en el chat abierto (Fases 5.2 y 5.3)
+
+Está construido. Sin esto, `/chat/<slug>` se sigue leyendo igual; lo que no anda es **escribir desde el dominio de Cloudflare**, y "Conectar Twitch" desde cualquiera de los dos.
+
+- [ ] **20. Registrar el dominio de Cloudflare como redirect, en las dos apps.** Hoy las apps tienen sólo el dominio de Railway, así que quien entra por `multichat-osmiumstudio.pages.dev` y toca "Conectar Kick" termina el login en Railway, con la cookie puesta ahí: al volver al link que tenía abierto no está conectado.
+
+  - Kick: kick.com → Settings → Developer → tu app `Sala` → agregar el redirect
+    `https://multichat-osmiumstudio.pages.dev/oauth/kick/volver`
+  - Twitch: dev.twitch.tv/console/apps → tu app → **Add** otra OAuth Redirect URL
+    `https://multichat-osmiumstudio.pages.dev/oauth/twitch/volver`
+
+  Las dos aceptan **varios** redirect: el de Railway se queda como está, no se toca.
+
+- [ ] **21. Cargar `ORIGENES` en Railway** (servicio `sala` → Variables):
+  ```
+  ORIGENES=https://multichat-osmiumstudio.pages.dev
+  ```
+  No es un secreto: es un dominio público. Es lo que hace que el servidor acepte los POST que vienen de ese dominio **y** que arme los redirect de OAuth apuntando ahí.
+
+  `URL_BASE` **no se toca**: sigue siendo el de Railway, y es el que se usa cuando el pedido no viene por ninguno de los dos.
+
+  > Los pasos 20 y 21 van juntos y en ese orden. Si cargás `ORIGENES` sin registrar los redirect, el login desde el dominio lindo rebota del lado de Kick y de Twitch ("redirect_uri mismatch"). Si registrás los redirect y no cargás `ORIGENES`, no pasa nada malo: sigue todo como hoy.
+
+- [ ] **22. Cuenta secundaria de Twitch** (además de la de Kick de la tarea 13), para probar el chat abierto como espectador: conectar las dos, escribir con "las dos" y ver que sale en los dos chats con esa cuenta.
+
 ---
 
 ## Datos públicos (se pueden escribir acá)

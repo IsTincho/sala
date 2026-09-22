@@ -1,7 +1,9 @@
 # Plan: Multichat por sala — el streamer lo abre, los espectadores lo usan
 
-Fecha: 2026-09-22. Estado: **5.1 construida** (chat abierto, sólo lectura; ver
-la BITACORA del 2026-09-22). **5.2 a 5.5 sin construir** y sin aprobar.
+Fecha: 2026-09-22. Estado: **5.1, 5.2 y 5.3 construidas** (el chat abierto se lee sin
+login y se escribe con la cuenta de cada quien, en Kick, en Twitch o en las dos; ver la
+BITACORA del 2026-09-22). **5.4 sin empezar**; **5.5 afuera de este plan**, por decisión
+del dueño.
 Complemento de [PLAN.md](PLAN.md), que sigue mandando sobre todo lo demás.
 
 ---
@@ -85,6 +87,12 @@ Modelo (colección `espectadores`, se extiende la que hay):
 ```
 
 Con una red conectada y la otra no, el campo de la otra no existe.
+
+> **Cómo quedó construido** (5.3): el `_id` es `esp_…` al azar, como dice el modelo, y
+> los espectadores que ya estaban —que se guardaban en `tokens` bajo
+> `espectador:<user_id de Kick>`— se migran al leerlos **conservando ese id viejo**,
+> porque sus cookies están en navegadores ahora mismo. Cada red guarda además `login` y
+> el momento en que se conectó. Dos navegadores son dos espectadores: ver la BITACORA.
 
 ### El creador
 
@@ -189,7 +197,7 @@ El panel lo avisa al lado del link.
 
 Cada fase se prueba sola y deja algo usable.
 
-### Fase 5.1 — Chat abierto, sólo lectura (1 bloque)
+### Fase 5.1 — Chat abierto, sólo lectura — **CONSTRUIDA**
 
 `/chat/:slug`, el interruptor del panel, las redes a compartir y el filtro en
 `leDaEl`. La página es la de `/chat` con la caja de escribir escondida.
@@ -198,7 +206,7 @@ Cada fase se prueba sola y deja algo usable.
 Abierto con las dos redes, sí. Una sala que no lo abrió muestra "cerrado", y
 una que no existe da 404.
 
-### Fase 5.2 — El espectador escribe en Kick (1 bloque)
+### Fase 5.2 — El espectador escribe en Kick — **CONSTRUIDA**
 
 `POST /api/chat/:slug/enviar` con `red: "kick"`, reusando el camino de
 `/api/sala/:slug/chat`. Botón "Conectar Kick" en `/chat/:slug`.
@@ -206,7 +214,7 @@ una que no existe da 404.
 **Verificación:** desde otro navegador con una cuenta secundaria de Kick,
 escribís en `/chat/istincho` y aparece en kick.com/istincho con esa cuenta.
 
-### Fase 5.3 — El espectador conecta Twitch y escribe ahí (1 a 2 bloques)
+### Fase 5.3 — El espectador conecta Twitch y escribe ahí — **CONSTRUIDA**
 
 OAuth de Twitch con `rol=espectador`, token cifrado, `red: "twitch"` y
 `"ambas"`, `is_sent`/`drop_reason` mostrados a la persona, y un "Salir" que
@@ -217,7 +225,11 @@ twitch.tv/lstincho. Esa cuenta, baneada en Twitch, ve el motivo en pantalla y
 no un "enviado". Con "las dos" sale en los dos chats. Después de "Salir", los
 tokens ya no están en Mongo.
 
-### Fase 5.4 — Moderación propia y cierre (1 bloque)
+> **Esa verificación está pendiente**: las dos fases se probaron con dobles de `fetch` y
+> a mano en un servidor local, pero ninguna tocó todavía la API real de Twitch. La lista
+> exacta de lo que sólo se ve en producción está en la BITACORA del 2026-09-22.
+
+### Fase 5.4 — Moderación propia y cierre (1 bloque) — **SIN EMPEZAR**
 
 Bloquear desde el menú del mensaje, la lista de bloqueados en el panel, el
 vencimiento de 60 días, el contador de conectados, el QR, los términos y el
@@ -227,7 +239,7 @@ espectador puede instalar el chat de su streamer como app).
 **Verificación:** un bloqueado recibe 403 en Kick y en Twitch, el desbloqueo
 anda al instante, y la PWA instalada abre directo en la sala.
 
-### Fase 5.5 — Creadores que sólo usan Twitch (opcional, 2 a 3 bloques)
+### Fase 5.5 — Creadores que sólo usan Twitch — **AFUERA de este plan**
 
 Ver la sección 6. Recién cuando alguien lo pida.
 
@@ -280,7 +292,12 @@ final.** Las fases 5.1 a 5.4 no lo necesitan.
 
 Casi nada. La app de Kick y la de Twitch ya existen y el redirect es el mismo.
 
-- [ ] Responder la sección 7.
+- [x] Responder la sección 7. Contestada el 2026-09-22.
+- [ ] **Registrar el dominio de Cloudflare como redirect en las apps de Kick y de Twitch,
+      y cargar `ORIGENES` en Railway** (tareas 20 y 21 de TAREAS-DUENO). Apareció al
+      construir la 5.2/5.3: el sitio se sirve desde dos dominios y el login tiene que
+      terminar en el mismo donde empezó. Sin esto, desde el dominio de Cloudflare no se
+      puede escribir ni conectar ninguna cuenta.
 - [ ] Revisar el texto nuevo de `/terminos` (qué se guarda del espectador) antes
       de la Fase 5.4.
 - [ ] Para las pruebas: una **cuenta secundaria** de Kick y otra de Twitch, para

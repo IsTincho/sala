@@ -36,6 +36,7 @@ Se cargan **desde el dashboard de Railway**, nunca desde la terminal ni desde un
 |---|---|---|
 | `KICK_SLUG` | Saber cuál es el canal del dueño | No se reconoce al dueño |
 | `URL_BASE` | Armar los redirect de OAuth | Se deduce del pedido, que un cliente puede mentir |
+| `ORIGENES` | **Los otros dominios desde los que se sirve este sitio**, separados por coma (hoy: el de Cloudflare Pages). Con eso se aceptan sus POST y se arman sus redirect de OAuth | Sólo vale `URL_BASE`: desde el otro dominio, escribir da 403 y el login termina en el dominio de Railway |
 | `MODO` | `local` o `produccion` | Se asume `produccion` |
 | `CLAVE_CIFRADO` | Cifrar tokens y firmar cookies | No hay sesiones ni tokens guardados |
 | `KICK_CLIENT_ID` / `KICK_CLIENT_SECRET` | Login y chat de Kick | El login de Kick avisa y no arranca |
@@ -88,6 +89,19 @@ Railway despliega desde `main` en GitHub: cada push es un deploy.
 
 `.railwayignore` deja afuera los tests, las herramientas y la documentación: al contenedor sólo va `servidor/`, `paginas/` y `package.json`.
 
+### El dominio lindo, delante de Railway
+
+`cloudflare/multichat/_worker.js` es un Worker de Cloudflare Pages que **reenvía todo** al servidor de Railway, SSE incluido, y reescribe el `Location` de las redirecciones. No sirve nada propio: así el dominio de Cloudflare y el de Railway muestran exactamente lo mismo y hay una sola fuente de verdad.
+
+Para el navegador, eso son **dos sitios**, con dos juegos de cookies. Para el servidor son un proceso solo, y el dominio de verdad llega en `X-Forwarded-Host`. De ahí sale `ORIGENES`, que es la lista **explícita** de los dominios que son nuestros y se usa para dos cosas que no pueden contradecirse:
+
+- **CSRF**: los POST del espectador exigen que el `Origin` sea uno de esa lista.
+- **Los redirect de OAuth**: el login vuelve al **mismo dominio donde empezó**. Si volviera siempre al de `URL_BASE`, quien entra desde el dominio lindo terminaría el login en Railway, con la cookie puesta ahí, y al volver al link que tenía abierto no estaría conectado.
+
+> **Un dominio en `ORIGENES` tiene que estar también registrado como redirect en la app de Kick y en la de Twitch** (`<dominio>/oauth/kick/volver` y `<dominio>/oauth/twitch/volver`), o el login desde ahí rebota del lado de ellos. Está anotado en `TAREAS-DUENO.md`.
+
+Sin `ORIGENES`, todo sigue como antes: sólo vale `URL_BASE`.
+
 ### Lo que hay que hacer a mano una vez
 
 **La URL del webhook de Kick no se puede registrar por API.** Kick la toma de un campo de texto en el portal del desarrollador: kick.com → Settings → Developer → *Enable Webhooks* → pegar `https://<dominio>/kick/webhook`. Sin ese paso las suscripciones a eventos se crean bien pero no llega ni un webhook, y el chat queda mudo sin ningún error visible.
@@ -116,10 +130,13 @@ servidor/
   webhook.js    verificación RSA de los webhooks de Kick y deduplicación
   videos.js     el catálogo de películas y la clave de subida (hasheada)
   reloj.js      en qué segundo va cada sala, y las órdenes del panel
-  espectadores.js  los tokens de quien entra a ver, y el límite de envío
+  espectadores.js  la cuenta de quien entra a ver (Kick y/o Twitch) y el límite de envío
+  envio.js      el mensaje de un espectador camino a Kick y a Twitch
+  origenes.js   de qué dominios es este sitio: CSRF y redirect de OAuth
   metricas.js   mensajes por hora, envíos, 429 y espectadores pico
 paginas/
   chat.html     el Chat Global, instalable como app; en /chat/<slug>, el chat abierto de una sala
+                (la misma página: ahí la caja de escribir es la del espectador)
   sala.html     la Sala: cámara, película y chat
   panel.html    el panel de cada creador (el dueño incluido)
   crear.html    el alta: los términos y el botón de entrar con Kick
@@ -134,6 +151,7 @@ paginas/
   manifest.webmanifest, sw.js, icono-*.png   lo que hace la PWA instalable
 pruebas/        node --test, sin librerías
 herramientas/   scripts que corren en la PC del dueño (Fase 2)
+cloudflare/     el Worker de Pages que pone un dominio lindo delante de Railway
 ```
 
 Reglas que no se negocian:
@@ -143,7 +161,7 @@ Reglas que no se negocian:
 - **"Dueño" quiere decir dos cosas y no se mezclan.** *Dueño de una sala* es cualquier creador en la suya, y es lo que identifica la cookie `sala_dueno`. *Dueño del servicio* es el de `KICK_SLUG`: el único que entra a `/admin` y el único que regala el plan "amigo".
 - **Cada sala es un inquilino.** El slug con el que se lee o se escribe sale **siempre de la cookie o del camino de la URL**, nunca de un parámetro. No hay ninguna ruta de `/api/panel` que acepte un slug, y las de `/api/sala/:slug` comprueban que la sesión sea la de *esa* sala.
 - **Todo webhook de Kick se verifica con RSA y se deduplica** por `Kick-Event-Message-Id`.
-- Cookies `HttpOnly`, `Secure`, `SameSite=Lax`.
+- Cookies `HttpOnly`, `Secure`, `SameSite=Lax`. Los POST del espectador piden **además** que el `Origin` sea uno de los nuestros (`URL_BASE` + `ORIGENES`): son los que hacen que alguien escriba con su nombre en el chat de un tercero.
 - Sin frameworks ni bundlers. Única dependencia: `mongodb`.
 - Nombres en español en código, rutas y comentarios.
 
@@ -155,7 +173,7 @@ Reglas que no se negocian:
 |---|---|
 | `/` | Página de estado: si el servidor está vivo y conectado al bus |
 | `/chat` | **Chat Global**: Kick y Twitch juntos, con caja para escribir a los dos. Se instala como app |
-| `/chat/:slug` | **El chat abierto de una sala** (Fase 5.1): la misma página que `/chat`, para la comunidad del creador. Sólo lectura y sin login: las redes que el creador eligió, mezcladas en vivo, sin salud ni caja de escribir. Si el creador no lo abrió dice "este chat está cerrado" y se vuelve a fijar sola cada 30 s. **404 si la sala no existe**, igual que `/sala/:slug`. Se sirve `chat.html` con `<base href="/">` y sin el manifest del creador; `/chat` a secas sale byte por byte igual. No va como fuente en OBS si se transmite a Twitch (reglas de simulcast) |
+| `/chat/:slug` | **El chat abierto de una sala**: la misma página que `/chat`, para la comunidad del creador. **Leer no pide login**: las redes que el creador eligió, mezcladas en vivo, sin la salud (que es de la cuenta del creador). **Escribir pide conectar la cuenta propia**: "Conectar Kick" y "Conectar Twitch", y el selector muestra sólo las redes que la persona conectó Y que el creador abrió (con las dos, aparece "las dos"). Si el creador no lo abrió dice "este chat está cerrado" y se vuelve a fijar sola cada 30 s. **404 si la sala no existe**, igual que `/sala/:slug`. Se sirve `chat.html` con `<base href="/">` y sin el manifest del creador; `/chat` a secas sale byte por byte igual. No va como fuente en OBS si se transmite a Twitch (reglas de simulcast) |
 | `/panel` | Panel de **cada creador**: entrar con Kick, vincular Twitch, ver la salud, manejar la película, la clave de subida y el plan. Con un plan sin reproducción se ve en modo sólo lectura, con el botón de suscribirse |
 | `/crear` | El alta. Aceptar los términos y entrar con Kick: crea la sala con plan "pendiente" |
 | `/terminos` | El texto que se acepta al crear la sala |
@@ -164,13 +182,16 @@ Reglas que no se negocian:
 | `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404. Qué redes manda depende de quién pregunta y del chat abierto de la sala (ver "Qué redes ve cada conexión"). `?redes=kick` pide menos, nunca más |
 | `/api/estado` | JSON con modo, almacén, canales y qué variables faltan |
 | `/oauth/kick/entrar` · `/oauth/kick/volver` | Login con Kick (OAuth 2.1 + PKCE) |
-| `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch |
+| `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch. Con `?rol=espectador` es el login de un espectador y pide **sólo `user:write:chat`**: leer entra con el token del creador. El rol viaja en el `state` del servidor, nunca en la query del callback. **Mismo redirect** en los dos casos |
 | `/kick/webhook` | Eventos de Kick. 401 si la firma no da. **Se rutea a la sala del `broadcaster_user_id`** (y en su defecto del `channel_slug`); lo que no se pueda atribuir a una sala que existe se descarta |
 | `/cobro/webhook` | Los avisos del proveedor de cobro, con la firma verificada. Es lo único que pone los planes "pago" y "vencido" |
 | `/api/chat/salud` | Cómo está cada red **de la sala de quien pregunta**. Pide cookie de creador |
 | `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos, con la cuenta de quien pide. Pide cookie de creador |
 | `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick de su sala. Pide cookie de creador |
 | `/api/chat/:slug/abierto` | `GET` público: `{ abierto, redes }`. Cerrado contesta `redes: []`: de un chat cerrado no se cuenta nada. 404 si la sala no existe. Contesta de la misma memoria que usa el filtro del bus |
+| `/api/chat/:slug/yo` | `GET` con cookie de espectador: qué redes conectó esa persona y en cuáles puede escribir **acá** (lo suyo cruzado con lo que el creador abrió). Habla del que pregunta y de nadie más |
+| `/api/chat/:slug/enviar` | `POST { red: "kick" \| "twitch" \| "ambas", texto }` con cookie de espectador **y `Origin` propio**. Mismos frenos que `/api/sala/:slug/chat`, y **"ambas" cuenta como un solo mensaje**. 403 si el chat está cerrado, si esa red no está abierta o si la persona no la conectó. El resultado viene **por red**: `{ ok, kick: {ok, motivo}, twitch: {ok, motivo} }` |
+| `/api/espectador/salir` | `POST` con `Origin` propio: cierra la sesión y **borra los tokens de las dos redes**. Sin slug: la cuenta de espectador es del dominio, no de una sala |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
 | `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie |
 | `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script |
@@ -374,13 +395,27 @@ Si el CDN no responde, la página lo dice y prueba con el HLS nativo del navegad
 
 ### El espectador
 
-Entra con `/oauth/kick/entrar?rol=espectador` (scopes `user:read chat:write`). Se le guarda **lo mínimo**: su `user_id`, su nombre y sus tokens cifrados. El refresh token hace falta de verdad —el access dura una hora y una película dura dos y media—, y **"Salir" lo borra**, no sólo tira la cookie.
+Entra con `/oauth/kick/entrar?rol=espectador` (scopes `user:read chat:write`) y, en el chat abierto, también con `/oauth/twitch/entrar?rol=espectador` (scope `user:write:chat` y nada más). Se le guarda **lo mínimo**: por cada red conectada, su `user_id`, su nombre y sus tokens cifrados. El refresh token hace falta de verdad —el access dura una hora y una película dura dos y media—, y **"Salir" borra los de las dos redes**, no sólo tira la cookie.
 
-Al escribir, `POST /api/sala/:slug/chat` pasa por tres frenos en este orden:
+**Una cuenta de espectador sirve para todas las salas.** La cookie es del dominio, así que quien conectó Kick en `/chat/unocualquiera` ya está conectado en `/chat/otro`. No se guarda qué salas visitó ni se publica en ningún lado quién está mirando.
 
-1. el tope de Kick (500 caracteres / 2048 bytes), antes de gastar un pedido en algo que va a rebotar;
-2. la espera del **canal**, si Kick nos frenó hace poco: el 429 es del canal, no de la persona, y seguir mandando sólo consigue más;
-3. la espera de la persona: **uno cada dos segundos**.
+**El espectador ya no es una cuenta de Kick.** Tiene id propio (`esp_…`) y las redes le cuelgan, porque alguien puede conectar sólo Twitch y no tener nunca un id de Kick. Los que ya estaban —que se guardaban en `tokens`, bajo `espectador:<user_id de Kick>`— se migran al leerlos **conservando su id**: esas cookies están en navegadores ahora mismo y tienen que seguir sirviendo.
+
+Dos navegadores son dos espectadores, aunque sea la misma cuenta de Kick: deduplicar pediría un índice por red y, sobre todo, haría que "Salir" en el celular cerrara la sesión de la compu. Cada uno se va cuando quiere.
+
+Al escribir —`POST /api/sala/:slug/chat` en la Sala, `POST /api/chat/:slug/enviar` en el chat abierto— se pasa por los mismos tres frenos, en este orden y por el mismo camino (`servidor/envio.js`):
+
+1. el tope de cada red a la que va: Kick cuenta 500 **grapheme clusters** y 2048 bytes; Twitch, 500 puntos de código. Se miran los dos **antes** de mandarle nada a ninguna, porque si no, con "las dos" el mensaje sale en Kick y Twitch lo rechaza, y ahí ya no se puede deshacer;
+2. la espera del **canal**, si Kick nos frenó hace poco: el 429 es del canal, no de la persona, y seguir mandando sólo consigue más. Es de Kick y sólo de Kick: el límite de Twitch es por cuenta (20 cada 30 s para quien no es mod), así que frenar el canal entero por una persona callaría a los demás sin motivo;
+3. la espera de la persona: **uno cada dos segundos**, y **"las dos" cuenta como uno**.
+
+#### Un 200 de Twitch no quiere decir que salió
+
+`POST helix/chat/messages` contesta 200 y adentro dice `is_sent`. Si es `false`, el mensaje **no llegó al chat** (AutoMod, baneado, modo sólo-seguidores, slow mode) y el motivo viene en `drop_reason`. Se lo devolvemos a la persona tal cual: decirle "enviado" cuando no salió es la peor mentira posible de un chat, porque se queda esperando una respuesta que nadie va a ver.
+
+Por eso el resultado de `/api/chat/:slug/enviar` viene **por red** y no como un sí/no global: el caso interesante es el del medio, salió en una y no en la otra. Un "error" pelado ahí haría que la persona lo escriba de nuevo y quede repetido en la red donde sí había salido.
+
+Los baneos, el slow mode y el AutoMod de cada plataforma **se aplican solos**: el mensaje sale como de esa persona, así que Kick y Twitch la tratan igual que si escribiera desde su web.
 
 Debajo del chat hay un **"Suscribirse"**: es un link a `https://kick.com/<canal>/subscribe`, se abre en otra pestaña (`rel="noopener noreferrer"`, así la película sigue corriendo acá) y no hay nada que cobrar de este lado.
 

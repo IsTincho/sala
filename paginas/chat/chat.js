@@ -116,6 +116,8 @@
   const tituloCerrado   = document.getElementById('titulo-cerrado');
   const textoCerrado    = document.getElementById('texto-cerrado');
 
+  const contadorConectados = document.getElementById('contador-conectados');
+
   const barraConectar   = document.getElementById('barra-conectar');
   const textoConectar   = document.getElementById('texto-conectar');
   const conectarKick    = document.getElementById('conectar-kick');
@@ -672,10 +674,13 @@
   // ---------- service worker (instalable como PWA) ----------
   // en file:// y en http sin localhost no existe navigator.serviceWorker:
   // el guard de arriba evita que eso rompa la pagina.
-  function registrarServiceWorker() {
+  // El alcance es el de ESTA página: /chat para la ventana del creador
+  // y /chat/<slug> para el chat abierto de una sala. Dos salas
+  // instaladas son dos apps distintas, cada una en su chat.
+  function registrarServiceWorker(alcance) {
     try {
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js', { scope: '/chat' }).catch(() => { /* no es critico */ });
+        navigator.serviceWorker.register('/sw.js', { scope: alcance }).catch(() => { /* no es critico */ });
       }
     } catch { /* nada: no puede romper la pagina */ }
   }
@@ -804,11 +809,14 @@
     conexionBus = window.Sala.conectar(slugPublico, (tipo, datos) => {
       if (tipo === 'chat') return manejarMensajeChat(datos);
       if (tipo === 'chat-abierto') return aplicarAbierto(datos);
+      // cuántos están leyendo. Un número y nada más: quiénes, nunca.
+      if (tipo === 'presencia') return mostrarConectados(datos?.conectados);
       // El estado llega con cada conexion. La primera vez no dice nada
       // nuevo (se acaba de preguntar); despues de un corte, si: el
       // creador pudo cerrar el chat mientras esta pagina no escuchaba,
       // y el aviso por el bus se perdio.
       if (tipo === 'estado') {
+        mostrarConectados(datos?.conectados);
         if (yaHuboEstado) consultarAbierto();
         yaHuboEstado = true;
       }
@@ -820,6 +828,16 @@
     enElBus = false;
     try { conexionBus?.cerrar?.(); } catch { /* ya estaba cerrada */ }
     conexionBus = null;
+    // sin bus no se sabe cuántos hay: mejor no decir nada que dejar
+    // puesto un número viejo.
+    contadorConectados.hidden = true;
+  }
+
+  function mostrarConectados(cuantos) {
+    const n = Number(cuantos);
+    if (!Number.isFinite(n)) return;
+    contadorConectados.textContent = n === 1 ? '1 conectado' : `${n} conectados`;
+    contadorConectados.hidden = false;
   }
 
   function programarConsultaAbierto() {
@@ -925,11 +943,11 @@
   }
 
   function iniciar() {
-    // /chat/<slug> no se instala: el service worker y el manifest son
-    // los de la ventana del creador (start_url /chat). El de cada sala
-    // es de la Fase 5.4.
+    // Cada chat se instala aparte: la ventana del creador abre en
+    // /chat y el chat de una sala, en /chat/<slug>. Quien instale el
+    // chat de su streamer tiene que abrir ahí y no en el de otro.
     if (modoPublico) prepararModoPublico();
-    else registrarServiceWorker();
+    registrarServiceWorker(modoPublico ? '/chat/' + slugPublico : '/chat');
 
     if (modoDemo) {
       iniciarModoDemo();

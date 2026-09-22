@@ -470,3 +470,12 @@ select:focus-visible{
 @media (prefers-reduced-motion: reduce){
   .lista-mensajes{ scroll-behavior: auto; }
 }
+
+/* Cuántos están leyendo, en /chat/<slug>. Al lado del título y en
+   chico: es un dato de color, no el motivo por el que alguien abre el
+   chat. */
+.contador-conectados{
+  font-size: 0.8em;
+  color: var(--texto-tenue);
+  white-space: nowrap;
+}

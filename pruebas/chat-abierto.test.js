@@ -199,16 +199,39 @@ test('la página de una sala que existe se sirve aunque el chat esté cerrado', 
     'de un chat cerrado no se cuenta ni qué redes eligió');
 });
 
-test('/chat/:slug es chat.html con <base href="/"> y sin el manifest del creador', async () => {
+test('/chat/:slug es chat.html con <base href="/"> y con SU propio manifest', async () => {
   /* Las rutas de chat.html son relativas (para que ?demo=1 ande como
      archivo suelto). Sin la base, desde /chat/ana apuntarían a
      /chat/comun/base.css y la página cargaría sin estilos ni código. */
   const r = await pedir(`/chat/${ANA}`);
   assert.match(r.texto, /<head>\s*<base href="\/">/, 'la base tiene que ir antes de cualquier ruta relativa');
-  assert.ok(!/rel="manifest"/.test(r.texto),
-    'el manifest es el de la ventana del creador: instalado, abriría /chat');
+  /* El manifest del archivo es el de la ventana del creador
+     (start_url /chat): quien instalara el chat de alguien terminaría
+     abriendo el de otra persona. */
+  assert.match(r.texto, /<link rel="manifest" href="\/chat\/ana\/manifest\.webmanifest">/);
+  assert.equal(r.texto.match(/rel="manifest"/g).length, 1, 'uno solo, no los dos');
   /* Y fuera de eso, es la misma página: nada de una copia aparte. */
   assert.match(r.texto, /<script src="chat\/chat\.js"><\/script>/);
+});
+
+test('el manifest de una sala abre en SU chat y no en el del creador', async () => {
+  const r = await pedir(`/chat/${ANA}/manifest.webmanifest`);
+  assert.equal(r.estado, 200);
+  assert.match(r.cabeceras.get('content-type'), /manifest\+json/);
+  assert.equal(r.datos.start_url, '/chat/ana');
+  assert.equal(r.datos.scope, '/chat/ana');
+  assert.match(r.datos.name, /ana/);
+  assert.ok(r.datos.icons.length, 'sin iconos no se instala');
+
+  /* Y no existe para una sala que no existe: instalar el chat de nadie
+     no tiene sentido. */
+  assert.equal((await pedir('/chat/no-existe-esta-sala/manifest.webmanifest')).estado, 404);
+});
+
+test('el manifest del creador sigue siendo el de /chat', async () => {
+  const r = await pedir('/manifest.webmanifest');
+  assert.equal(r.estado, 200);
+  assert.equal(r.datos.start_url, '/chat');
 });
 
 test('los archivos del chat siguen saliendo aunque /chat/:slug tape /chat/', async () => {

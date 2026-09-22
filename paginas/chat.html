@@ -34,6 +34,9 @@
     <!-- sólo en /chat/<slug>: de quién es este chat. En /chat no hace
          falta, es la ventana del propio creador. -->
     <h1 id="titulo-chat" class="titulo-chat" hidden></h1>
+    <!-- cuántos están leyendo, sólo en /chat/<slug>. Un número y nada
+         más: nunca quiénes. -->
+    <span id="contador-conectados" class="contador-conectados" role="status" aria-live="polite" hidden></span>
     <div class="barra-controles">
       <button type="button" id="boton-vista" class="boton-chip" aria-pressed="false">Vista: mezclada</button>
       <button type="button" id="boton-letra" class="boton-chip" aria-pressed="false">Letra: normal</button>

@@ -1996,7 +1996,7 @@ async function paginaChatAbierto(url, req, res, p) {
   try { html = await fsp.readFile(path.join(PAGINAS, 'chat.html'), 'utf8'); }
   catch { return texto(res, 404, 'no existe'); }
 
-  const cuerpo = paraUnaSala(html);
+  const cuerpo = paraUnaSala(html, creadores.normalizar(p.slug));
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -2007,12 +2007,65 @@ async function paginaChatAbierto(url, req, res, p) {
 }
 
 /** chat.html como lo necesita `/chat/:slug`. Ver `paginaChatAbierto`. */
-export function paraUnaSala(html) {
+export function paraUnaSala(html, slug) {
   const conBase = html.replace(/<head>/i, '<head>\n<base href="/">');
   /* Si alguien cambia la cabecera y esto deja de encontrarla, que se
      note en las pruebas y no en una pagina sin estilos en produccion. */
   if (conBase === html) throw new Error('chat.html no tiene <head>');
-  return conBase.replace(/<link rel="manifest"[^>]*>\r?\n?/i, '');
+
+  /* El manifest que trae el archivo es el de la ventana del creador
+     (`start_url: /chat`): quien "instalara" el chat de alguien
+     terminaria abriendo el de otra persona. Se cambia por el de ESTA
+     sala, asi cada espectador puede instalar el chat de SU streamer
+     como app y que abra donde tiene que abrir. */
+  const conManifest = conBase.replace(/<link rel="manifest"[^>]*>/i,
+    `<link rel="manifest" href="/chat/${slug}/manifest.webmanifest">`);
+  if (conManifest === conBase) throw new Error('chat.html no tiene el link del manifest');
+  return conManifest;
+}
+
+/**
+ * El manifest de la PWA de UNA sala: lo que hace que el chat de un
+ * streamer se pueda instalar como app en el celular de su gente.
+ *
+ * `start_url` y `scope` son `/chat/<slug>`, que es toda la diferencia
+ * con el de `paginas/manifest.webmanifest` (el de la ventana del
+ * creador, que abre en `/chat`). Instalar dos salas distintas deja dos
+ * apps distintas, cada una en su chat.
+ *
+ * Se arma aca y no es un archivo de `paginas/` porque depende del slug.
+ * El slug ya paso por `slugValido`, asi que no puede meter nada raro
+ * adentro del JSON.
+ */
+async function manifestDeSala(url, req, res, p) {
+  const slug = creadores.normalizar(p.slug);
+  if (!videos.slugValido(slug)) return texto(res, 404, 'no existe');
+  if (!await canalPermitido(slug)) return texto(res, 404, 'esa sala no existe');
+
+  const cuerpo = JSON.stringify({
+    name: `Chat de ${slug}`,
+    short_name: slug,
+    start_url: `/chat/${slug}`,
+    scope: `/chat/${slug}`,
+    display: 'standalone',
+    background_color: '#0e1013',
+    theme_color: '#0e1013',
+    lang: 'es',
+    dir: 'ltr',
+    description: `El chat de Kick y de Twitch de ${slug}, juntos y en vivo.`,
+    icons: [
+      { src: '/icono-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/icono-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+    ],
+  }, null, 2);
+
+  res.writeHead(200, {
+    'Content-Type': 'application/manifest+json; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    'Content-Length': Buffer.byteLength(cuerpo),
+  });
+  if (req.method === 'HEAD') return res.end();
+  return res.end(cuerpo);
 }
 
 /**
@@ -2348,6 +2401,7 @@ const RUTAS = [
   ['GET',    '/admin',                 paginaAdmin],
   ['GET',    '/chat',                  servirPagina('chat.html')],
   ['GET',    '/chat/:slug',            paginaChatAbierto],
+  ['GET',    '/chat/:slug/manifest.webmanifest', manifestDeSala],
   ['GET',    '/sala/:slug',            paginaSala],
   ['GET',    '/eventos/:slug',         eventos],
   ['GET',    '/oauth/kick/entrar',     kickEntrar],
@@ -2482,6 +2536,18 @@ export async function arrancar() {
       if (podadas) console.log(`[sesion] ${podadas} sesiones vencidas al arrancar`);
     } catch (e) {
       console.warn('[sesion] no se pudieron podar las sesiones:', e.name);
+    }
+
+    /* Los espectadores que no vuelven hace dos meses pierden sus
+       tokens. Guardar el refresh token de alguien que no usa el
+       servicio es riesgo sin beneficio, y si vuelve son dos clicks.
+       Se hace al arrancar y no con un reloj propio: cada deploy es un
+       arranque, y esto se mide en meses. */
+    try {
+      const idos = await espectadores.podar();
+      if (idos) console.log(`[espectadores] ${idos} espectadores vencidos al arrancar`);
+    } catch (e) {
+      console.warn('[espectadores] no se pudieron podar:', e.name);
     }
   }
 

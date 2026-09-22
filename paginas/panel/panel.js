@@ -67,6 +67,16 @@
   const linkAdmin = el('link-admin');
   const botonDesvincularTwitch = el('boton-desvincular-twitch');
 
+  const tarjetaChatAbierto = el('tarjeta-chat-abierto');
+  const interruptorChat = el('interruptor-chat-abierto');
+  const estadoChatAbierto = el('estado-chat-abierto');
+  const redChatKick = el('red-chat-kick');
+  const redChatTwitch = el('red-chat-twitch');
+  const notaTwitchChat = el('nota-twitch-chat');
+  const linkChatAbierto = el('link-chat-abierto');
+  const abrirChatAbierto = el('abrir-chat-abierto');
+  const CONTROLES_DEL_CHAT = [interruptorChat, redChatKick, redChatTwitch];
+
   /* Los controles que un plan sin reproducción no puede tocar. Está
      escrita una sola vez y la usa `pintarPlan`: dos listas distintas
      de "qué se apaga" terminan siendo dos comportamientos. */
@@ -159,7 +169,8 @@
        quién asociar el vínculo. */
     linkTwitch.classList.add('apagado');
     linkTwitch.setAttribute('aria-disabled', 'true');
-    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave, tarjetaWebhook, tarjetaPlan]) {
+    for (const t of [tarjetaSala, tarjetaVideos, tarjetaMetricas, tarjetaClave, tarjetaWebhook, tarjetaPlan,
+                     tarjetaChatAbierto]) {
       t.hidden = true;
     }
     botonDesvincularTwitch.hidden = true;
@@ -374,10 +385,99 @@
     tarjetaPlan.hidden = false;
   }
 
+  // ---------- el chat abierto ----------
+
+  /* Mientras sale un cambio, la consulta de cada 4 s no repinta este
+     bloque: si no, el interruptor que el creador acaba de tocar volvería
+     un instante a como estaba antes, que es justo lo que hace dudar si
+     el click anduvo. */
+  let enviandoChat = false;
+
+  /* El link público, con el origen desde el que se mira ESTA página. No
+     sale del servidor: detrás de un proxy (Cloudflare Pages reenviando a
+     Railway) el dominio que hay que compartir es el del proxy. */
+  const linkDelChat = slug => new URL('/chat/' + encodeURIComponent(slug), location.href).href;
+
+  function pintarChatAbierto(chat, slug, salud) {
+    if (enviandoChat || !chat) return;
+    const redes = Array.isArray(chat.redes) ? chat.redes : [];
+    interruptorChat.checked = Boolean(chat.activo);
+    estadoChatAbierto.textContent = chat.activo
+      ? 'Abierto: lo ve cualquiera que tenga el link'
+      : 'Cerrado';
+    redChatKick.checked = redes.includes('kick');
+    redChatTwitch.checked = redes.includes('twitch');
+    /* Twitch elegido pero sin vincular: no rompe nada (de ahí no llega
+       nada), pero sin decirlo parece que el chat anda a medias. */
+    notaTwitchChat.hidden = !redChatTwitch.checked || Boolean(salud?.twitch?.vinculado);
+
+    const link = linkDelChat(slug ?? '');
+    linkChatAbierto.textContent = link;
+    abrirChatAbierto.href = link;
+    tarjetaChatAbierto.hidden = false;
+  }
+
+  function mandarChat(tocado) {
+    const redes = [];
+    if (redChatKick.checked) redes.push('kick');
+    if (redChatTwitch.checked) redes.push('twitch');
+    if (!redes.length) {
+      /* Un chat sin ninguna red no muestra nada: se vuelve a marcar la
+         que acaban de sacar en vez de mandar algo que el servidor
+         rechazaría igual. */
+      tocado.checked = true;
+      avisar('elegí al menos una red');
+      return;
+    }
+
+    enviandoChat = true;
+    for (const c of CONTROLES_DEL_CHAT) c.disabled = true;
+
+    /* Nunca va el slug: el servidor usa el de la cookie. */
+    fetch('/api/panel/chat', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activo: Boolean(interruptorChat.checked), redes }),
+    })
+      .then(async r => {
+        const datos = await r.json().catch(() => null);
+        if (!r.ok) { avisar(datos?.error || `no se pudo (http ${r.status})`); return null; }
+        avisoPanel.hidden = true;
+        return datos?.chatAbierto ?? null;
+      })
+      .catch(() => { avisar('no se pudo hablar con el servidor'); return null; })
+      .then(chat => {
+        enviandoChat = false;
+        for (const c of CONTROLES_DEL_CHAT) c.disabled = false;
+        if (!ultimoPanel) return;
+        if (chat) ultimoPanel.chatAbierto = chat;
+        /* Salga bien o mal, la pantalla vuelve a decir lo que dice el
+           servidor: si falló, el interruptor vuelve a donde estaba. */
+        pintarChatAbierto(ultimoPanel.chatAbierto, ultimoPanel.slug, ultimoPanel.salud);
+      });
+  }
+
+  for (const control of CONTROLES_DEL_CHAT) {
+    control.addEventListener('change', () => mandarChat(control));
+  }
+
+  el('boton-copiar-link-chat').addEventListener('click', async () => {
+    const link = linkChatAbierto.textContent;
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      avisar('link copiado: pasalo en tu chat o en tus redes');
+    } catch {
+      avisar('el navegador no dejó copiar: seleccioná el link y copialo a mano');
+    }
+  });
+
   function pintar(datos) {
     ultimoPanel = datos;
     pintarSalud(datos.salud);
     pintarPlan(datos);
+    pintarChatAbierto(datos.chatAbierto, datos.slug, datos.salud);
     pintarReloj(datos.reloj);
     pintarVideos(datos.videos ?? [], datos.reloj);
     pintarMetricas(datos.metricas);

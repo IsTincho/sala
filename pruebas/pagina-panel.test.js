@@ -678,3 +678,166 @@ test('el tope de conexiones de Twitch se explica en vez de decir "cortado"', asy
 
   p.cerrar();
 });
+
+/* ================================ el chat para tu comunidad (Fase 5.1) */
+
+const CHAT_CERRADO = { activo: false, redes: ['kick', 'twitch'] };
+
+/** Un panel cuyo /api/panel contesta con este chat abierto. */
+const conChat = (chatAbierto, extra = {}) => ({
+  estadoPanel: () => ({ ok: true, status: 200, json: async () => panelLleno({ chatAbierto, ...extra }) }),
+});
+
+const envios = p => p.pedidos.filter(x => x.metodo === 'POST' && x.url === '/api/panel/chat');
+
+test('el bloque del chat abierto muestra lo que dice el servidor y el link de ESTE origen', async () => {
+  const p = abrir(conChat({ activo: true, redes: ['kick', 'twitch'] }));
+  await asentarse();
+
+  assert.equal(p.el('tarjeta-chat-abierto').hidden, false);
+  assert.equal(p.el('interruptor-chat-abierto').checked, true);
+  assert.match(p.el('estado-chat-abierto').textContent, /Abierto/);
+  assert.equal(p.el('red-chat-kick').checked, true);
+  assert.equal(p.el('red-chat-twitch').checked, true);
+  /* El origen es el de la página (acá, sala.example), no uno escrito en
+     el código: detrás del proxy de Cloudflare tiene que salir el del
+     proxy. */
+  assert.equal(p.el('link-chat-abierto').textContent, 'https://sala.example/chat/istincho');
+  assert.equal(p.el('abrir-chat-abierto').href, 'https://sala.example/chat/istincho');
+  p.cerrar();
+});
+
+test('al lado del link está el aviso de OBS y Twitch', async () => {
+  const p = abrir(conChat(CHAT_CERRADO));
+  await asentarse();
+  const texto = p.el('tarjeta-chat-abierto').textContent;
+  assert.match(texto, /OBS/);
+  assert.match(texto, /Twitch/);
+  assert.match(texto, /simulcast/i);
+  p.cerrar();
+});
+
+test('entra en todos los planes: con plan pendiente el interruptor se puede tocar', async () => {
+  const p = abrir(conChat(CHAT_CERRADO, { plan: 'pendiente', soloLectura: true, esDueno: false }));
+  await asentarse();
+  assert.equal(p.el('boton-reproducir').disabled, true, 'la peli sí está apagada');
+  assert.equal(p.el('tarjeta-chat-abierto').hidden, false);
+  assert.equal(p.el('interruptor-chat-abierto').disabled, false, 'el chat no');
+  p.cerrar();
+});
+
+test('tocar el interruptor manda activo y las redes, y nunca un slug', async () => {
+  const p = abrir({
+    ...conChat(CHAT_CERRADO),
+    respuestas: {
+      'POST /api/panel/chat': () => ({ ok: true, status: 200,
+        json: async () => ({ ok: true, chatAbierto: { activo: true, redes: ['kick', 'twitch'] } }) }),
+    },
+  });
+  await asentarse();
+
+  p.el('interruptor-chat-abierto').checked = true;
+  p.el('interruptor-chat-abierto').disparar('change');
+  await asentarse();
+
+  const [envio] = envios(p);
+  assert.ok(envio, 'tiene que mandar algo');
+  assert.deepEqual(JSON.parse(envio.cuerpo), { activo: true, redes: ['kick', 'twitch'] });
+  assert.equal(p.el('interruptor-chat-abierto').checked, true);
+  assert.match(p.el('estado-chat-abierto').textContent, /Abierto/);
+  p.cerrar();
+});
+
+test('sacar la única red que queda no manda nada y la vuelve a marcar', async () => {
+  const p = abrir(conChat({ activo: true, redes: ['kick'] }));
+  await asentarse();
+
+  p.el('red-chat-kick').checked = false;
+  p.el('red-chat-kick').disparar('change');
+  await asentarse();
+
+  assert.equal(envios(p).length, 0);
+  assert.equal(p.el('red-chat-kick').checked, true);
+  assert.match(p.el('texto-aviso-panel').textContent, /al menos una red/);
+  p.cerrar();
+});
+
+test('si el servidor lo rechaza, el interruptor vuelve a donde estaba y se dice por qué', async () => {
+  const p = abrir({
+    ...conChat(CHAT_CERRADO),
+    respuestas: {
+      'POST /api/panel/chat': () => ({ ok: false, status: 400, json: async () => ({ error: 'no se pudo por X' }) }),
+    },
+  });
+  await asentarse();
+
+  p.el('interruptor-chat-abierto').checked = true;
+  p.el('interruptor-chat-abierto').disparar('change');
+  await asentarse();
+
+  assert.equal(p.el('interruptor-chat-abierto').checked, false, 'no puede quedar diciendo abierto');
+  assert.match(p.el('texto-aviso-panel').textContent, /no se pudo por X/);
+  p.cerrar();
+});
+
+test('mientras sale el cambio, la consulta de cada 4 s no lo pisa', async () => {
+  let soltar;
+  const p = abrir({
+    ...conChat(CHAT_CERRADO),
+    respuestas: {
+      'POST /api/panel/chat': () => new Promise(ok => {
+        soltar = () => ok({ ok: true, status: 200,
+          json: async () => ({ ok: true, chatAbierto: { activo: true, redes: ['kick', 'twitch'] } }) });
+      }),
+    },
+  });
+  await asentarse();
+
+  p.el('interruptor-chat-abierto').checked = true;
+  p.el('interruptor-chat-abierto').disparar('change');
+  assert.equal(p.el('interruptor-chat-abierto').disabled, true, 'mientras sale, no se toca dos veces');
+
+  /* Llega la consulta de siempre, con el estado de ANTES del click. */
+  await p.api().consultar();
+  assert.equal(p.el('interruptor-chat-abierto').checked, true,
+    'la consulta volvió el interruptor a "cerrado" con el click todavía en viaje');
+
+  soltar();
+  await asentarse();
+  assert.equal(p.el('interruptor-chat-abierto').disabled, false);
+  assert.equal(p.el('interruptor-chat-abierto').checked, true);
+  p.cerrar();
+});
+
+test('Twitch elegido y sin vincular lo avisa', async () => {
+  const sinTwitch = { ...SALUD, twitch: { vinculado: false, ultima: null, estado: 'cortado', modo: 'ninguno' } };
+  const p = abrir(conChat({ activo: true, redes: ['kick', 'twitch'] }, { salud: sinTwitch }));
+  await asentarse();
+  assert.equal(p.el('nota-twitch-chat').hidden, false);
+  p.cerrar();
+
+  const conTwitch = abrir(conChat({ activo: true, redes: ['kick', 'twitch'] }));
+  await asentarse();
+  assert.equal(conTwitch.el('nota-twitch-chat').hidden, true);
+  conTwitch.cerrar();
+});
+
+test('copiar el link lo manda al portapapeles', async () => {
+  const copiado = [];
+  const p = abrir({
+    ...conChat(CHAT_CERRADO),
+    globales: { navigator: { clipboard: { writeText: async t => { copiado.push(t); } } } },
+  });
+  await asentarse();
+  p.el('boton-copiar-link-chat').disparar('click');
+  await asentarse();
+  assert.deepEqual(copiado, ['https://sala.example/chat/istincho']);
+  p.cerrar();
+});
+
+test('sin sesión el bloque del chat abierto no se ve', async () => {
+  const p = abrir({ estadoPanel: () => ({ ok: false, status: 401, json: async () => ({ error: 'no hay sesion' }) }) });
+  await asentarse();
+  assert.equal(p.el('tarjeta-chat-abierto').hidden, true);
+  p.cerrar();
+});

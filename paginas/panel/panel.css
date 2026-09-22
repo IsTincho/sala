@@ -183,6 +183,31 @@
 
 .aviso-pantalla{ color: var(--regular); margin: 0 0 var(--espacio-2); }
 
+/* El chat abierto. El interruptor es un checkbox de verdad (se maneja
+   con teclado y lo anuncia un lector de pantalla); solo se agranda. */
+.fila-interruptor{
+  display: inline-flex;
+  align-items: center;
+  gap: var(--espacio-2);
+  font-weight: 700;
+  cursor: pointer;
+  margin-bottom: var(--espacio-2);
+}
+.fila-interruptor input{ width: 1.25rem; height: 1.25rem; accent-color: var(--acento); }
+
+.redes-chat{
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--espacio-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--espacio-3);
+}
+.redes-chat legend{ padding: 0; margin-bottom: var(--espacio-1); }
+.redes-chat label{ display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.redes-chat input{ accent-color: var(--acento); }
+
 .valor-clave{
   display: block;
   background: var(--fondo);

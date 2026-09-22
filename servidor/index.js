@@ -1585,10 +1585,53 @@ async function apiPanelSala(url, req, res) {
       return json(res, 400, { error: 'abierta tiene que ser true o false' });
     }
 
-    const abierta = Boolean(await creadores.ponerSalaAbierta(slug, pedido.abierta));
-    console.log(`[sala] ${slug}: la Sala queda ${abierta ? 'abierta' : 'cerrada'}`);
+    const abierta = await ponerLaSala(slug, pedido.abierta);
+    /* `null` es "esa sala no existe" (le borraron la fila entre la
+       cookie y esto). Se contesta como su hermana `/api/panel/chat` y
+       no con un `ok: true` sobre algo que no se escribio. */
+    if (abierta === null) return json(res, 403, { error: 'tu sesion no corresponde a ninguna sala' });
     return json(res, 200, { ok: true, salaAbierta: abierta });
   });
+}
+
+/**
+ * Prende o apaga la Sala de un creador Y, SI LA APAGA, PARA LA PELICULA.
+ * Devuelve como quedo, o `null` si esa sala no existe.
+ *
+ * APAGAR TIENE QUE APAGAR, y hasta el 2026-09-22 no apagaba. El
+ * interruptor escribia el campo y nada mas: la gente que ya estaba
+ * mirando tenia el sobre `reloj` completo (titulo, URL de R2 y el
+ * instante en que empezo) y la posicion la calcula sola el navegador,
+ * asi que seguia viendo la pelicula hasta el final aunque para el
+ * servidor esa Sala ya no existiera. Y el dueño se quedaba sin la
+ * palanca para cortar: con la Sala cerrada, `POST /api/sala/:slug/reloj`
+ * contesta 404 como todo lo demas.
+ *
+ * Detener difunde `reloj: detenido` por el bus (que sigue abierto,
+ * porque es el del chat) y BORRA el reloj guardado, asi que tampoco
+ * revive solo el dia que la Sala se vuelva a abrir.
+ *
+ * Se resuelve aca y no adentro de `creadores.ponerSalaAbierta` a
+ * proposito: ese modulo es el indice de quien tiene sala y no sabe —ni
+ * tiene por que saber— que existe un reloj. Las dos rutas que mueven el
+ * interruptor (el panel del dueño y /admin) pasan por esta funcion.
+ */
+async function ponerLaSala(slug, abierta) {
+  const quedo = await creadores.ponerSalaAbierta(slug, abierta);
+  if (quedo === null) return null;
+
+  if (!quedo) {
+    /* Se pregunta antes de detener: `reloj.aplicar` crea la entrada del
+       canal en el Map para difundir, y apagar una Sala sin nada puesto
+       no tiene por que hacer crecer nada. */
+    const puesto = await reloj.leer(slug);
+    if (puesto.estado !== 'detenido') {
+      await reloj.aplicar(slug, 'detener');
+      console.log(`[sala] ${slug}: se cerro la Sala y se detuvo la pelicula`);
+    }
+  }
+  console.log(`[sala] ${slug}: la Sala queda ${quedo ? 'abierta' : 'cerrada'}`);
+  return quedo;
 }
 
 /** Desvincula Twitch de SU sala: cierra la conexion y borra el token. */
@@ -1854,8 +1897,11 @@ async function apiAdminSala(url, req, res) {
        `ponerSalaAbierta` se la crea. */
     if (!await creadores.existe(slug)) return json(res, 404, { error: 'ese creador no existe' });
 
-    const abierta = Boolean(await creadores.ponerSalaAbierta(slug, pedido.abierta));
-    console.log(`[admin] ${slug}: la Sala queda ${abierta ? 'abierta' : 'cerrada'}`);
+    /* Por la misma funcion que el panel: apagar la Sala tambien detiene
+       la pelicula que hubiera puesta, venga el interruptor de donde
+       venga. */
+    const abierta = await ponerLaSala(slug, pedido.abierta);
+    if (abierta === null) return json(res, 404, { error: 'ese creador no existe' });
     return json(res, 200, { ok: true, slug, salaAbierta: abierta });
   });
 }
@@ -2812,6 +2858,59 @@ export function crearServidor() {
 
 /* ---------------------------------------------------------- arranque */
 
+/**
+ * Vuelve a poner en memoria el reloj de cada sala que tenga uno
+ * guardado. Devuelve cuantos se repusieron.
+ *
+ * Sin esto, un deploy en medio de la peli dejaba la sala en "detenido"
+ * hasta que el creador volviera a tocar play, y aca deployar en medio
+ * del stream es la forma normal de trabajar. Como `empezoEn` es una
+ * fecha absoluta, la posicion despues del reinicio sigue dando lo
+ * mismo.
+ *
+ * Se restauran TODAS y no solo la del dueño: con varios creadores,
+ * restaurar una sola dejaria a los demas parados sin motivo. Se hace al
+ * arrancar y no por sala a demanda porque `restaurar` es lo que limpia
+ * el reloj de un video que ya no esta, y eso conviene que pase una vez
+ * y no en el primer pedido de cada noche.
+ *
+ * LAS SALAS APAGADAS NO SE REPONEN, y eso es del 2026-09-22. Una Sala
+ * cerrada contesta 404 por todos lados, asi que reponerle el reloj era
+ * dejar una pelicula corriendo que nadie puede ver ni parar: el unico
+ * efecto posible era que se escapara por algun lado. Apagar la Sala ya
+ * detiene la peli (`ponerLaSala`); esto es la otra mitad, para la que
+ * quedo guardada de antes.
+ *
+ * Exportada para poder probarla: el resto de `arrancar` levanta
+ * servidores y conexiones que un test no quiere.
+ */
+export async function restaurarRelojes() {
+  let puestos = 0;
+  try {
+    /* El dueño puede no tener fila en `creadores` todavia (la escribe
+       su primer login de Kick), asi que entra a mano. Un Set: si ya
+       esta en la lista, no se restaura dos veces. */
+    const salas = new Set((await creadores.listar()).map(c => c.slug));
+    if (SLUG_DUENO) salas.add(SLUG_DUENO);
+    for (const slug of salas) {
+      try {
+        if (!await creadores.salaAbierta(slug)) continue;
+        const puesto = await reloj.restaurar(slug);
+        if (puesto) {
+          puestos++;
+          console.log(`[reloj] ${slug} sigue en ${puesto.videoId} ` +
+                      `(${Math.round(puesto.posicion)}s, ${puesto.estado})`);
+        }
+      } catch (e) {
+        console.warn(`[reloj] ${slug}: no se pudo restaurar:`, e.name);
+      }
+    }
+  } catch (e) {
+    console.warn('[reloj] no se pudo listar las salas para restaurar:', e.name);
+  }
+  return puestos;
+}
+
 export async function arrancar() {
   /* Lo que falta se dice AHORA y en voz alta. Un servidor que arranca
      lo mas contento y falla recien cuando alguien intenta loguearse es
@@ -2851,37 +2950,7 @@ export async function arrancar() {
 
   canales.arrancarPings();
 
-  /* El reloj de cada sala vuelve del almacen. Sin esto, un deploy en
-     medio de la peli dejaba la sala en "detenido" hasta que el creador
-     volviera a tocar play, y aca deployar en medio del stream es la
-     forma normal de trabajar. Como `empezoEn` es una fecha absoluta, la
-     posicion despues del reinicio sigue dando lo mismo.
-
-     Se restauran TODAS y no solo la del dueño: con varios creadores,
-     restaurar una sola dejaria a los demas parados sin motivo. Se hace
-     al arrancar y no por sala a demanda porque `restaurar` es lo que
-     limpia el reloj de un video que ya no esta, y eso conviene que
-     pase una vez y no en el primer pedido de cada noche. */
-  try {
-    /* El dueño puede no tener fila en `creadores` todavia (la escribe
-       su primer login de Kick), asi que entra a mano. Un Set: si ya
-       esta en la lista, no se restaura dos veces. */
-    const salas = new Set((await creadores.listar()).map(c => c.slug));
-    if (SLUG_DUENO) salas.add(SLUG_DUENO);
-    for (const slug of salas) {
-      try {
-        const puesto = await reloj.restaurar(slug);
-        if (puesto) {
-          console.log(`[reloj] ${slug} sigue en ${puesto.videoId} ` +
-                      `(${Math.round(puesto.posicion)}s, ${puesto.estado})`);
-        }
-      } catch (e) {
-        console.warn(`[reloj] ${slug}: no se pudo restaurar:`, e.name);
-      }
-    }
-  } catch (e) {
-    console.warn('[reloj] no se pudo listar las salas para restaurar:', e.name);
-  }
+  await restaurarRelojes();
 
   /* El chat se levanta solo con lo que haya guardado, para cada sala:
      si un creador ya vinculo Twitch, su conexion EventSub vuelve sin

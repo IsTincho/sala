@@ -52,7 +52,7 @@ process.env.R2_ACCESS_KEY_ID = 'AKIAIOSFODNN7EXAMPLE';
 process.env.R2_SECRET_ACCESS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
 process.env.R2_URL_PUBLICA = 'https://pub-ejemplo.r2.dev';
 
-const { crearServidor } = await import('../servidor/index.js');
+const { crearServidor, restaurarRelojes } = await import('../servidor/index.js');
 const almacen = await import('../servidor/almacen.js');
 const canales = await import('../servidor/canales.js');
 const creadores = await import('../servidor/creadores.js');
@@ -140,6 +140,50 @@ function primerEstado(slug, { cookie = '' } = {}) {
     req.on('error', mal);
     setTimeout(() => { req.destroy(); mal(new Error('no llegó ningún evento')); }, 3000).unref?.();
   });
+}
+
+/**
+ * Un `/eventos/:slug` que queda abierto y va juntando lo que llega.
+ * `primerEstado` no sirve para esto: se corta en el primer evento, y lo
+ * que hay que ver acá es el que llega DESPUÉS.
+ */
+function escuchar(slug) {
+  const eventos = [];
+  const req = http.get({
+    host: '127.0.0.1',
+    port: servidor.address().port,
+    path: `/eventos/${slug}`,
+  }, res => {
+    let pendiente = '';
+    res.setEncoding('utf8');
+    res.on('data', trozo => {
+      pendiente += trozo;
+      let corte;
+      while ((corte = pendiente.indexOf('\n\n')) >= 0) {
+        const bloque = pendiente.slice(0, corte);
+        pendiente = pendiente.slice(corte + 2);
+        const d = bloque.split('\n').filter(l => l.startsWith('data:'))
+          .map(l => l.slice(5).replace(/^ /, '')).join('\n');
+        if (d) eventos.push(JSON.parse(d));
+      }
+    });
+  });
+
+  return {
+    eventos,
+    cerrar: () => req.destroy(),
+    /** Espera hasta que llegue un evento que cumpla, o falla. */
+    async esperar(cumple, { tope = 3000 } = {}) {
+      const limite = Date.now() + tope;
+      while (Date.now() < limite) {
+        const hallado = eventos.find(cumple);
+        if (hallado) return hallado;
+        await new Promise(ok => setTimeout(ok, 20));
+      }
+      throw new Error('no llegó el evento esperado; llegaron: ' +
+        eventos.map(e => `${e.tipo}/${e.estado ?? ''}`).join(', '));
+    },
+  };
 }
 
 const ficha = (id, slug) => ({
@@ -266,6 +310,20 @@ test('el CSS y el JS de la Sala se siguen sirviendo con la Sala apagada', async 
 /* =============================== las cuatro rutas de /api/sala/ */
 
 test('con la Sala apagada, las cuatro rutas de /api/sala/ dan 404', async () => {
+  /*
+   * `detener` TAMBIÉN DA 404, y quedó así a propósito.
+   *
+   * Durante un rato fue un problema: apagar la Sala no paraba la
+   * película, así que el dueño se quedaba sin forma de cortarla y el
+   * único camino era reabrir, detener y volver a cerrar. La salida
+   * podía ser dejar pasar `detener` con la Sala cerrada, y se eligió la
+   * otra: que apagar detenga (ver "apagar la Sala corta la película que
+   * estaba puesta"). Así no queda nada corriendo que haya que ir a
+   * parar, y la puerta sigue contestando lo mismo para las cuatro
+   * rutas y para cualquier acción. Una excepción —"todo 404 menos
+   * detener"— es una excepción que alguien copia, y además anunciaría
+   * que ahí adentro hay un reloj.
+   */
   const casos = [
     ['POST', `/api/sala/${SLUG}/reloj`, { cookie: sesionDueno, cuerpo: { accion: 'detener' } }],
     ['POST', `/api/sala/${SLUG}/chat`, { cookie: sesionEspectador, cuerpo: { texto: 'hola' } }],
@@ -544,6 +602,24 @@ test('/api/admin/sala es sólo del dueño del servicio', async () => {
   assert.equal(conSuSlug.estado, 403);
 });
 
+test('/api/admin/sala tampoco interpreta un `abierta` que no es booleano', async () => {
+  /* La hermana del panel ya lo probaba y ésta no: sacarle el
+     `typeof !== 'boolean'` dejaba que `{abierta:"false"}` CERRARA la
+     Sala en silencio (por la coerción de `ponerSalaAbierta`), o sea que
+     el dueño del servicio apagaba la Sala de alguien creyendo que la
+     prendía. Y al revés, sin la coerción del módulo, `"false"` la
+     prendería. Las dos defensas se prueban: acá el 400, y en
+     creadores.test.js que sólo `true` prende. */
+  await creadores.ponerSalaAbierta(OTRO, true);
+  for (const abierta of ['true', 'false', 1, 0, undefined, null]) {
+    const r = await pedir('/api/admin/sala', {
+      metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: OTRO, abierta },
+    });
+    assert.equal(r.estado, 400, `${JSON.stringify(abierta)} contestó ${r.estado}`);
+  }
+  assert.equal(await creadores.salaAbierta(OTRO), true, 'no se puede haber movido');
+});
+
 test('/api/admin/sala sobre un creador que no existe da 404 y no lo crea', async () => {
   const r = await pedir('/api/admin/sala', {
     metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: NO_EXISTE, abierta: true },
@@ -637,7 +713,13 @@ test('el reloj que quedó puesto NO sale por el bus público con la Sala apagada
   assert.equal(conSalaAbierta.reloj.videoId, 'ep1');
 
   /* Y ahora se apaga la Sala, sin tocar el reloj: queda puesto en el
-     canal, que es exactamente el caso real. */
+     canal, que es exactamente el caso real.
+
+     POR EL MÓDULO Y NO POR LA RUTA, y eso importa desde que apagar
+     detiene la película: por la ruta no quedaría reloj que filtrar y
+     este test pasaría sin probar nada. El filtro de `estadoDe` sigue
+     siendo la defensa de atrás —para un reloj que quedó de antes, o
+     para una fila escrita a mano— y acá se lo prueba solo. */
   await creadores.ponerSalaAbierta(SLUG, false);
 
   const publico = await primerEstado(SLUG);
@@ -679,4 +761,117 @@ test('el reloj que quedó puesto NO sale por el bus público con la Sala apagada
   await pedir(`/api/sala/${SLUG}/reloj`, {
     metodo: 'POST', cookie: sesionDueno, cuerpo: { accion: 'detener' },
   });
+});
+
+/* ======================= apagar la Sala apaga la película */
+
+test('apagar la Sala corta la película que estaba puesta', async () => {
+  /*
+   * APAGAR TENÍA QUE APAGAR, y no apagaba.
+   *
+   * El interruptor escribía el campo y nada más. Quien ya estaba
+   * mirando tenía el sobre `reloj` entero (título, URL de R2 y el
+   * instante en que empezó) y la posición la calcula sola la página,
+   * así que seguía viendo la película hasta el final aunque para el
+   * servidor esa Sala ya no existiera. Peor: el dueño se quedaba sin la
+   * palanca para cortar, porque con la Sala cerrada
+   * `POST /api/sala/:slug/reloj` contesta 404 como todo lo demás. El
+   * único camino era reabrir, detener y volver a cerrar.
+   */
+  await creadores.ponerSalaAbierta(SLUG, true);
+  const play = await pedir(`/api/sala/${SLUG}/reloj`, {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { accion: 'reproducir', videoId: 'ep1' },
+  });
+  assert.equal(play.estado, 200, `no se pudo poner la peli: ${play.texto.slice(0, 120)}`);
+
+  const mirando = escuchar(SLUG);
+  await mirando.esperar(e => e.tipo === 'estado');
+  assert.equal(mirando.eventos[0].reloj.videoId, 'ep1', 'tiene que estar mirando de verdad');
+
+  try {
+    const apagar = await pedir('/api/panel/sala', {
+      metodo: 'POST', cookie: sesionDueno, cuerpo: { abierta: false },
+    });
+    assert.equal(apagar.estado, 200, `contestó ${apagar.estado}`);
+
+    /* A quien está mirando se le avisa: sin esto sigue la película
+       hasta el final. */
+    const corte = await mirando.esperar(e => e.tipo === 'reloj');
+    assert.equal(corte.estado, 'detenido', `llegó ${corte.estado}`);
+  } finally {
+    mirando.cerrar();
+  }
+
+  /* Y no revive sola: el reloj guardado se borró, así que reabrir la
+     Sala no vuelve a poner la peli donde estaba. */
+  assert.equal(await almacen.obtener('reloj', SLUG), null,
+    'el reloj guardado tiene que irse con la Sala');
+
+  await creadores.ponerSalaAbierta(SLUG, true);
+  const despues = await primerEstado(SLUG);
+  assert.equal(despues.reloj, null, 'reabrir no puede resucitar la película sola');
+});
+
+test('apagar la Sala de otro desde /admin también le corta la película', async () => {
+  /* El interruptor tiene dos rutas y las dos tienen que apagar igual.
+     Si sólo apagara la del panel, la única forma de cortar la de otro
+     creador seguiría siendo pedirle que entre él. */
+  await creadores.ponerSalaAbierta(OTRO, true);
+  await videos.guardar(ficha('ep1', OTRO));
+  const play = await pedir(`/api/sala/${OTRO}/reloj`, {
+    metodo: 'POST', cookie: sesionOtro, cuerpo: { accion: 'reproducir', videoId: 'ep1' },
+  });
+  assert.equal(play.estado, 200, `no se pudo poner la peli: ${play.texto.slice(0, 120)}`);
+
+  const mirando = escuchar(OTRO);
+  await mirando.esperar(e => e.tipo === 'estado');
+  try {
+    const apagar = await pedir('/api/admin/sala', {
+      metodo: 'POST', cookie: sesionDueno, cuerpo: { slug: OTRO, abierta: false },
+    });
+    assert.equal(apagar.estado, 200, `contestó ${apagar.estado}`);
+
+    const corte = await mirando.esperar(e => e.tipo === 'reloj');
+    assert.equal(corte.estado, 'detenido');
+  } finally {
+    mirando.cerrar();
+  }
+  assert.equal(await almacen.obtener('reloj', OTRO), null);
+});
+
+test('un deploy no le repone la película a una Sala apagada', async () => {
+  /*
+   * LA OTRA MITAD DEL MISMO AGUJERO. `restaurarRelojes` corre en cada
+   * arranque —y acá deployar en medio del stream es la forma normal de
+   * trabajar—, así que un reloj que quedó guardado de antes volvía a
+   * memoria aunque la Sala estuviera cerrada: una película corriendo
+   * que nadie puede ver ni parar, esperando escaparse por algún lado.
+   */
+  await creadores.ponerSalaAbierta(OTRO, true);
+  await videos.guardar(ficha('ep1', OTRO));
+  await pedir(`/api/sala/${OTRO}/reloj`, {
+    metodo: 'POST', cookie: sesionOtro, cuerpo: { accion: 'reproducir', videoId: 'ep1' },
+  });
+
+  /* Se apaga POR EL MÓDULO, que es lo que no detiene nada: así queda
+     el caso real de una Sala cerrada con un reloj guardado de antes
+     (una fila escrita a mano, o cerrada antes de este arreglo). */
+  await creadores.ponerSalaAbierta(OTRO, false);
+  assert.ok(await almacen.obtener('reloj', OTRO), 'el reloj guardado tiene que seguir ahí');
+
+  canales.cerrarTodo();                       // el deploy: la memoria se va
+  assert.equal(await restaurarRelojes(), 0, 'no se puede reponer una peli que nadie puede parar');
+  assert.equal(canales.hayCanal(OTRO), false, 'ni siquiera se crea el canal');
+
+  /* Control negativo: con la Sala prendida, el mismo reloj sí vuelve.
+     Sin esto, un `return 0` pelado pasaría el test. */
+  await creadores.ponerSalaAbierta(OTRO, true);
+  assert.equal(await restaurarRelojes(), 1);
+  const estado = await primerEstado(OTRO);
+  assert.equal(estado.reloj.videoId, 'ep1');
+
+  await pedir(`/api/sala/${OTRO}/reloj`, {
+    metodo: 'POST', cookie: sesionOtro, cuerpo: { accion: 'detener' },
+  });
+  canales.cerrarTodo();
 });

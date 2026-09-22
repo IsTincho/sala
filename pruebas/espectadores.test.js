@@ -247,6 +247,84 @@ test('un vinculo de creador que se parece a uno viejo NO se migra', async () => 
   await almacen.quitar('tokens', 'espectador:kick');
 });
 
+/* ---------------------------------------------- el vencimiento */
+
+test('el que no vuelve en 60 dias pierde sus tokens, y el que vuelve no', async () => {
+  const viejo = Date.now() - espectadores.VENCE_EN - 1000;
+  const reciente = Date.now() - 1000;
+
+  await espectadores.conectar('esp_seFue', 'kick', KICK);
+  await espectadores.conectar('esp_sigue', 'twitch', TWITCH);
+  /* La fecha se toca a mano: esperar sesenta dias en un test no es una
+     opcion, y `conectar` siempre deja "ahora". */
+  for (const [id, cuando] of [['esp_seFue', viejo], ['esp_sigue', reciente]]) {
+    const doc = await almacen.obtener('espectadores', id);
+    await almacen.poner('espectadores', id, { ...doc, ultimoUso: cuando });
+  }
+
+  const idos = await espectadores.podar();
+  assert.ok(idos >= 1);
+  assert.equal(await espectadores.leer('esp_seFue'), null, 'se fue con sus tokens');
+  assert.equal(await almacen.obtener('espectadores', 'esp_seFue'), null);
+  assert.ok(await espectadores.leer('esp_sigue'), 'el que vino ayer se queda');
+
+  await espectadores.olvidar('esp_sigue');
+});
+
+test('el vencimiento barre tambien a los del modelo viejo que nunca se migraron', async () => {
+  /* La migracion corre al LEER, y a un espectador cuya sesion ya
+     vencio no lo lee nadie nunca mas: sin esto se queda con su refresh
+     token guardado para siempre. */
+  await almacen.poner('tokens', 'espectador:999', {
+    tipo: 'espectador',
+    usuarioId: '999',
+    nombre: 'de hace mucho',
+    acceso: cifrado.cifrar('viejisimo'),
+    refresco: cifrado.cifrar('viejisimo'),
+    venceEn: 0,
+    scopes: 'chat:write',
+    entro: Date.now() - espectadores.VENCE_EN - 1000,
+  });
+
+  await espectadores.podar();
+  assert.equal(await almacen.obtener('tokens', 'espectador:999'), null);
+});
+
+test('el vencimiento no toca los vinculos de los creadores', async () => {
+  /* Viven en la misma coleccion y son de otra cosa: el token del
+     creador no se vence solo aunque haga meses que no entra al panel. */
+  await almacen.poner('tokens', 'unasala:kick', {
+    red: 'kick', sala: 'unasala', usuarioId: '5',
+    acceso: cifrado.cifrar('el-del-creador'), refresco: '', vinculado: 0,
+  });
+
+  await espectadores.podar();
+  assert.ok(await almacen.obtener('tokens', 'unasala:kick'), 'el vinculo del creador sigue ahi');
+  await almacen.quitar('tokens', 'unasala:kick');
+});
+
+test('leer anota que la persona sigue viniendo, como mucho cada tantas horas', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  const recienConectado = (await almacen.obtener('espectadores', UNO)).ultimoUso;
+
+  /* Recien conectado: leerlo no escribe nada. */
+  await espectadores.leer(UNO);
+  assert.equal((await almacen.obtener('espectadores', UNO)).ultimoUso, recienConectado,
+    'una escritura en Mongo por cada mensaje del chat, para esto, no se paga');
+
+  /* Con la fecha vieja, la proxima lectura la mueve: es lo que lo
+     salva del vencimiento de sesenta dias. */
+  const doc = await almacen.obtener('espectadores', UNO);
+  const haceRato = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  await almacen.poner('espectadores', UNO, { ...doc, ultimoUso: haceRato });
+
+  const v = await espectadores.leer(UNO);
+  assert.equal(v.kick.accessToken, KICK.accessToken, 'y sigue devolviendo lo mismo');
+  assert.ok((await almacen.obtener('espectadores', UNO)).ultimoUso > haceRato);
+
+  await espectadores.olvidar(UNO);
+});
+
 /* ------------------------------------------------------- limite personal */
 
 test('esperaQueLeFalta: 0 antes de mandar, algo despues, 0 pasados los 2s', () => {

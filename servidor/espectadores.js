@@ -105,6 +105,20 @@ export const SCOPE_PARA_ESCRIBIR = Object.freeze({
 /** Lo que espera un espectador entre dos mensajes. */
 export const ESPERA_ENTRE_MENSAJES = 2000;
 
+/* Cuanto vive un espectador que no vuelve. Guardar el refresh token de
+   alguien que no usa el servicio hace dos meses es riesgo sin
+   beneficio: si vuelve, conecta de nuevo y son dos clicks.
+
+   Se poda al arrancar, que para este servicio pasa seguido (cada deploy
+   es un arranque). No hace falta un reloj propio para algo que se mide
+   en meses. */
+export const VENCE_EN = 60 * 24 * 60 * 60 * 1000;
+
+/* Cada cuanto se anota que esta persona sigue viniendo. Escribir en
+   Mongo en cada mensaje del chat, para mover un numero que se compara
+   contra sesenta dias, es castigar a la base al pedo. */
+const REFRESCAR_USO = 6 * 60 * 60 * 1000;
+
 /* Margen antes del vencimiento para considerar que un access token ya
    no sirve: un token que vence en medio del pedido da un 401 que
    despues cuesta entender. */
@@ -243,10 +257,15 @@ function descifrarRed(r) {
  *
  * `{ id, kick?, twitch?, creado, ultimoUso }`. La red que no conecto
  * no esta.
+ *
+ * De paso anota que esta persona sigue viniendo, como mucho una vez
+ * cada seis horas y sin esperar a que la escritura termine: es para el
+ * vencimiento de sesenta dias, y a nadie le importa si tarda.
  */
 export async function leer(id) {
   const doc = await documento(id);
   if (!doc || !cifrado.hayClave()) return null;
+  await tocar(doc);
 
   try {
     const v = { id: doc.id ?? String(id), creado: doc.creado ?? 0, ultimoUso: doc.ultimoUso ?? 0 };
@@ -262,6 +281,34 @@ export async function leer(id) {
        el error de descifrado no traiga nada delicado. */
     console.warn(`[espectadores] no se pudo descifrar un vinculo (${e.name}): hay que volver a entrar`);
     return null;
+  }
+}
+
+/*
+ * Deja anotado que este espectador se uso, como mucho una vez cada
+ * REFRESCAR_USO.
+ *
+ * SE ESPERA, aunque a nadie le importe cuando se guarda, y eso es lo
+ * unico delicado de esta funcion. Escribe el documento ENTERO (el
+ * almacen no sabe actualizar un campo suelto), asi que una escritura
+ * suelta volando podria aterrizar despues de un `conectar` y devolver
+ * el documento a como estaba, borrando la red que se acababa de
+ * conectar. Justo el caso de quien vuelve despues de una semana a
+ * sumar Twitch: hace mas de seis horas que no viene, asi que esta
+ * escritura se dispara.
+ *
+ * Esperarla cuesta una escritura cada seis horas por persona.
+ */
+async function tocar(doc) {
+  const ahora = Date.now();
+  if (ahora - Number(doc.ultimoUso ?? 0) < REFRESCAR_USO) return;
+  doc.ultimoUso = ahora;
+  try {
+    await almacen.poner('espectadores', doc.id, doc);
+  } catch (e) {
+    /* Que no se pueda anotar el ultimo uso no es motivo para que la
+       persona no pueda escribir. */
+    console.warn('[espectadores] no se pudo anotar el ultimo uso:', e.name);
   }
 }
 
@@ -427,6 +474,41 @@ export function esperaDelCanalQueFalta(slug, ahora = Date.now()) {
   if (!hasta) return 0;
   if (hasta <= ahora) { esperaDelCanal.delete(String(slug).toLowerCase()); return 0; }
   return hasta - ahora;
+}
+
+/* ----------------------------------------------- el vencimiento
+
+   Un espectador que no vuelve en sesenta dias pierde sus tokens solo.
+   Se barren los dos modelos: el nuevo y el viejo (`tokens`), porque un
+   documento viejo cuya sesion ya vencio no lo migra nadie —la
+   migracion corre al leerlo, y a ese no lo lee mas nadie— y se quedaria
+   ahi para siempre. */
+
+/**
+ * Borra los espectadores que no vuelven hace `VENCE_EN`. Devuelve
+ * cuantos se fueron. Se llama al arrancar.
+ */
+export async function podar(ahora = Date.now()) {
+  let cuantos = 0;
+
+  for (const doc of await almacen.listar('espectadores')) {
+    const ultimo = Number(doc.ultimoUso ?? doc.creado ?? 0);
+    if (ultimo + VENCE_EN >= ahora) continue;
+    await almacen.quitar('espectadores', doc.id);
+    limpiarLimite(doc.id);
+    cuantos++;
+  }
+
+  /* Los del modelo viejo, que nunca se migraron. `entro` era su unica
+     marca de tiempo. */
+  for (const doc of await almacen.listar('tokens')) {
+    if (doc?.tipo !== 'espectador') continue;
+    if (Number(doc.entro ?? 0) + VENCE_EN >= ahora) continue;
+    await almacen.quitar('tokens', doc.id);
+    cuantos++;
+  }
+
+  return cuantos;
 }
 
 /** Solo para los tests. */

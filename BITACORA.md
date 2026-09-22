@@ -11,7 +11,8 @@ chat abierto: bloquear a alguien, que los tokens de quien no vuelve se borren so
 contador de conectados, el QR del link, el manifest por sala y el texto nuevo de
 `/terminos`.
 
-**749 pruebas en verde** (eran 716). **10 mutaciones, las 10 cazadas.**
+**751 pruebas en verde** (eran 716), la suite corrida cuatro veces seguidas sin un solo
+flake. **10 mutaciones, las 10 cazadas.**
 
 ### Bloquear a alguien, en esta herramienta
 
@@ -35,8 +36,10 @@ persona mirando, para esconder algo que está a un pedido de distancia.
 
 **Al bloqueado se le dice.** `/api/chat/:slug/yo` devuelve en qué redes está bloqueado, así
 la página lo explica en vez de esconderle la caja sin motivo: quedarse escribiendo contra
-una pared que no avisa es peor que un "el creador te bloqueó en este chat". Y **quién está
-bloqueado no sale por ninguna ruta pública**: es del creador.
+una pared que no avisa es peor que un "el creador te bloqueó en este chat". Y aclara que
+en el canal del creador sigue pudiendo escribir como siempre. Con una red bloqueada y la
+otra no, escribe por la que le queda y se dice cuál perdió; si no, parece que esa red
+desapareció sola. **Quién está bloqueado no sale por ninguna ruta pública**: es del creador.
 
 **La escucha del botón va en la lista, no en el botón.** `/chat` clona el `<li>` para
 ponerlo en la columna de su red, y un clon no se lleva las escuchas: el botón de la

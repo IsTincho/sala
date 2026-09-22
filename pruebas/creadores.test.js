@@ -447,3 +447,97 @@ test('un slug con forma invalida se contesta false sin mirar nada', async () => 
   await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
   assert.equal(await creadores.existe('ANA'), true);
 });
+
+/* ================================================= la Sala prendida
+
+   El interruptor del 2026-09-22: el producto que se ofrece es el
+   multichat, y la Sala queda apagada hasta que el dueño la prenda. Lo
+   que se prueba acá es el modelo; que las rutas contesten 404 con la
+   Sala apagada se prueba por HTTP, en `sala-cerrada.test.js`. */
+
+test('la Sala nace cerrada, y también la del dueño del servicio', async () => {
+  /* Que el dueño NO sea la excepción es la mitad del punto: `existe()`
+     sí lo trata aparte (su sala funciona con la colección vacía), y
+     copiar ese criterio acá dejaría prendida justamente la única Sala
+     que hoy tiene una película puesta. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  assert.equal(await creadores.salaAbierta('ana'), false);
+  assert.equal(await creadores.salaAbierta(DUENO), false);
+  /* Y una sala que no existe tampoco la tiene abierta: es lo que hace
+     que el 404 de las rutas sea indistinguible en los dos casos. */
+  assert.equal(await creadores.salaAbierta('no-existe'), false);
+});
+
+test('prender y apagar la Sala de un creador sobrevive a la cache', async () => {
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+  /* Se lee ANTES de escribir, a propósito: así la respuesta "cerrada"
+     queda cacheada y, si la escritura no invalidara, lo de abajo
+     seguiría diciendo false durante cinco segundos. */
+  assert.equal(await creadores.salaAbierta('ana'), false);
+
+  assert.equal(await creadores.ponerSalaAbierta('ana', true), true);
+  assert.equal(await creadores.salaAbierta('ana'), true);
+
+  assert.equal(await creadores.ponerSalaAbierta('ana', false), false);
+  assert.equal(await creadores.salaAbierta('ana'), false);
+});
+
+test('prender la Sala no le toca el plan ni los términos a nadie', async () => {
+  /* Escribe el documento entero (el almacén no sabe actualizar un
+     campo suelto), así que lo que no se toca tiene que quedar igual. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+  await creadores.ponerPlan('ana', 'amigo', { quien: 'dueno' });
+
+  await creadores.ponerSalaAbierta('ana', true);
+
+  const c = await creadores.obtener('ana');
+  assert.equal(c.plan, 'amigo');
+  assert.equal(c.usuarioId, '111');
+  assert.equal(c.terminos.version, '1');
+});
+
+test('al dueño del servicio sin documento se le crea uno, como el chat abierto', async () => {
+  /* Su sala existe por KICK_SLUG y puede no tener fila (es como está
+     hoy la colección). El ajuste tiene que poder guardarse igual. */
+  assert.equal(await almacen.obtener('creadores', DUENO), null, 'tiene que arrancar sin fila');
+
+  assert.equal(await creadores.ponerSalaAbierta(DUENO, true), true);
+  assert.equal(await creadores.salaAbierta(DUENO), true);
+
+  /* Y su plan sigue sin salir de esa fila. */
+  assert.equal((await creadores.obtener(DUENO)).plan, 'pendiente');
+  assert.equal(await creadores.planDe(DUENO), 'dueno');
+});
+
+test('a un creador que no existe no se le prende nada', async () => {
+  assert.equal(await creadores.ponerSalaAbierta('no-existe', true), null);
+  assert.equal(await almacen.obtener('creadores', 'no-existe'), null,
+    'prender la Sala no puede ser una forma lateral de dar de alta una sala');
+});
+
+test('dos escrituras a la vez sobre el mismo creador no se pisan', async () => {
+  /* `escribir` es leer-cambiar-guardar sobre el documento entero: sin
+     la cola, prender la Sala mientras se guarda el plan deja uno de los
+     dos cambios afuera, en silencio. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  await Promise.all([
+    creadores.ponerSalaAbierta('ana', true),
+    creadores.ponerChatAbierto('ana', { activo: true }),
+  ]);
+
+  const c = await creadores.obtener('ana');
+  assert.equal(Boolean(c.salaAbierta), true, 'se perdió el interruptor de la Sala');
+  assert.equal(c.chatAbierto.activo, true, 'se perdió el del chat abierto');
+});
+
+test('la Sala prendida sale en la lista de /admin', async () => {
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+  await creadores.crear({ slug: 'beto', usuarioId: '222', terminos: '1' });
+  await creadores.ponerSalaAbierta('beto', true);
+
+  const lista = await creadores.listar();
+  assert.equal(lista.find(c => c.slug === 'ana').salaAbierta, false);
+  assert.equal(lista.find(c => c.slug === 'beto').salaAbierta, true);
+});

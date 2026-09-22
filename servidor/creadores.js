@@ -337,6 +337,10 @@ const aCreador = doc => (doc ? {
   },
   bytes: Number(doc.bytes ?? 0),
   bytesAl: Number(doc.bytesAl ?? 0),
+  /* El interruptor de la Sala (ver mas abajo). Sale aca porque /admin
+     lo lista y lo toca: el dueño del servicio tiene que poder ver de un
+     vistazo a quien le prendio la pelicula. */
+  salaAbierta: Boolean(doc.salaAbierta),
 } : null);
 
 /** Todos los creadores, para /admin. Del mas nuevo al mas viejo. */
@@ -709,4 +713,80 @@ async function cambiarChatAbierto(s, pedido) {
   });
   chatEnMemoria.set(s, nuevo);
   return nuevo;
+}
+
+/* ------------------------------------------------- la Sala prendida
+
+   Decision del dueño del 2026-09-22: por ahora el producto que se
+   ofrece es el MULTICHAT (Kick y Twitch juntos), y la Sala —pasar una
+   pelicula en una pagina propia— queda cerrada y escondida.
+
+   No se borro nada. Esto es un interruptor: el codigo del reloj, del
+   catalogo y de la subida sigue entero y probado, y prender la Sala de
+   un creador lo vuelve a poner en linea sin tocar una sola linea.
+
+   Se guarda en el documento del creador, al lado del chat abierto:
+
+     "salaAbierta": true
+
+   ---------------------------------------------------------------
+   NACE CERRADA PARA TODOS, INCLUIDO EL DUEÑO DEL SERVICIO
+
+   Y eso es a proposito. `existe()` contesta true para el dueño sin
+   tocar el almacen, porque su Sala tiene que funcionar con la coleccion
+   vacia; si esta se escribiera con el mismo criterio, apagar el
+   producto dejaria prendida justamente la unica Sala que hoy tiene una
+   pelicula puesta. El interruptor no es una regla sobre quien es cada
+   uno: es una sobre que se esta ofreciendo hoy.
+
+   ---------------------------------------------------------------
+   POR QUE ACA NO HAY COPIA EN MEMORIA Y EL CHAT ABIERTO SI TIENE
+
+   La del chat abierto existe porque el filtro del bus pregunta en CADA
+   mensaje y por CADA conexion, donde no hay ningun `await` disponible.
+   Esto no: todo lo que lo pregunta —las paginas, las cuatro rutas de
+   /api/sala, /api/panel/*, /api/videos y /api/subida— ya es
+   asincronico. Alcanza con `obtener`, que trae su propia cache de 5
+   segundos y que toda escritura invalida. Un Map aca seria complejidad
+   sin motivo, y una copia mas para desincronizarse el dia que haya dos
+   instancias.
+
+   Y si el almacen falla, `obtener` contesta null y esto contesta
+   "cerrada". Es la direccion correcta para una puerta: ante la duda, lo
+   cerrado. */
+
+/** Si esta sala tiene la pelicula prendida. */
+export async function salaAbierta(slug) {
+  const doc = await obtener(slug);
+  return Boolean(doc?.salaAbierta);
+}
+
+/**
+ * Prende o apaga la Sala de un creador. Devuelve como quedo, o null si
+ * la sala no existe.
+ *
+ * MISMO CASO RARO QUE `ponerChatAbierto`: el dueño del servicio puede
+ * no tener documento (su sala existe por `KICK_SLUG`, ver `existe`), y
+ * entonces se le crea con los mismos valores que el alta. El plan que
+ * quede escrito ahi no se lee nunca: `planDe` contesta 'dueno' antes de
+ * mirar el documento.
+ *
+ * En cola por lo mismo que el chat abierto: `escribir` es
+ * leer-cambiar-guardar sobre el documento ENTERO, asi que prender la
+ * Sala mientras se guarda un bloqueo (o un plan, o el uso de R2) se
+ * pisarian en silencio. La cola es por creador, asi que no frena a
+ * nadie mas.
+ */
+export async function ponerSalaAbierta(slug, valor) {
+  const s = normalizar(slug);
+  return almacen.enCola('creadores', s, () => cambiarSalaAbierta(s, valor === true));
+}
+
+async function cambiarSalaAbierta(s, abierta) {
+  if (!await almacen.obtener('creadores', s)) {
+    if (!esDueno(s)) return null;
+    await crear({ slug: s });
+  }
+  await escribir(s, { salaAbierta: abierta });
+  return abierta;
 }

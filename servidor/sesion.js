@@ -149,8 +149,16 @@ export async function crear({ tipo, usuario = '', nombre = '', slug = '', agente
 /**
  * La sesion del pedido, o null. Verifica firma, existencia,
  * vencimiento y que el tipo guardado sea el que se pide.
+ *
+ * `estirar: false` la lee sin tocar el "ultimo visto". Lo usa `cerrar`,
+ * y no es una optimizacion: el refresco se manda SIN await, asi que
+ * una sesion que se esta cerrando podria recibir esa escritura
+ * DESPUES del borrado y volver a existir. La cookie ya no esta del
+ * lado del navegador, pero el documento quedaria en la base hasta que
+ * lo pode el vencimiento, y quien hubiera copiado esa cookie antes
+ * seguiria entrando. Salir tiene que salir.
  */
-export async function leer(req, tipo) {
+export async function leer(req, tipo, { estirar = true } = {}) {
   const cookie = nombreDe(tipo);
   const crudo = leerCookie(req, cookie);
   if (!crudo) return null;
@@ -177,7 +185,7 @@ export async function leer(req, tipo) {
     return null;
   }
 
-  if (Date.now() - (s.ultimo ?? 0) > REFRESCAR_CADA) {
+  if (estirar && Date.now() - (s.ultimo ?? 0) > REFRESCAR_CADA) {
     /* deslizante: se usa, se estira. Sin await: que el pedido no
        espere a Mongo para algo que a nadie le importa si tarda. */
     almacen.poner('sesiones', clave, { ...s, ultimo: Date.now() })
@@ -196,7 +204,8 @@ export async function leer(req, tipo) {
 
 /** Cierra la sesion de este pedido. Devuelve si habia una. */
 export async function cerrar(req, tipo) {
-  const s = await leer(req, tipo);
+  /* Sin estirar: ver el comentario de `leer`. */
+  const s = await leer(req, tipo, { estirar: false });
   if (!s) return false;
   await almacen.quitar('sesiones', s.clave);
   return true;

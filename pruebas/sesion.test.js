@@ -121,3 +121,46 @@ after(async () => {
   await fs.rm(ARCHIVO_SESIONES, { force: true });
   almacen.olvidarCache();
 });
+
+test('cerrar no estira la sesion que esta borrando', async () => {
+  /* EL BUG QUE ESTO ATAJA: `leer` manda el refresco del "ultimo visto"
+     SIN await. Si `cerrar` lo disparara, esa escritura podria
+     aterrizar despues del borrado y la sesion volveria a existir: la
+     cookie ya no esta del lado del navegador, pero quien la hubiera
+     copiado antes seguiria entrando, y el documento quedaria en la
+     base hasta que lo pode el vencimiento. Salir tiene que salir. */
+  const valor = await sesion.crear({ tipo: 'espectador', usuario: '77', nombre: 'quien se va' });
+  const pedido = { headers: { cookie: `${sesion.COOKIES.espectador}=${valor}` } };
+
+  /* Se envejece a mano: el refresco sale recien pasados los 5 minutos,
+     y una sesion recien creada no lo dispararia nunca. */
+  const s = await sesion.leer(pedido, 'espectador');
+  const doc = await almacen.obtener('sesiones', s.clave);
+  await almacen.poner('sesiones', s.clave, { ...doc, ultimo: Date.now() - 60 * 60 * 1000 });
+
+  assert.equal(await sesion.cerrar(pedido, 'espectador'), true);
+
+  /* Un turno para que una escritura suelta, si la hubiera, aterrice. */
+  await new Promise(ok => setTimeout(ok, 20));
+
+  assert.equal(await almacen.obtener('sesiones', s.clave), null, 'no puede resucitar');
+  assert.equal(await sesion.leer(pedido, 'espectador'), null);
+});
+
+test('una lectura normal SI estira la sesion', async () => {
+  /* La otra mitad: el deslizante tiene que seguir andando, o las
+     sesiones se caerian a los 30 dias de creadas aunque se usen todos
+     los dias. */
+  const valor = await sesion.crear({ tipo: 'dueno', usuario: '88', nombre: 'alguien', slug: 'istincho' });
+  const pedido = { headers: { cookie: `${sesion.COOKIES.dueno}=${valor}` } };
+
+  const s = await sesion.leer(pedido, 'dueno');
+  const doc = await almacen.obtener('sesiones', s.clave);
+  const viejo = Date.now() - 60 * 60 * 1000;
+  await almacen.poner('sesiones', s.clave, { ...doc, ultimo: viejo });
+
+  await sesion.leer(pedido, 'dueno');
+  await new Promise(ok => setTimeout(ok, 20));
+
+  assert.ok((await almacen.obtener('sesiones', s.clave)).ultimo > viejo);
+});

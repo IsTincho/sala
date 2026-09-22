@@ -142,6 +142,45 @@ export const SIN_CUENTA = 60 * 60 * 1000;
 export const REINTENTO = 60 * 1000;
 const ESPERA = 8000;
 
+/* EL RESPALDO ENTRE REDES, y por qué no es una cuarta caché.
+
+   Verificado el 2026-09-22 contra el 7TV real: el Kick del dueño tiene
+   set (66 emotes) y su Twitch NO tiene `emote_set` en la respuesta de
+   `/users/twitch/<id>` — es el caso normal de quien usa 7TV en una
+   sola red. Sin esto, sus mensajes de Twitch salen sin un solo emote
+   de 7TV aunque tenga 66 cargados del otro lado.
+
+   Cuando la red PROPIA no tiene set (7TV contestó 404, o contestó bien
+   pero sin `emote_set`), se resuelve con el set de la OTRA red del
+   mismo creador, si la tiene vinculada. La propia SIEMPRE gana: esto
+   sólo se mira cuando la tabla propia está confirmada vacía, nunca la
+   pisa ni la mezcla.
+
+   No se guarda en un casillero aparte. Se lee con la misma `tabla()`
+   que ya existe para esa otra red — la misma clave `(slug, otraRed)`,
+   los mismos tres vencimientos, la misma bajada compartida y el mismo
+   tope de `EN_VUELO_MAX`. Dos motivos:
+
+     1. Menos pedidos: si alguien ya mira el chat de la otra red de ese
+        creador, esa tabla ya está cacheada y el respaldo la lee gratis,
+        sin pedir nada. Un casillero propio para el respaldo bajaría el
+        MISMO set dos veces (una como "red propia" para quien la mira
+        directo, otra como "respaldo" para la que no tiene) sin ganar
+        nada a cambio.
+     2. Nada de un cuarto vencimiento: el respaldo hereda el vencimiento
+        de la red que lo sirve. Si esa red no tiene cuenta de 7TV, el
+        respaldo también queda vacío una hora; si tiene una tabla que
+        funciona, dura los mismos diez minutos.
+
+   La red PROPIA tiene que estar vinculada para intentar el respaldo.
+   Si ni siquiera está vinculada (no es que le falte 7TV, es que el
+   creador no usa esa red en esta herramienta), no hay "red sin set
+   propio" que respaldar: es un caso ya cubierto y una prueba vieja lo
+   exige ("un creador que no vinculó la red no pide nada"). Por eso se
+   guarda si la última bajada tuvo id (`vinculada`) además de si quedó
+   vacía. */
+export const RESPALDO_7TV = process.env.EMOTES_7TV_RESPALDO !== '0';
+
 /* Cuantas bajadas pueden estar en vuelo a la vez, en todo el proceso.
    Sin esto, un arranque con 900 creadores recibiendo su primer
    mensaje son 900 fetch de una. Las que no entran no se encolan: el
@@ -202,7 +241,12 @@ const clave = (slug, red) => `${String(slug ?? '').toLowerCase()}/${red}`;
 function casillero(k) {
   let c = cache.get(k);
   if (!c) {
-    c = { tabla: new Map(), vence: 0, bajando: null, avisado: '' };
+    /* `vinculada` es lo que distingue, de un casillero vacío, "esta red
+       no tiene cuenta de 7TV" (true, hay id, el respaldo puede entrar)
+       de "el creador ni tiene esta red" (false, no hay a quién
+       preguntarle nada). Arranca en `true` porque hasta la primera
+       bajada no hay nada confirmado todavía. */
+    c = { tabla: new Map(), vence: 0, bajando: null, avisado: '', vinculada: true };
     cache.set(k, c);
   }
   return c;
@@ -285,7 +329,16 @@ export function fijarIdentidad(fn) {
 
 /* ----------------------------------------------------------- pedidos */
 
-class ErrorSinCuenta extends Error {}
+/* `vinculada` dice si HABÍA id para preguntarle a 7TV. En falso es "el
+   creador no tiene esta red en la herramienta"; en verdadero (el
+   default) es "la tiene, pero 7TV no le conoce cuenta o set", que es
+   justo el caso en el que el respaldo de la otra red tiene sentido. */
+class ErrorSinCuenta extends Error {
+  constructor(mensaje, { vinculada = true } = {}) {
+    super(mensaje);
+    this.vinculada = vinculada;
+  }
+}
 
 async function pedirJson(url) {
   const r = await fetch(url, {
@@ -377,8 +430,11 @@ async function bajarSet(slug, red) {
   const quien = await identidad(slug, red);
   const id = String(quien?.usuarioId ?? '');
   /* Sin vinculo con esa red no hay a quien preguntarle. Cuenta como
-     "sin cuenta": no se vuelve a intentar por un rato. */
-  if (!id) throw new ErrorSinCuenta('el creador no tiene vinculada esa red');
+     "sin cuenta": no se vuelve a intentar por un rato. `vinculada:
+     false` es lo que le dice al respaldo que no intente nada: no es
+     que esta red no tenga 7TV, es que el creador no la tiene en la
+     herramienta. */
+  if (!id) throw new ErrorSinCuenta('el creador no tiene vinculada esa red', { vinculada: false });
 
   const usuario = await pedirJson(`${API}/users/${red}/${encodeURIComponent(id)}`);
 
@@ -482,6 +538,10 @@ function agendar(k, como, etiqueta) {
     .then(t => {
       c.tabla = t;
       c.vence = Date.now() + CADUCA;
+      /* Se llegó hasta acá con un id de verdad (bajarSet lo exige antes
+         de pedir nada), así que la red está vinculada aunque el set
+         haya salido vacío (el caso de "usuario sin emote_set"). */
+      c.vinculada = true;
       avisar(c, `ok:${t.size}`, `[7tv] ${etiqueta}: ${t.size} emote${t.size === 1 ? '' : 's'}`);
     })
     .catch(e => {
@@ -489,11 +549,13 @@ function agendar(k, como, etiqueta) {
         /* El caso de la mayoria. Se deja la tabla vacia y se calla. */
         c.tabla = new Map();
         c.vence = Date.now() + SIN_CUENTA;
+        c.vinculada = e.vinculada;
         avisar(c, 'sin-cuenta', `[7tv] ${etiqueta}: sin set de 7TV`);
         return;
       }
       /* NO se pisa `c.tabla`: si habia una que funcionaba, se sigue
-         sirviendo aunque este vencida. */
+         sirviendo aunque este vencida. Tampoco se toca `vinculada`: un
+         fallo de verdad no dice nada sobre si la red está vinculada. */
       c.vence = Date.now() + REINTENTO;
       avisar(c, 'fallo', `[7tv] ${etiqueta}: no se pudo actualizar (${e.message})`);
     })
@@ -528,6 +590,32 @@ export function globales() {
   if (!ACTIVO) return new Map();
   agendar(CLAVE_GLOBALES, bajarGlobales, 'globales');
   return casillero(CLAVE_GLOBALES).tabla;
+}
+
+const redOpuesta = red => (red === 'kick' ? 'twitch' : 'kick');
+
+/**
+ * La tabla de un creador en una red, con el respaldo de su OTRA red
+ * cuando ésta no tiene set propio (ver el comentario de `RESPALDO_7TV`).
+ *
+ * Sincrona como `tabla()`, y por el mismo motivo: nunca espera, se lleva
+ * lo que haya cacheado ahora mismo y deja agendada cualquier bajada que
+ * falte.
+ */
+function tablaConRespaldo(slug, red) {
+  const propia = tabla(slug, red);
+  if (propia.size > 0 || !RESPALDO_7TV) return propia;
+  if (red !== 'kick' && red !== 'twitch') return propia;
+
+  const c = casillero(clave(slug, red));
+  /* Todavía no se sabe (recién se agendó o está bajando) o fue un
+     fallo de verdad (timeout, 500): en ninguno de los dos casos está
+     CONFIRMADO que la red no tenga set propio, así que no hay que
+     adivinar pidiendo el respaldo de arriba. */
+  const confirmadoVacio = c.avisado === 'sin-cuenta' || c.avisado.startsWith('ok:');
+  if (!confirmadoVacio || !c.vinculada) return propia;
+
+  return tabla(slug, redOpuesta(red));
 }
 
 /* -------------------------------------------------------- resolucion
@@ -599,7 +687,7 @@ function conEmotes(mensaje, slug) {
   const texto = String(mensaje.texto ?? '');
   if (!texto) return mensaje;
 
-  const delCanal = tabla(slug, mensaje.red);
+  const delCanal = tablaConRespaldo(slug, mensaje.red);
   const comunes = globales();
   if (!delCanal.size && !comunes.size) return mensaje;
 

@@ -83,8 +83,8 @@ function emote(nombre, { kb1x = 8, kb2x = 20, sabor = '' } = {}) {
   };
 }
 
-const url1x = nombre => `https://cdn.7tv.app/emote/${emote(nombre).id}/1x.webp`;
-const url2x = nombre => `https://cdn.7tv.app/emote/${emote(nombre).id}/2x.webp`;
+const url1x = (nombre, opts) => `https://cdn.7tv.app/emote/${emote(nombre, opts).id}/1x.webp`;
+const url2x = (nombre, opts) => `https://cdn.7tv.app/emote/${emote(nombre, opts).id}/2x.webp`;
 
 globalThis.fetch = async (recurso) => {
   const url = String(recurso);
@@ -850,3 +850,124 @@ function deKickCrudo(contenido) {
     sender: { username: 'Fulana', user_id: '909', identity: { badges: [] } },
   };
 }
+
+/* ============================== el respaldo entre redes de un creador
+
+   Verificado el 2026-09-22 contra el 7TV real: el Kick del dueño tiene
+   set propio y su Twitch no. Sin respaldo, sus mensajes de Twitch
+   salen sin un solo emote de 7TV. Lo que se prueba acá:
+
+     - la red propia SIEMPRE gana, aunque el respaldo tenga un emote
+       con el mismo nombre;
+     - sin set propio (confirmado, no sólo "todavía no llegó"), resuelve
+       con el de la otra red;
+     - sin la otra red vinculada, el respaldo no pide nada;
+     - el respaldo no se pide dos veces;
+     - los globales siguen resolviendo por debajo del respaldo, igual
+       que por debajo del propio.
+
+   Las cuatro primeras van con un token POSITIVO: que el emote
+   efectivamente aparezca en el lugar exacto, no sólo que algo esté
+   ausente. Una prueba que sólo afirma ausencias pasa igual con la
+   función entera apagada. */
+
+test('la red propia le gana al respaldo aunque tengan un emote con el mismo nombre', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD', { sabor: 'kick' })]);
+  darle('istincho', 'twitch', '245305929', [emote('CHAD', { sabor: 'twitch' })]);
+
+  const m = await resolverConTabla(deTwitch('CHAD'), 'istincho');
+
+  assert.equal(m.emotes.length, 1);
+  assert.equal(recortar(m.texto, m.emotes[0]), 'CHAD');
+  /* Si el respaldo (Kick) pisara al propio (Twitch), esta URL sería la
+     del "sabor: kick". */
+  assert.equal(m.emotes[0].url, url2x('CHAD', { sabor: 'twitch' }));
+  assert.notEqual(m.emotes[0].url, url2x('CHAD', { sabor: 'kick' }));
+});
+
+test('sin set propio en una red, resuelve con el set de la otra', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD')]);
+  identidades.set('istincho', { ...identidades.get('istincho'), twitch: '245305929' });
+  /* La forma real, verificada hoy contra 7TV: el usuario de Twitch
+     existe pero sin `emote_set` (no tiene 7TV activado en esa red). */
+  sets.set('twitch/245305929', { user: { connections: [] } });
+
+  const m1 = emotes.resolver(deTwitch('CHAD'), 'istincho');
+  await emotes.reposo(); // confirma que Twitch no tiene set propio
+  emotes.resolver(deTwitch('CHAD'), 'istincho');
+  await emotes.reposo(); // baja el respaldo (Kick)
+  const m = emotes.resolver(deTwitch('CHAD'), 'istincho');
+
+  assert.deepEqual(m1.emotes, [], 'el primer mensaje, antes de confirmar el respaldo, sale pelado');
+  assert.equal(m.emotes.length, 1);
+  assert.equal(recortar(m.texto, m.emotes[0]), 'CHAD');
+  assert.equal(m.emotes[0].url, url2x('CHAD'));
+  assert.equal(m.emotes[0].fuente, '7tv');
+});
+
+test('sin vínculo en la otra red, el respaldo no pide nada', async () => {
+  arrancarDeCero();
+  identidades.set('istincho', { kick: '262387' }); // sólo Kick vinculado
+  sets.set('kick/262387', 'no-existe');            // Kick vinculado, pero sin cuenta de 7TV
+  sets.set('global', [emote('KEKW')]);
+
+  emotes.resolver(deKick('KEKW'), 'istincho');
+  await emotes.reposo(); // confirma kick sin-cuenta y baja los globales
+  const m = emotes.resolver(deKick('KEKW'), 'istincho');
+
+  /* Token positivo: el global resuelve igual, así que el mecanismo
+     sigue vivo y lo que faltó fue específicamente el vínculo de la
+     otra red, no la función entera. */
+  assert.equal(m.emotes.length, 1, 'el global resuelve igual: el mecanismo sigue vivo');
+  assert.equal(recortar(m.texto, m.emotes[0]), 'KEKW');
+  assert.equal(m.emotes[0].fuente, '7tv');
+  assert.equal(pedidos.filter(u => u.includes('/users/twitch/')).length, 0,
+    'sin Twitch vinculado, el respaldo ni pregunta');
+});
+
+test('el respaldo se pide una sola vez aunque lleguen más mensajes', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD')]);
+  identidades.set('istincho', { ...identidades.get('istincho'), twitch: '245305929' });
+  sets.set('twitch/245305929', { user: { connections: [] } });
+
+  emotes.resolver(deTwitch('CHAD'), 'istincho');
+  await emotes.reposo(); // confirma twitch sin set propio
+  emotes.resolver(deTwitch('CHAD'), 'istincho');
+  await emotes.reposo(); // baja el respaldo (Kick), una vez
+  const m = emotes.resolver(deTwitch('CHAD'), 'istincho');
+
+  assert.equal(m.emotes.length, 1);
+  assert.equal(recortar(m.texto, m.emotes[0]), 'CHAD');
+  const antes = pedidos.filter(u => u.includes('/users/kick/262387')).length;
+  assert.equal(antes, 1, 'el respaldo de Kick se pidió una sola vez');
+
+  for (let i = 0; i < 10; i++) emotes.resolver(deTwitch('CHAD'), 'istincho');
+  await emotes.reposo();
+
+  assert.equal(pedidos.filter(u => u.includes('/users/kick/262387')).length, antes,
+    'diez mensajes más no vuelven a pedir el respaldo ya cacheado');
+});
+
+test('los globales siguen resolviendo por debajo del respaldo', async () => {
+  arrancarDeCero();
+  identidades.set('istincho', { kick: '262387', twitch: '245305929' });
+  sets.set('kick/262387', 'no-existe'); // Kick vinculado, sin cuenta de 7TV
+  sets.set('twitch/245305929', [emote('SOLO_RESPALDO', { sabor: 'respaldo' })]);
+  sets.set('global', [emote('SOLO_GLOBAL'), emote('SOLO_RESPALDO', { sabor: 'global' })]);
+
+  emotes.resolver(deKick('SOLO_RESPALDO SOLO_GLOBAL'), 'istincho');
+  await emotes.reposo(); // confirma kick sin-cuenta y baja los globales
+  emotes.resolver(deKick('SOLO_RESPALDO SOLO_GLOBAL'), 'istincho');
+  await emotes.reposo(); // baja el respaldo (Twitch)
+  const m = emotes.resolver(deKick('SOLO_RESPALDO SOLO_GLOBAL'), 'istincho');
+
+  assert.equal(m.emotes.length, 2);
+  assert.equal(recortar(m.texto, m.emotes[0]), 'SOLO_RESPALDO');
+  assert.equal(m.emotes[0].url, url2x('SOLO_RESPALDO', { sabor: 'respaldo' }),
+    'el respaldo (Twitch) le gana al global con el mismo nombre');
+  assert.equal(recortar(m.texto, m.emotes[1]), 'SOLO_GLOBAL');
+  assert.equal(m.emotes[1].url, url2x('SOLO_GLOBAL'));
+});

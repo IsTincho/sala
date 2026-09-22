@@ -345,6 +345,40 @@ test('el dueño del servicio entra por la misma puerta y su plan no sale de la b
   assert.equal(await creadores.puedeReproducir(DUENO), true, 'y sin embargo puede reproducir');
 });
 
+test('a la fila que nació sin términos, el login se los anota', async () => {
+  /*
+   * UNA FILA PUEDE EXISTIR SIN QUE NADIE HAYA ACEPTADO NADA: la del
+   * dueño del servicio se la crea el interruptor de la Sala
+   * (`ponerSalaAbierta`), porque su sala existe por KICK_SLUG y no por
+   * la base. Y como `crear` no le toca los términos a quien ya existe
+   * —para no "reaceptar" lo que nadie leyó esta vez—, esa fila quedaba
+   * sin términos anotados para siempre.
+   *
+   * Va por el viaje entero del login y no llamando a `creadores.crear`
+   * a mano, porque el bug no estaba en el módulo: el callback le pasaba
+   * `terminos: ''` justo cuando la fila ya existía, así que la
+   * comprobación del módulo nunca se ejecutaba en producción.
+   */
+  const antes = await creadores.obtener(DUENO);
+  assert.equal(antes.terminos.version, '', 'su fila tiene que estar sin términos');
+
+  const r = await entrarConKick({
+    id: '4242', nombre: 'IsTincho', slug: DUENO, terminos: creadores.TERMINOS_VERSION,
+  });
+  assert.equal(r.estado, 302);
+
+  const c = await creadores.obtener(DUENO);
+  assert.equal(c.terminos.version, creadores.TERMINOS_VERSION, 'la primera vez sí se anota');
+  assert.ok(c.terminos.cuando > 0);
+
+  /* Y al que ya los tenía anotados, volver a entrar no se los vuelve a
+     anotar: eso sería "reaceptar" algo que nadie leyó esta vez. */
+  const deAna = await creadores.obtener(ANA);
+  assert.ok(deAna.terminos.cuando > 0);
+  await entrarConKick({ id: '111', nombre: 'Ana', slug: ANA, terminos: creadores.TERMINOS_VERSION });
+  assert.equal((await creadores.obtener(ANA)).terminos.cuando, deAna.terminos.cuando);
+});
+
 test('una cuenta de Kick sin canal no puede tener sala', async () => {
   const r = await entrarConKick({ id: '999', nombre: 'Sin Canal', slug: '', terminos: creadores.TERMINOS_VERSION });
   assert.equal(r.estado, 200);

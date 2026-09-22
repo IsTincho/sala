@@ -390,18 +390,25 @@ export async function hayLugar() {
  *
  * OJO AL LLAMARLA: la funcion corre ADENTRO de la cola de este creador,
  * asi que no puede esperar nada que entre a la misma cola (otro
- * `escribir` del mismo slug) o se espera a si misma para siempre.
+ * `escribir` del mismo slug) o se espera a si misma para siempre. Se la
+ * espera igual (`await cambios(...)`) por si alguna vez es `async`: sin
+ * eso, el parche seria una promesa, el spread no aportaria ninguna
+ * clave y la escritura quedaria en un no-op silencioso.
  */
 async function escribir(slug, cambios) {
   const s = normalizar(slug);
   return almacen.enCola('creadores', s, async () => {
+    /* `almacen.obtener` y NO el `obtener` de este modulo, que pasa por
+       la cache de 5 segundos: la cola sirve para leer lo ultimo que se
+       guardo, y una lectura cacheada seria exactamente la foto vieja
+       que esto viene a evitar. */
     const anterior = await almacen.obtener('creadores', s);
     let viejo = null;
     if (anterior) {
       const { id: _sinId, ...resto } = anterior;
       viejo = resto;
     }
-    const parche = typeof cambios === 'function' ? cambios(viejo) : cambios;
+    const parche = typeof cambios === 'function' ? await cambios(viejo) : cambios;
     const doc = { ...(viejo ?? {}), ...parche, slug: s };
     await almacen.poner('creadores', s, doc);
     invalidar(s);
@@ -486,11 +493,16 @@ export async function guardarCobro(slug, { proveedor, clienteId, suscripcionId }
   /* Lo que no viene queda como estaba, y ese "como estaba" se lee
      adentro de la cola: si no, el webhook que llega mientras se escribe
      otra cosa guarda el cobro viejo encima del nuevo. */
+  /* `||` y no `??`: el proveedor manda '' cuando el evento no trae ese
+     campo (`cobro-paddle.js` hace `String(datos?.customer_id ?? '')`),
+     y con `??` una cadena vacia NO es nullish, asi que un webhook que
+     no nombra al cliente le borraba el cliente guardado. Lo que no
+     viene queda como estaba, que es lo que esta funcion promete. */
   return escribir(s, doc => ({
     cobro: {
-      proveedor: String(proveedor ?? doc?.cobro?.proveedor ?? ''),
-      clienteId: String(clienteId ?? doc?.cobro?.clienteId ?? ''),
-      suscripcionId: String(suscripcionId ?? doc?.cobro?.suscripcionId ?? ''),
+      proveedor: String(proveedor || doc?.cobro?.proveedor || ''),
+      clienteId: String(clienteId || doc?.cobro?.clienteId || ''),
+      suscripcionId: String(suscripcionId || doc?.cobro?.suscripcionId || ''),
     },
   }));
 }

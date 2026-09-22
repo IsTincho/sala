@@ -920,6 +920,32 @@ test('apagar la Sala corta la película que estaba puesta', async () => {
   assert.equal(despues.reloj, null, 'reabrir no puede resucitar la película sola');
 });
 
+test('apagar una Sala sin nada puesto no le difunde un "detenido" al chat', async () => {
+  /* El bus es el mismo del chat abierto, así que un "detenido" de más
+     le llega a todo el que esté leyendo el chat de esa sala, y encima
+     le pide al almacén un borrado que no borra nada. Por eso el
+     interruptor pregunta antes de detener. */
+  await creadores.ponerSalaAbierta(SLUG, true);
+  await pedir(`/api/sala/${SLUG}/reloj`, {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { accion: 'detener' },
+  });
+
+  const leyendo = escuchar(SLUG);
+  await leyendo.esperar(e => e.tipo === 'estado');
+  try {
+    const apagar = await pedir('/api/panel/sala', {
+      metodo: 'POST', cookie: sesionDueno, cuerpo: { abierta: false },
+    });
+    assert.equal(apagar.estado, 200);
+
+    await new Promise(ok => setTimeout(ok, 150));
+    assert.equal(leyendo.eventos.filter(e => e.tipo === 'reloj').length, 0,
+      `llegó un reloj de más: ${JSON.stringify(leyendo.eventos.map(e => e.tipo))}`);
+  } finally {
+    leyendo.cerrar();
+  }
+});
+
 test('apagar la Sala de otro desde /admin también le corta la película', async () => {
   /* El interruptor tiene dos rutas y las dos tienen que apagar igual.
      Si sólo apagara la del panel, la única forma de cortar la de otro

@@ -542,7 +542,13 @@ async function kickVolver(url, req, res) {
       slug,
       usuarioId: yo.id,
       nombre: yo.nombre,
-      terminos: yaEsta ? '' : t.terminos,
+      /* La version aceptada viaja SIEMPRE, tambien para el que ya tiene
+         fila. `crear` no pisa una version ya anotada —volver a entrar no
+         "reacepta" nada—, pero sí anota la primera: una fila puede
+         existir sin que nadie haya aceptado nada, porque el interruptor
+         de la Sala se la crea al dueño del servicio, y antes de esto
+         quedaba sin terminos para siempre. */
+      terminos: t.terminos,
     });
   } catch (e) {
     return pagina(res, 'No se pudo crear la sala', e.message);
@@ -1175,10 +1181,14 @@ async function apiSalaSalir(url, req, res, p) {
   if (suyo) {
     await sesion.cerrar(req, 'espectador');
     /* Salir borra los tokens de LAS DOS REDES, no solo la cookie. Un
-       "logout" que deja el refresh token del otro lado no es un
-       logout, y un token de Twitch al que ya no apunta ninguna sesion
-       es una credencial guardada que su dueño no puede ni usar ni
-       borrar. */
+       "logout" que deja el refresh token del otro lado no es un logout.
+       Y son las dos aunque la Sala sea de una sola red porque LA
+       SESION ES UNA SOLA para todo el dominio: la que se acaba de
+       cerrar es la misma que servia en /chat/<slug>, asi que despues de
+       esto no queda ninguna sesion apuntando a esos tokens. Es la
+       diferencia con un permiso vencido, donde se desconecta solo la
+       red que fallo (ver `servidor/envio.js`): aca lo pidio la persona,
+       y pidio irse. */
     await espectadores.olvidar(suyo.usuario);
   }
   return json(res, 200, { ok: true }, { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
@@ -1638,19 +1648,31 @@ async function apiPanelSala(url, req, res) {
  * interruptor (el panel del dueño y /admin) pasan por esta funcion.
  */
 async function ponerLaSala(slug, abierta) {
-  const quedo = await creadores.ponerSalaAbierta(slug, abierta);
-  if (quedo === null) return null;
-
-  if (!quedo) {
-    /* Se pregunta antes de detener: `reloj.aplicar` crea la entrada del
-       canal en el Map para difundir, y apagar una Sala sin nada puesto
-       no tiene por que hacer crecer nada. */
+  /*
+   * SE DETIENE PRIMERO Y SE ESCRIBE DESPUES, y el orden es el unico
+   * detalle fino de esta funcion: son dos escrituras sin nada que las
+   * haga atomicas, asi que hay que elegir de que lado caer si el
+   * proceso se muere en el medio (deployar en medio del stream es la
+   * forma normal de trabajar aca). Cortando primero, el crash deja "la
+   * peli cortada y la Sala todavia abierta": se ve, se arregla tocando
+   * el interruptor de nuevo. Al reves dejaria "Sala cerrada con un
+   * reloj guardado", que es exactamente el estado contra el que hubo
+   * que agregarle una guarda a `restaurarRelojes`.
+   */
+  if (!abierta) {
+    /* Se pregunta antes de detener: detener difunde, y difundir un
+       "detenido" por una Sala donde no habia nada puesto le manda un
+       evento de mas a todo el que este leyendo el chat —el bus es el
+       mismo— y le pide al almacen un borrado que no borra nada. */
     const puesto = await reloj.leer(slug);
     if (puesto.estado !== 'detenido') {
       await reloj.aplicar(slug, 'detener');
-      console.log(`[sala] ${slug}: se cerro la Sala y se detuvo la pelicula`);
+      console.log(`[sala] ${slug}: se corto la pelicula al cerrar la Sala`);
     }
   }
+
+  const quedo = await creadores.ponerSalaAbierta(slug, abierta);
+  if (quedo === null) return null;
   console.log(`[sala] ${slug}: la Sala queda ${quedo ? 'abierta' : 'cerrada'}`);
   return quedo;
 }
@@ -2260,14 +2282,22 @@ async function eventos(url, req, res, p) {
      quien suscribir. Ver el comentario del principio. */
   if (cerrado || res.writableEnded) return res;
 
+  /* `slug` y no `p.slug`, que es lo que llegaba hasta el 2026-09-22.
+     `canalPermitido` recorta antes de comparar, asi que
+     `/eventos/%20istincho` pasaba la guarda y despues se suscribia a un
+     canal llamado " istincho": una entrada nueva en el Map por cada
+     conexion, con la presencia contada en una clave que no es la sala,
+     y —lo que se ve— un chat mudo para siempre, porque lo que difunde
+     el webhook cae en "istincho" y ahi no lo escucha nadie. La misma
+     clase de bicho que el 500 de /api/sala/%20ana/chat. */
   const pide = redesPedidas(url);
-  canales.suscribir(p.slug, req, res, {
+  canales.suscribir(slug, req, res, {
     redes: esSuDueno ? pide : () => recortar(redesPublicas(slug), pide),
     conReloj: veElReloj,
   });
 
-  anotarPresencia(p.slug);
-  req.on('close', () => anotarPresencia(p.slug));
+  anotarPresencia(slug);
+  req.on('close', () => anotarPresencia(slug));
   return res;
 }
 

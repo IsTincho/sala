@@ -595,16 +595,21 @@ test('tres bloqueos al mismo tiempo no se pisan', async () => {
 
 test('a quien le crearon la fila sin términos, el login se los anota', async () => {
   /*
-   * LE PASA AL DUEÑO DEL SERVICIO Y A NADIE MÁS, pero le pasa siempre.
-   * Su fila puede nacer de un interruptor (`ponerSalaAbierta` /
-   * `ponerChatAbierto` se la crean, porque su sala existe por
-   * KICK_SLUG), y esa fila queda con `terminos.version` vacío. Como
-   * `crear` no le toca los términos a quien ya existe —para no
-   * "reaceptar" lo que nadie leyó esta vez—, su login posterior lo
-   * dejaba en blanco para siempre.
+   * LE PASA AL DUEÑO DEL SERVICIO Y A NADIE MÁS: su fila puede nacer de
+   * un interruptor (`ponerSalaAbierta` / `ponerChatAbierto` se la crean,
+   * porque su sala existe por KICK_SLUG), y esa fila queda con
+   * `terminos.version` vacío. Como `crear` no le toca los términos a
+   * quien ya existe —para no "reaceptar" lo que nadie leyó esta vez—,
+   * su login posterior lo dejaba en blanco para siempre.
    *
    * Anotarlos la PRIMERA vez no es reaceptar nada: antes no había
    * ninguno. Lo que sigue sin pasar es pisar una versión ya anotada.
+   *
+   * Acá se prueba la regla del módulo. Que el login de verdad la
+   * ejercite —el callback de OAuth le pasaba `terminos: ''` justo
+   * cuando la fila ya existía, así que esta regla no se ejecutaba nunca
+   * en producción— se prueba en `multicanal.test.js`, con el viaje
+   * entero del alta.
    */
   await creadores.ponerSalaAbierta(DUENO, true);
   assert.equal((await creadores.obtener(DUENO)).terminos.version, '', 'la fila nace sin términos');
@@ -620,6 +625,22 @@ test('a quien le crearon la fila sin términos, el login se los anota', async ()
   creadores.olvidarCache();
   assert.equal((await creadores.obtener(DUENO)).terminos.version, '1',
     'volver a entrar no puede "reaceptar" términos que nadie leyó esta vez');
+});
+
+test('un webhook de cobro que no nombra al cliente no le borra el cliente', async () => {
+  /* `cobro-paddle.js` normaliza lo que no viene a `''`, y `''` no es
+     nullish: con `??`, un evento que trae la suscripción pero no el
+     cliente guardaba el cliente vacío encima del que ya estaba. Lo que
+     no viene queda como estaba, que es lo que esta función promete. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+  await creadores.guardarCobro('ana', { proveedor: 'paddle', clienteId: 'ctm_1', suscripcionId: 'sub_1' });
+
+  await creadores.guardarCobro('ana', { proveedor: 'paddle', clienteId: '', suscripcionId: 'sub_2' });
+
+  creadores.olvidarCache();
+  const c = await creadores.obtener('ana');
+  assert.equal(c.cobro.clienteId, 'ctm_1', 'el cliente que ya estaba no se puede borrar solo');
+  assert.equal(c.cobro.suscripcionId, 'sub_2', 'y lo que sí vino se guarda');
 });
 
 test('a la Sala se la prende con true y con nada más', async () => {

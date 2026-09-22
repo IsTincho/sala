@@ -1093,6 +1093,29 @@ test('un slug con espacios no revienta: se normaliza igual que en /api/chat/', a
   assert.equal((await pedirJson(`/api/sala/%20${SLUG}/yo`, { cookie })).estado, 200);
 });
 
+test('un slug con espacios en /eventos no abre un canal fantasma', async () => {
+  /*
+   * LA MISMA CLASE DE BICHO, POR LA PUERTA DEL BUS. `canalPermitido`
+   * recorta antes de comparar, así que `/eventos/%20istincho` pasaba la
+   * guarda y después se suscribía a un canal llamado " istincho": una
+   * entrada nueva en el Map por cada conexión, la presencia contada en
+   * una clave que no es la sala, y —lo que se ve— un chat mudo para
+   * siempre, porque lo que difunde el webhook cae en "istincho" y ahí
+   * no lo escucha nadie.
+   */
+  const raro = abrirSse(`%20${SLUG}`);
+  await raro.primero;
+  assert.equal(raro.eventos[0].datos.slug, SLUG, 'el sobre tiene que decir la sala de verdad');
+  assert.equal(canales.hayCanal(` ${SLUG}`), false, 'no se puede haber creado un canal con el nombre raro');
+
+  canales.recordar(SLUG, { tipo: 'chat', red: 'kick', id: 'k-raro', usuario: 'alguien', texto: 'hola al del slug raro' });
+  const llegado = await raro.esperar('chat');
+  assert.equal(llegado.datos.texto, 'hola al del slug raro',
+    'quien entra con un espacio de más tiene que escuchar el chat de esa sala igual');
+
+  raro.cerrar();
+});
+
 /* ====================== el permiso vencido y el baneo no son lo mismo */
 
 test('un 401 de Kick no le borra el Twitch a nadie', async () => {

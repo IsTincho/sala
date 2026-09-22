@@ -567,6 +567,63 @@ test('si el permiso no sirve en NINGUNA red, es 401 y no 502', async () => {
   assert.equal(await espectadores.leer(id), null);
 });
 
+test('con una red caduca y la otra rota sigue siendo 502, no 401', async () => {
+  /* El otro lado del test de arriba, y el que fija el `every`. Un 401
+     global diría "reconectá tu cuenta" sobre una red que no tiene nada
+     que reconectar: la de Twitch falló porque su servidor se cayó. El
+     detalle por red y `reconectar` ya dicen exactamente qué pasó con
+     cada una. */
+  const id = 'esp_unacaducayunarota';
+  const cookie = await nuevoEspectador(id, ['kick', 'twitch']);
+  respuestaKick = { estado: 401, cuerpo: { error: 'unauthorized' }, cabeceras: {} };
+  respuestaTwitch = { estado: 500, cuerpo: { error: 'boom' }, cabeceras: {} };
+
+  const r = await enviar(cookie, { red: 'ambas', texto: 'una vencida y una rota' });
+  assert.equal(r.estado, 502, `contestó ${r.estado}`);
+  assert.deepEqual(r.datos.reconectar, ['kick'], 'y se dice cuál hay que reconectar');
+  assert.deepEqual(espectadores.redesDe(await espectadores.leer(id)), ['twitch'],
+    'la que falló por el 401 se desconecta igual');
+
+  await espectadores.olvidar(id);
+});
+
+test('quien conectó sólo Twitch no escribe en la Sala, y no pierde nada', async () => {
+  /* La Sala es de Kick. Alguien que conectó sólo Twitch (se puede,
+     desde /chat/<slug>) tiene cuenta de espectador y acá no le sirve:
+     se le dice que entre con Kick, y su sesión y su Twitch quedan
+     intactos, que es lo que sigue usando en el chat abierto. */
+  await creadores.ponerSalaAbierta(ANA, true);
+  try {
+    espectadores.reiniciar();
+    pedidosKick = [];
+    const r = await pedir(`/api/sala/${ANA}/chat`, {
+      metodo: 'POST', cookie: conTwitch, cuerpo: { texto: 'yo sólo tengo Twitch' },
+    });
+    assert.equal(r.estado, 401, `contestó ${r.estado}`);
+    assert.match(r.datos.error, /Kick/);
+    /* Y se le dice lo que pasa, no "tu permiso venció": nunca tuvo un
+       permiso de Kick que se pudiera vencer, y mandarlo a reconectar
+       algo que no conectó es mandarlo a buscar un problema que no
+       tiene. */
+    assert.doesNotMatch(r.datos.error, /venci/i);
+    assert.equal(pedidosKick.length, 0, 'no se le pide nada a Kick sin token de Kick');
+    assert.equal(r.cabeceras.get('set-cookie') ?? '', '', 'y la sesión no se toca');
+
+    /* Tampoco se le gasta el freno de dos segundos por un mensaje que
+       no tenía ninguna chance: el de acá abajo vuelve a contestar 401 y
+       no un 429. */
+    const otra = await pedir(`/api/sala/${ANA}/chat`, {
+      metodo: 'POST', cookie: conTwitch, cuerpo: { texto: 'insisto' },
+    });
+    assert.equal(otra.estado, 401, `contestó ${otra.estado}`);
+
+    const v = await espectadores.leer(ID_TWITCH);
+    assert.deepEqual(espectadores.redesDe(v), ['twitch'], 'su Twitch sigue donde estaba');
+  } finally {
+    await creadores.ponerSalaAbierta(ANA, false);
+  }
+});
+
 test('un 403 de la plataforma no le desconecta la cuenta a nadie', async () => {
   /*
    * 401 y 403 se trataban igual, y son cosas distintas: 401 es "este

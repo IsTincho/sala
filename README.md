@@ -1,8 +1,9 @@
 # Sala
 
-Servicio web para un streamer de Kick. Dos cosas:
+Servicio web para un streamer de Kick. Tres cosas:
 
 - **Chat Global**: el chat de Kick y el de Twitch juntos en una ventana aparte, con una caja para escribir a los dos.
+- **Chat abierto**: el mismo chat, pero para la comunidad del creador (`/chat/<slug>`). Leer no pide login; para escribir, cada quien conecta **su** Kick y/o **su** Twitch y el mensaje sale en el chat de verdad con su nombre, en una red o en las dos.
 - **Sala**: pasar una película o serie en una página propia, con la cámara de Kick al lado y el chat real de Kick a la derecha. Los espectadores se loguean con Kick y lo que escriben cae en el chat de verdad del stream.
 
 Plan completo en [`PLAN.md`](PLAN.md). Qué está hecho, en [`BITACORA.md`](BITACORA.md). Cómo trabajan los agentes, en [`AGENTES.md`](AGENTES.md).

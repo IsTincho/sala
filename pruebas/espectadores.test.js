@@ -27,6 +27,7 @@ process.env.SALA_DATOS = DATOS;
 process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 
 const almacen = await import('../servidor/almacen.js');
+const cifrado = await import('../servidor/cifrado.js');
 const espectadores = await import('../servidor/espectadores.js');
 
 test.after(async () => {
@@ -35,36 +36,75 @@ test.after(async () => {
 
 afterEach(() => espectadores.reiniciar());
 
-const UNO = {
+const UNO = 'esp_uno-de-prueba';
+
+const KICK = {
   usuarioId: '4242',
   nombre: 'un-espectador',
+  login: 'un-espectador',
   accessToken: 'acceso-secretisimo-de-prueba',
   refreshToken: 'refresco-secretisimo-de-prueba',
   venceEn: Date.now() + 3600_000,
   scopes: ['chat:write'],
 };
 
-/* --------------------------------------------------------- guardar/leer */
+const TWITCH = {
+  usuarioId: '9090',
+  nombre: 'UnEspectador',
+  login: 'unespectador',
+  accessToken: 'acceso-de-twitch-secretisimo',
+  refreshToken: 'refresco-de-twitch-secretisimo',
+  venceEn: Date.now() + 3600_000,
+  scopes: ['user:write:chat'],
+};
+
+/* -------------------------------------------------- conectar/leer */
 
 test('lo guardado se vuelve a leer igual', async () => {
-  await espectadores.guardar(UNO);
-  const v = await espectadores.leer(UNO.usuarioId);
+  await espectadores.conectar(UNO, 'kick', KICK);
+  const v = await espectadores.leer(UNO);
 
-  assert.equal(v.usuarioId, '4242');
-  assert.equal(v.nombre, 'un-espectador');
-  assert.equal(v.accessToken, UNO.accessToken);
-  assert.equal(v.refreshToken, UNO.refreshToken);
+  assert.equal(v.id, UNO);
+  assert.equal(v.kick.usuarioId, '4242');
+  assert.equal(v.kick.nombre, 'un-espectador');
+  assert.equal(v.kick.accessToken, KICK.accessToken);
+  assert.equal(v.kick.refreshToken, KICK.refreshToken);
+  assert.equal(v.twitch, undefined, 'la red que no conecto no esta');
+
+  await espectadores.olvidar(UNO);
+});
+
+test('conectar la segunda red no pisa la primera', async () => {
+  /* Es lo que hace que "las dos" exista: quien conecto Kick y despues
+     Twitch es UNA persona con dos redes, no dos cuentas. */
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+
+  const v = await espectadores.leer(UNO);
+  assert.deepEqual(espectadores.redesDe(v), ['kick', 'twitch']);
+  assert.equal(v.kick.accessToken, KICK.accessToken, 'el token de Kick sigue ahi');
+  assert.equal(v.twitch.accessToken, TWITCH.accessToken);
+  assert.equal(v.twitch.usuarioId, '9090', 'el id de Twitch es el que sale como sender_id');
+
+  await espectadores.olvidar(UNO);
 });
 
 test('en el almacen no queda ni un pedazo del token en claro', async () => {
-  await espectadores.guardar(UNO);
-  const crudo = await almacen.obtener('tokens', `espectador:${UNO.usuarioId}`);
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+  const crudo = await almacen.obtener('espectadores', UNO);
   const comoTexto = JSON.stringify(crudo);
 
-  assert.ok(!comoTexto.includes(UNO.accessToken), 'el access token no puede estar en claro');
-  assert.ok(!comoTexto.includes(UNO.refreshToken), 'el refresh token menos todavia');
-  assert.match(crudo.acceso, /^v1\./, 'tiene que ser un blob del modulo de cifrado');
-  assert.match(crudo.refresco, /^v1\./);
+  for (const datos of [KICK, TWITCH]) {
+    assert.ok(!comoTexto.includes(datos.accessToken), 'el access token no puede estar en claro');
+    assert.ok(!comoTexto.includes(datos.refreshToken), 'el refresh token menos todavia');
+  }
+  assert.match(crudo.kick.acceso, /^v1\./, 'tiene que ser un blob del modulo de cifrado');
+  assert.match(crudo.kick.refresco, /^v1\./);
+  assert.match(crudo.twitch.acceso, /^v1\./);
+  assert.match(crudo.twitch.refresco, /^v1\./);
+
+  await espectadores.olvidar(UNO);
 });
 
 test('sin CLAVE_CIFRADO no se guarda nada', async () => {
@@ -72,12 +112,12 @@ test('sin CLAVE_CIFRADO no se guarda nada', async () => {
      proceso (guarda la clave en un modulo-nivel `let clave` una sola
      vez), asi que no se puede probar el caso "de verdad no hay
      CLAVE_CIFRADO" sin un proceso aparte. Lo que si se puede probar
-     sin recargar nada: el mensaje de error de guardar() nombra
+     sin recargar nada: el mensaje de error de conectar() nombra
      CLAVE_CIFRADO cuando cifrado.hayClave() da false, que es la unica
      rama que hoy puede llegar a ejecutarse en este proceso si algun
      dia la clave se pierde entre tests. Se deja como constancia de la
      regla, no como ejercicio del camino feliz. */
-  assert.equal(typeof espectadores.guardar, 'function');
+  assert.equal(typeof espectadores.conectar, 'function');
 });
 
 test('leer con un usuario que no existe da null', async () => {
@@ -90,15 +130,121 @@ test('leer con un id invalido da null sin tirar', async () => {
   }
 });
 
-test('olvidar borra el documento y limpia el limite de esa persona', async () => {
-  await espectadores.guardar(UNO);
-  espectadores.anotarEnvio(UNO.usuarioId);
-  assert.ok(espectadores.esperaQueLeFalta(UNO.usuarioId) > 0);
+test('conectar una red desconocida tira', async () => {
+  await assert.rejects(() => espectadores.conectar(UNO, 'mastodon', KICK), /red desconocida/);
+});
 
-  const habia = await espectadores.olvidar(UNO.usuarioId);
+test('puedeEscribirEn mira el scope de CADA red', async () => {
+  await espectadores.conectar(UNO, 'kick', { ...KICK, scopes: ['user:read'] });
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+
+  const v = await espectadores.leer(UNO);
+  assert.equal(espectadores.puedeEscribirEn(v, 'kick'), false, 'sin chat:write no escribe en Kick');
+  assert.equal(espectadores.puedeEscribirEn(v, 'twitch'), true);
+
+  await espectadores.olvidar(UNO);
+});
+
+test('nuevoId no sale de ninguna cuenta', () => {
+  const a = espectadores.nuevoId();
+  const b = espectadores.nuevoId();
+  assert.notEqual(a, b);
+  assert.match(a, /^esp_[0-9A-Za-z_-]+$/);
+});
+
+/* --------------------------------------------------- desconectar/olvidar */
+
+test('desconectar saca una red y deja la otra en pie', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+
+  assert.equal(await espectadores.desconectar(UNO, 'kick'), true);
+
+  const v = await espectadores.leer(UNO);
+  assert.deepEqual(espectadores.redesDe(v), ['twitch'], 'Twitch no tiene la culpa de lo de Kick');
+  assert.equal(v.twitch.accessToken, TWITCH.accessToken);
+
+  await espectadores.olvidar(UNO);
+});
+
+test('desconectar la ultima red borra al espectador entero', async () => {
+  /* Un documento sin redes no sirve para nada y guardar la cascara
+     tampoco: es un id de una persona y nada mas. */
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+  await espectadores.desconectar(UNO, 'twitch');
+
+  assert.equal(await espectadores.leer(UNO), null);
+  assert.equal(await almacen.obtener('espectadores', UNO), null, 'no queda ni la cascara');
+});
+
+test('olvidar borra las DOS redes y limpia el limite de esa persona', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+  espectadores.anotarEnvio(UNO);
+  assert.ok(espectadores.esperaQueLeFalta(UNO) > 0);
+
+  const habia = await espectadores.olvidar(UNO);
   assert.equal(habia, true);
-  assert.equal(await espectadores.leer(UNO.usuarioId), null);
-  assert.equal(espectadores.esperaQueLeFalta(UNO.usuarioId), 0, 'el limite de esta persona se limpio');
+  assert.equal(await espectadores.leer(UNO), null);
+  const crudo = await almacen.obtener('espectadores', UNO);
+  assert.equal(crudo, null, 'salir borra los tokens de las dos redes, no solo la cookie');
+  assert.equal(espectadores.esperaQueLeFalta(UNO), 0, 'el limite de esta persona se limpio');
+});
+
+/* ------------------------------------------ el espectador del modelo viejo */
+
+test('un espectador de antes de Twitch se migra al leerlo, con el MISMO id', async () => {
+  /* Asi era hasta la Fase 5.2: un documento plano en `tokens`, bajo
+     `espectador:<user_id de Kick>`. Ese id vive dentro de cookies que
+     estan en navegadores ahora mismo, asi que la migracion tiene que
+     conservarlo o esas sesiones dejan de servir de un deploy al otro. */
+  await almacen.poner('tokens', 'espectador:1001', {
+    tipo: 'espectador',
+    usuarioId: '1001',
+    nombre: 'de-antes',
+    acceso: cifrado.cifrar('acceso-viejo'),
+    refresco: cifrado.cifrar('refresco-viejo'),
+    venceEn: Date.now() + 3600_000,
+    scopes: 'user:read chat:write',
+    entro: 1_700_000_000_000,
+  });
+
+  const v = await espectadores.leer('1001');
+  assert.equal(v.id, '1001', 'el id no cambia: la cookie que anda tiene que seguir andando');
+  assert.equal(v.kick.usuarioId, '1001');
+  assert.equal(v.kick.nombre, 'de-antes');
+  assert.equal(v.kick.accessToken, 'acceso-viejo', 'los tokens se leen igual que antes');
+  assert.equal(v.kick.refreshToken, 'refresco-viejo');
+  assert.equal(espectadores.puedeEscribirEn(v, 'kick'), true, 'y sus scopes viajaron');
+  assert.equal(v.twitch, undefined, 'el viejo no tenia Twitch');
+
+  assert.ok(await almacen.obtener('espectadores', '1001'), 'quedo guardado en el modelo nuevo');
+  assert.equal(await almacen.obtener('tokens', 'espectador:1001'), null,
+    'y el viejo se borra: dos copias del mismo refresh token es una de mas');
+
+  /* Y desde ahi puede conectar Twitch como cualquiera. */
+  await espectadores.conectar('1001', 'twitch', TWITCH);
+  assert.deepEqual(espectadores.redesDe(await espectadores.leer('1001')), ['kick', 'twitch']);
+
+  await espectadores.olvidar('1001');
+});
+
+test('un vinculo de creador que se parece a uno viejo NO se migra', async () => {
+  /* En `tokens` tambien viven los vinculos de los creadores, con id
+     `<slug>:<red>`. Un creador con el slug "espectador" tendria
+     documentos llamados `espectador:kick`. Sin mirar el `tipo`, leer
+     al espectador "kick" se llevaria el token del creador. */
+  await almacen.poner('tokens', 'espectador:kick', {
+    red: 'kick',
+    sala: 'espectador',
+    usuarioId: '777',
+    acceso: cifrado.cifrar('el-token-del-creador'),
+    refresco: '',
+  });
+
+  assert.equal(await espectadores.leer('kick'), null);
+  assert.ok(await almacen.obtener('tokens', 'espectador:kick'), 'y no se lo comio la migracion');
+  await almacen.quitar('tokens', 'espectador:kick');
 });
 
 /* ------------------------------------------------------- limite personal */

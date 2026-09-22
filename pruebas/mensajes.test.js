@@ -196,6 +196,48 @@ test('Twitch: las menciones y los cheermotes son texto comun', () => {
   assert.deepEqual(m.emotes, [], 'solo los fragmentos de tipo emote son emotes');
 });
 
+test('Twitch: un fragmento de emote sin texto no deja un rango vacio', () => {
+  /* Un rango de largo cero no tapa ningun texto y no se ve, pero la
+     pagina igual le dibuja un <img>, y lo que venga encima se dibuja
+     DOS veces: `agregarTextoConEmotes()` avanza el cursor a `fin`, que
+     es el mismo `inicio`. Los otros dos traductores ya no pueden
+     emitir uno (Kick le pone un nombre de respaldo al emote sin
+     nombre, `deIrc` descarta `fin <= inicio`); este era el unico. */
+  const m = mensajes.deTwitch(eventoTwitch({
+    message: {
+      text: 'hola',
+      fragments: [
+        { type: 'emote', text: '', emote: { id: '25' } },
+        { type: 'text', text: 'hola' },
+      ],
+    },
+  }));
+  assert.deepEqual(m.emotes, []);
+  assert.equal(m.texto, 'hola');
+});
+
+test('Twitch: un emote que el recorte deja afuera del texto no sale', () => {
+  /* Son dos cortes que no miden lo mismo: el tope de fragmentos corta
+     DESPUES de agregar el fragmento, y `limpiar()` recorta por unidades
+     UTF-16 mientras los indices de los emotes cuentan puntos de codigo.
+     En el limite, el ultimo emote queda apuntando mas alla del final
+     del texto y la pagina se come la cola del mensaje. `deIrc` ya
+     descartaba los indices de afuera; esto es lo mismo del otro lado. */
+  const m = mensajes.deTwitch(eventoTwitch({
+    message: {
+      fragments: [
+        { type: 'text', text: '💀'.repeat(1000) },   // 2000 unidades UTF-16, 1000 puntos
+        { type: 'emote', text: 'Kappa', emote: { id: '25' } },
+      ],
+    },
+  }));
+  const largoEnPuntos = [...m.texto].length;
+  for (const e of m.emotes) {
+    assert.ok(e.fin <= largoEnPuntos,
+      `el emote llega hasta ${e.fin} y el texto tiene ${largoEnPuntos} puntos de codigo`);
+  }
+});
+
 test('Twitch: las insignias se traducen y el subscriber muestra los meses', () => {
   const m = mensajes.deTwitch(eventoTwitch({
     badges: [

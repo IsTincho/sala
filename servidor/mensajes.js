@@ -315,7 +315,14 @@ export function deTwitch(evento, metadata = {}) {
       texto += trozo;
       puntos += largoEnPuntos(trozo);
       const id = f?.type === 'emote' ? f?.emote?.id : null;
-      if (id) {
+      /* `puntos > inicio` y no solo `id`: un fragmento de emote con el
+         texto vacio daria un rango de largo CERO. Los otros dos
+         traductores ya no pueden emitir uno (Kick le pone un nombre de
+         respaldo al emote sin nombre, y `deIrc` descarta `fin <=
+         inicio`); este era el unico que si. Un rango vacio no tapa
+         ningun texto, no se ve, y hace que lo que se dibuje encima se
+         dibuje dos veces. */
+      if (id && puntos > inicio) {
         emotes.push({
           id: String(id), inicio, fin: puntos, url: URL_EMOTE_TWITCH(id), fuente: 'twitch',
         });
@@ -326,6 +333,21 @@ export function deTwitch(evento, metadata = {}) {
     texto = limpiar(evento.message?.text);
   }
   texto = limpiar(texto);
+
+  /* EL RECORTE PUEDE DEJAR EMOTES FUERA DEL TEXTO, y hay que tirarlos.
+
+     Son dos cortes que no miden lo mismo: el `break` de arriba corta
+     DESPUES de haber agregado el fragmento, y `limpiar()` recorta por
+     unidades UTF-16 mientras los indices de los emotes cuentan puntos
+     de codigo. Con un mensaje en el limite, el ultimo emote queda
+     apuntando mas alla del final del texto, y `agregarTextoConEmotes()`
+     de la pagina, que avanza un cursor y corta `[...texto]` con esos
+     indices, se come el texto que viniera despues.
+
+     `deIrc` ya descarta los indices que caen fuera del texto por este
+     mismo motivo; esto es lo mismo, del otro lado. */
+  const largoFinal = largoEnPuntos(texto);
+  const dentro = emotes.filter(e => e.fin <= largoFinal);
 
   const mensaje = {
     tipo: 'chat',
@@ -339,7 +361,7 @@ export function deTwitch(evento, metadata = {}) {
     color: colorSeguro(evento.color),
     insignias: insigniasDeTwitch(evento.badges),
     texto,
-    emotes,
+    emotes: dentro,
     hora: horaIso(metadata?.message_timestamp),
   };
 

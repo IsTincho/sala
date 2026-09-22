@@ -61,6 +61,9 @@ Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pu
 | `GB_AMIGO`, `GB_PAGO` | Cuánto espacio da cada plan | 2 GB y 5 GB |
 | `TOPE_CANALES` | Cuántas salas se admiten (tope de Kick) | 900 |
 | `TOPE_TWITCH` | Cuántas conexiones EventSub sostiene el proceso | 50 |
+| `EMOTES_7TV` | Poner `0` apaga los emotes de 7TV sin tocar código | Prendido |
+| `EMOTES_KB` | Cuánto puede pesar **un** emote de 7TV | 128 KB |
+| `EMOTES_POR_MENSAJE` | Cuántos emotes de 7TV puede meter un solo mensaje | 30 |
 
 > **El token de R2 pasó a ser una variable de Railway, y hasta la Fase 2 no lo era.**
 > Hasta acá el único que subía era el dueño, con su script y su token en `herramientas/.env`. Desde que sube cualquier creador, no se le puede dar el token del bucket: con él leería, pisaría y borraría los videos de todos. La forma de dar permiso acotado es una **URL prefirmada**, y firmar es, por definición, tener el secreto. Lo que **no** cambia es que el video no pasa por Railway: el servidor firma una URL de unos cientos de bytes y los gigas van del creador a R2 y de R2 al espectador, directo.
@@ -326,6 +329,64 @@ Se filtra **en el servidor y por conexión** (`canales.js`, `leDaEl`), no en el 
 `usuarioId` es el id de quien escribió **en su red**, y está para una sola cosa: que el creador pueda bloquearlo en esta herramienta desde el menú de su mensaje. Por nombre no serviría, porque los nombres se cambian. Sale por el bus para todos y eso se pensó: es el mismo id que Kick manda en `sender.user_id` y Twitch en `chatter_user_id` a cualquiera que lea ese chat público.
 
 `inicio` y `fin` cuentan **puntos de código Unicode** sobre `texto`, y el emote ocupa `[inicio, fin)`. Se corta con `[...texto]`, nunca con `texto.slice`: un índice de string cuenta unidades UTF-16, y un solo emoji antes de un emote corre de lugar todos los que vengan después.
+
+`fuente` dice de dónde salió cada emote: `kick`, `twitch` o `7tv`. Está en **todos** los emotes y no sólo en los de terceros, porque un array donde algunos elementos tienen una clave y otros no es la forma de que, el día que alguien la lea, se rompa justo con los mensajes de una red. Es aditivo: un cliente viejo lo ignora. Hoy la página no lo mira; está para quien quiera mostrar en pantalla de dónde viene el emote, que es una decisión de diseño todavía sin tomar.
+
+### Los emotes de 7TV
+
+Alguien escribe `CHAD` en el chat de Kick, lo ve como emote en kick.com porque tiene la extensión de 7TV puesta, y en el multichat lo veía como una palabra. Eso es lo que arregla `servidor/emotes.js`: ni Kick ni Twitch saben que 7TV existe, así que el emote llega como texto pelado y hay que resolverlo contra el set del creador.
+
+Entra por el **mismo array `emotes`** del formato único, con `fuente: "7tv"`. La página no cambió una línea: `agregarTextoConEmotes()` pinta un emote de 7TV por el mismo camino que uno de Kick. Ese es el pago del formato único.
+
+**Por creador y por red.** La caché es por `(slug, red)`: el set del Kick de alguien no es el de su Twitch, y el de un creador no es el de otro. Con la clave por red sola —que es lo que alcanza en el repo hermano, que tiene un solo canal— el set de uno se le pintaría a los mensajes del otro: no rompe nada, muestra el emote equivocado en la pantalla de otra comunidad. Cada casillero tiene su propio vencimiento y su propia bajada en vuelo, así que un 7TV que falla para uno no toca la tabla de los demás.
+
+El id con el que se pregunta es el **`user_id` de Kick** (el mismo que usamos como `broadcaster_user_id` para el webhook) o el de Twitch, según la red. Ojo, que es el error fácil: el `channel_id` de Kick da 404 en 7TV.
+
+**Los globales de 7TV van incluidos**, en una tabla sola para todo el proceso. Son los que ve cualquiera con la extensión puesta en cualquier canal, tenga o no el streamer cuenta de 7TV; dejarlos afuera haría que el multichat muestre menos de lo que la gente ya ve. Si un creador le pone a un emote suyo el nombre de uno global, gana el suyo.
+
+**Ganan los nativos.** Si una palabra cae, aunque sea en parte, adentro del rango de un emote de Kick o de Twitch, se deja como está. No es un empate arbitrario: en Kick el texto que se ve no es el que la persona escribió —`partirTextoDeKick()` reemplaza `[emote:4148074:HYPERCLAP]` por la palabra `HYPERCLAP` para que sirva de `alt`—, así que esa palabra quedaría lista para resolverse **dos veces**. Y el nativo es el que la persona efectivamente eligió del selector de su plataforma.
+
+7TV resuelve por **palabra entera y distinguiendo mayúsculas**: `CHAD` y `chad` son dos emotes distintos y pueden ser dos dibujos distintos; `CHAD!` y `xCHAD` no son nada. Así funciona la extensión.
+
+#### El peso
+
+Un emote de 7TV se lo baja el navegador de **cada espectador**, así que el problema acá es el ancho de banda de la gente, no los frames de OBS (que es el problema del repo hermano, y por eso el número no es el mismo). Medido contra un set real de 66 emotes pidiendo `2x.webp`: mediana 29,8 KB, p90 245 KB, máximo 1.100 KB. La mediana es barata y la cola es carísima.
+
+El criterio es: se pide en **2x** (64 px de alto; el CSS muestra el emote en 1,6em, o sea unos 24 px, así que 2x cubre pantallas de hasta 2,6x de densidad); si no entra en el presupuesto se pide en **1x**; si tampoco entra, **el emote no sale** y la palabra se lee como texto, que es exactamente lo que se veía antes.
+
+Con el presupuesto por defecto de **128 KB**, sobre ese set de 66:
+
+| Presupuesto | En 2x | En 1x | Afuera | Si un espectador ve el set entero |
+|---|---|---|---|---|
+| 64 KB | 42 | 15 | 9 | 1,3 MB |
+| **128 KB** | **56** | **7** | **3** | **2,6 MB** |
+| 256 KB | 62 | 3 | 1 | 3,6 MB |
+
+Los tres que quedan afuera con 128 KB son animaciones largas; la peor, `maxwin`, pesa 1,1 MB en 2x y 505 KB hasta en 1x. Se pide **WEBP y no AVIF** aunque AVIF pese la mitad: un Safari o un WebView de Android viejos no lo dibujan, y en un chat eso es un ícono roto por mensaje.
+
+El peso no hay que ir a medirlo: 7TV lo dice en la misma respuesta, para cada tamaño.
+
+#### Cuándo se refresca
+
+Sin esperar nunca. Un mensaje de chat sale al toque: si la tabla todavía no está, sale sin emotes de 7TV y la bajada queda agendada. En la práctica eso es **un** mensaje por creador y por arranque, porque al vencer se sigue sirviendo la tabla vieja mientras se baja la nueva.
+
+Tres vencimientos, y no uno:
+
+| Qué pasó | Vence en | Por qué |
+|---|---|---|
+| Se bajó bien | 10 min | Lo mismo que usa el repo hermano. Acá no se persiste nada: todo muere con el proceso, así que el tope de 24 h de cacheo de los términos de Kick no llega a tocarnos |
+| 7TV contestó 404 | 1 hora | Es el caso de la **mayoría** de los creadores y es un hecho estable. No tiene sentido preguntarlo 144 veces por día por cada uno |
+| Falló de verdad (timeout, 500) | 1 min | Y **no** se pisa la tabla que había: un emote viejo es mejor que ninguno |
+
+El precio del 404 de una hora: quien se acaba de hacer la cuenta de 7TV puede tardar hasta una hora en ver sus emotes en el multichat. Un redeploy lo resuelve en el acto.
+
+Se loguea cuando **cambia** algo, no cada vez que se confirma: un creador sin 7TV deja una línea por proceso, no una por mensaje ni una cada diez minutos.
+
+#### La EventAPI de 7TV: anotada, no hecha
+
+7TV tiene un push (`emote_set.update` por SSE o WebSocket en `events.7tv.io/v3`, 500 suscripciones por conexión, verificado en `INVESTIGACION-EMOTES.md`). **No está puesto, a propósito.** Lo único que compra es bajar de "hasta 10 minutos" a "en el acto" la demora con la que aparece un emote que el streamer acaba de agregar; lo que cuesta es una conexión persistente más que mantener, reconectar y vigilar, y una lista de set ids para suscribir y desuscribir a medida que entran y salen creadores. Para un adorno, no compensa todavía.
+
+El gancho ya está: `emotes.vencer(slug, red)` marca una tabla como vencida. El día que se haga la EventAPI, es llamarlo cuando llegue el dispatch.
 
 ### El indicador de salud
 

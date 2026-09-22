@@ -380,6 +380,34 @@ test('llegado el tope no entran mas salas, y las que ya estaban siguen entrando'
   sesionAna = ana.cookie;
 });
 
+/* ============================== la Sala, que el alta deja apagada */
+
+test('el alta no prende la Sala de nadie, y acá se prenden las tres', async () => {
+  /* Desde el 2026-09-22 el producto que se ofrece es el multichat y la
+     Sala —pasar una película— nace apagada, también para el dueño del
+     servicio. Se comprueba acá, después del alta y antes de todo lo
+     demás, porque es una propiedad del ALTA: ninguna de las tres pasó
+     por un interruptor y ninguna tiene que haber quedado prendida.
+
+     Y se prenden a continuación, porque todo lo que sigue en este
+     archivo (el reloj, la subida, el catálogo, la clave) prueba cómo se
+     comporta la Sala ANDANDO. Que apagada no exista se prueba aparte,
+     en `sala-cerrada.test.js`. */
+  for (const slug of [DUENO, ANA, BETO]) {
+    assert.equal(await creadores.salaAbierta(slug), false, `${slug} nació con la Sala prendida`);
+  }
+
+  /* Y con el interruptor en cero, el catálogo de Ana no existe. Es el
+     control de que prenderlas de acá abajo no es decorativo. */
+  const antes = await pedir('/api/videos', { cookie: sesionAna });
+  assert.equal(antes.estado, 404, `contestó ${antes.estado}`);
+
+  for (const slug of [DUENO, ANA, BETO]) await creadores.ponerSalaAbierta(slug, true);
+
+  const despues = await pedir('/api/videos', { cookie: sesionAna });
+  assert.equal(despues.estado, 200, `contestó ${despues.estado}`);
+});
+
 /* ============================================ el panel es de uno solo */
 
 test('el panel de cada creador habla de SU sala y de ninguna otra', async () => {
@@ -1092,6 +1120,7 @@ test('una clave de una sala dada de baja no firma nada mas', async () => {
   const EFIMERA = 'efimera';
   await creadores.crear({ slug: EFIMERA, usuarioId: '999', terminos: creadores.TERMINOS_VERSION });
   await creadores.ponerPlan(EFIMERA, 'amigo', { quien: 'dueno' });
+  await creadores.ponerSalaAbierta(EFIMERA, true);
   const cookie = cookieCreador(await sesion.crear({
     tipo: 'dueno', usuario: '999', nombre: 'Efimera', slug: EFIMERA,
   }));

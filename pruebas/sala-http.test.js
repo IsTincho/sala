@@ -44,6 +44,7 @@ process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 const { crearServidor } = await import('../servidor/index.js');
 const canales = await import('../servidor/canales.js');
 const almacen = await import('../servidor/almacen.js');
+const creadores = await import('../servidor/creadores.js');
 const sesion = await import('../servidor/sesion.js');
 const videos = await import('../servidor/videos.js');
 const vinculos = await import('../servidor/vinculos.js');
@@ -192,6 +193,23 @@ const fichaCompleta = (id = 'ep1', slug = SLUG) => ({
 
 test.before(async () => {
   await almacen.poner('creadores', OTRO, { slug: OTRO, plan: 'amigo' });
+
+  /* LAS DOS SALAS SE PRENDEN ACÁ, y es lo primero que hace este
+     archivo desde el 2026-09-22.
+
+     La Sala —pasar una película— nace apagada para todos, incluido el
+     dueño del servicio, y con el interruptor en cero estas rutas
+     contestan 404 igual que una sala inventada. Este archivo prueba
+     cómo se comporta la Sala ANDANDO, así que la enciende y sigue como
+     siempre; que apagada no exista se prueba aparte, en
+     `sala-cerrada.test.js`.
+
+     Para el dueño hace falta `ponerSalaAbierta` y no un `almacen.poner`
+     como el de arriba: no tiene fila en `creadores` (su sala existe por
+     KICK_SLUG) y la función se la crea, que es justo el caso raro que
+     el módulo atiende. */
+  await creadores.ponerSalaAbierta(SLUG, true);
+  await creadores.ponerSalaAbierta(OTRO, true);
 
   sesionDueno = cookieDueno(await sesion.crear({ tipo: 'dueno', usuario: '99', nombre: 'IsTincho', slug: SLUG }));
   sesionEspectador = cookieEspectador(await sesion.crear({ tipo: 'espectador', usuario: '1001', nombre: 'unaespectadora' }));
@@ -910,7 +928,8 @@ test('una sala sin Kick vinculado contesta 503 y no manda nada a ningún lado', 
      ruteo que mandara todo al dueño y otro que no mandara nada se
      verían igual desde afuera en la mitad de los casos. */
   const SINKICK = 'salasinkick';
-  await almacen.poner('creadores', SINKICK, { slug: SINKICK, plan: 'amigo', usuarioId: '8888' });
+  await almacen.poner('creadores', SINKICK,
+    { slug: SINKICK, plan: 'amigo', usuarioId: '8888', salaAbierta: true });
 
   espectadores.reiniciar();
   pedidosAKick = [];

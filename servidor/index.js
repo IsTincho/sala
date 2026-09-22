@@ -878,6 +878,34 @@ async function conDuenoDelServicio(req, res, fn) {
   return fn(suyo);
 }
 
+/**
+ * Corta un pedido sobre una sala con la pelicula APAGADA. Devuelve si
+ * corto, para escribirse `if (await salaCerrada(slug, res)) return;`.
+ *
+ * Es el mismo interruptor que `salaPermitida`, para el otro grupo de
+ * rutas: las que no llevan el slug en la URL porque lo sacan de la
+ * cookie de creador o de la clave de subida (la clave, la subida a R2 y
+ * el catalogo). Esas ya probaron de quien es la sala, asi que lo unico
+ * que falta preguntar es el interruptor.
+ *
+ * VA DESPUES DE RESOLVER DE QUIEN ES LA SALA Y ANTES DE TODO LO DEMAS.
+ * El plan, el tope de GB y las credenciales de R2 son preguntas sobre
+ * una funcion que hoy no se ofrece: contestar 402 "tu plan no sube
+ * videos" con la Sala apagada manda a alguien a pagar por algo que no
+ * le vamos a dar.
+ *
+ * 404 y no 403, igual que `salaPermitida`. Pero aca SI se dice por que,
+ * y no es una incoherencia: quien llega hasta este punto ya demostro
+ * que la sala es suya, asi que "existe, pero la pelicula esta apagada"
+ * no le cuenta nada que no sepa, y un 404 mudo sobre su propio panel lo
+ * mandaria a buscar un bug que no hay.
+ */
+async function salaCerrada(slug, res) {
+  if (await creadores.salaAbierta(slug)) return false;
+  json(res, 404, { error: 'la Sala esta cerrada: por ahora este servicio es solo el chat' });
+  return true;
+}
+
 /** Como estan las dos vias del chat de la sala de quien pregunta. */
 async function apiChatSalud(url, req, res) {
   return conCreador(req, res, slug => json(res, 200, chat.salud(slug)));
@@ -979,6 +1007,14 @@ async function apiHora(url, req, res) {
  * El precio, y queda escrito: un POST sin cookie a una sala que no
  * existe ahora contesta 404 y antes contestaba 401.
  *
+ * Desde el 2026-09-22 el guard pregunta `salaPermitida` y no
+ * `canalPermitido`: una Sala APAGADA contesta el mismo 404 que una que
+ * no existe, y lo contesta en el MISMO lugar, antes de la cookie. Si el
+ * interruptor se mirara despues, un pedido sin sesion a una sala con la
+ * pelicula apagada daria 401 y uno con la cookie del dueño daria 404,
+ * que es contar por la diferencia justo lo que el 404 viene a no
+ * contar.
+ *
  * ---------------------------------------------------------------
  * "SUYA" SE COMPRUEBA CONTRA LA COOKIE, NO CONTRA KICK_SLUG
  *
@@ -990,7 +1026,7 @@ async function apiHora(url, req, res) {
  */
 async function conDuenoDeLaSala(url, req, res, p, fn) {
   const slug = String(p.slug ?? '').toLowerCase();
-  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  if (!await salaPermitida(slug)) return json(res, 404, { error: 'esa sala no existe' });
 
   const suyo = await sesion.leer(req, 'dueno');
   if (!suyo) return json(res, 401, { error: 'no hay sesion de dueño' });
@@ -1056,12 +1092,13 @@ async function apiRelojAccion(url, req, res, p) {
  * lista de asistencia que nadie pidio.
  */
 async function apiSalaYo(url, req, res, p) {
-  /* Igual que las otras dos de /api/sala/: una sala que no existe se
-     contesta 404 y no con un cuerpo util. No filtra nada (la respuesta
-     habla del que pregunta, no de la sala), pero eran las dos unicas
-     rutas de /api/sala/ que no pasaban por aca, y una excepcion sin
-     motivo es una excepcion que alguien copia. */
-  if (!await canalPermitido(String(p.slug ?? '').toLowerCase())) {
+  /* Igual que las otras dos de /api/sala/: una sala que no existe —o
+     que tiene la pelicula apagada— se contesta 404 y no con un cuerpo
+     util. No filtra nada (la respuesta habla del que pregunta, no de la
+     sala), pero eran las dos unicas rutas de /api/sala/ que no pasaban
+     por aca, y una excepcion sin motivo es una excepcion que alguien
+     copia. */
+  if (!await salaPermitida(String(p.slug ?? '').toLowerCase())) {
     return json(res, 404, { error: 'esa sala no existe' });
   }
 
@@ -1096,7 +1133,7 @@ async function apiSalaYo(url, req, res, p) {
 
 /** Cierra la sesion del espectador y OLVIDA su token. */
 async function apiSalaSalir(url, req, res, p) {
-  if (!await canalPermitido(String(p.slug ?? '').toLowerCase())) {
+  if (!await salaPermitida(String(p.slug ?? '').toLowerCase())) {
     return json(res, 404, { error: 'esa sala no existe' });
   }
 
@@ -1125,7 +1162,7 @@ async function apiSalaSalir(url, req, res, p) {
  */
 async function apiSalaChat(url, req, res, p) {
   const slug = String(p.slug ?? '').toLowerCase();
-  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  if (!await salaPermitida(slug)) return json(res, 404, { error: 'esa sala no existe' });
 
   const suyo = await sesion.leer(req, 'espectador');
   if (!suyo) return json(res, 401, { error: 'entra con Kick para poder escribir' });
@@ -1239,6 +1276,8 @@ async function conCreadorOClave(req, res, fn) {
 
 async function apiVideosGuardar(url, req, res) {
   return conClaveDeSubida(req, res, async (slugAutenticado) => {
+    if (await salaCerrada(slugAutenticado, res)) return;
+
     let pedido;
     try { pedido = await leerJson(req); }
     catch { return json(res, 400, { error: 'json invalido' }); }
@@ -1261,6 +1300,8 @@ async function apiVideosGuardar(url, req, res) {
 
 async function apiVideosBorrar(url, req, res, p) {
   return conClaveDeSubida(req, res, async (slug) => {
+    if (await salaCerrada(slug, res)) return;
+
     const id = String(p.id ?? '');
     if (!videos.idValido(id)) return json(res, 400, { error: 'id invalido' });
 
@@ -1288,7 +1329,10 @@ async function apiVideosBorrar(url, req, res, p) {
  * quiere saber que hay del lado del servidor y corre en una terminal.
  */
 async function apiVideosListar(url, req, res) {
-  return conCreadorOClave(req, res, async (slug) => json(res, 200, { videos: await videos.listar(slug) }));
+  return conCreadorOClave(req, res, async (slug) => {
+    if (await salaCerrada(slug, res)) return;
+    return json(res, 200, { videos: await videos.listar(slug) });
+  });
 }
 
 /* -------------------------------------------------------- panel */
@@ -1362,6 +1406,15 @@ async function apiPanel(url, req, res) {
          pagina con el origen desde el que la estan mirando, que detras
          de un proxy no es el de Railway. */
       chatAbierto: { ...(await creadores.chatAbierto(slug)) },
+      /* El interruptor de la Sala (2026-09-22). El panel lo necesita
+         para no mostrar los controles de una pelicula que el servidor
+         va a contestar 404: esconder botones no es la puerta —la
+         puerta esta en `salaPermitida` y en `salaCerrada`— pero un
+         boton que no hace nada sin decir por que es peor que no
+         tenerlo. Todo lo demas de este pedido se sigue mandando igual:
+         son los datos de SU sala, y el creador los tiene que poder ver
+         aunque la pelicula este apagada. */
+      salaAbierta: await creadores.salaAbierta(slug),
       almacen: almacen.dondeGuarda(),
       uso: {
         bytes: uso.bytes,
@@ -1397,6 +1450,7 @@ async function apiPanel(url, req, res) {
  */
 async function apiClaveGenerar(url, req, res) {
   return conCreador(req, res, async (slug) => {
+    if (await salaCerrada(slug, res)) return;
     const clave = await videos.generarClave(slug);
     console.log('[videos] clave de subida nueva para', slug);
     return json(res, 200, { clave });
@@ -1405,6 +1459,7 @@ async function apiClaveGenerar(url, req, res) {
 
 async function apiClaveRevocar(url, req, res) {
   return conCreador(req, res, async (slug) => {
+    if (await salaCerrada(slug, res)) return;
     const habia = await videos.revocarClave(slug);
     return json(res, 200, { ok: true, habia });
   });
@@ -1457,6 +1512,7 @@ const TOPE_ARCHIVOS = 500;
 
 async function apiSubidaFirmar(url, req, res) {
   return conCreadorOClave(req, res, async (slug, plan) => {
+    if (await salaCerrada(slug, res)) return;
     if (!creadores.planActivo(plan)) {
       return json(res, 402, { error: 'tu sala todavia no puede subir videos', plan });
     }
@@ -1528,9 +1584,20 @@ async function apiSubidaFirmar(url, req, res) {
   });
 }
 
-/** Firma los borrados de un video de SU sala. */
+/**
+ * Firma los borrados de un video de SU sala.
+ *
+ * Con la Sala apagada esto tambien da 404, aunque borrar sea "menos"
+ * que subir. Dejarlo abierto seria la unica pieza del grupo que sigue
+ * en pie: se podrian borrar objetos de R2 de una sala que no se puede
+ * ni abrir ni llenar, y `subir.py --borrar` andaria a medias (firma los
+ * DELETE y despues no puede sacar la ficha del catalogo, que si esta
+ * cerrado). Media funcion es peor que ninguna. Al que necesite vaciar
+ * su bucket con la Sala apagada se le prende un rato.
+ */
 async function apiSubidaBorrar(url, req, res) {
   return conCreadorOClave(req, res, async (slug) => {
+    if (await salaCerrada(slug, res)) return;
     if (!r2.hayCredenciales()) return json(res, 503, { error: r2.porQueNoHay() });
 
     let pedido;
@@ -1757,6 +1824,27 @@ function compilar(patron) {
  */
 const canalPermitido = slug => creadores.existe(slug);
 
+/**
+ * Si este slug tiene sala Y esa sala tiene la pelicula PRENDIDA.
+ *
+ * Es `canalPermitido` mas el interruptor del 2026-09-22
+ * (`creadores.salaAbierta`), y se usa exactamente donde empieza el
+ * producto "ver una pelicula juntos": la pagina `/sala/:slug` y las
+ * cuatro rutas de `/api/sala/:slug/`.
+ *
+ * NO lo usan `/eventos/:slug`, `/chat/:slug` ni el manifest por sala.
+ * Eso es el chat abierto, que es lo unico que se ofrece hoy y que tiene
+ * que seguir andando exactamente igual con la Sala apagada.
+ *
+ * CONTESTA LO MISMO QUE UNA SALA QUE NO EXISTE, y es a proposito: una
+ * Sala apagada no es un permiso que a alguien le falte, es una funcion
+ * que este servicio no esta ofreciendo. Un 403 —o un 404 con otro
+ * texto— anunciaria que ahi hay algo escondido esperando que alguien
+ * insista.
+ */
+const salaPermitida = async slug =>
+  (await canalPermitido(slug)) && (await creadores.salaAbierta(slug));
+
 /* ------------------------------------------ que redes ve el publico */
 
 const SOLO_KICK = Object.freeze(['kick']);
@@ -1884,6 +1972,23 @@ async function eventos(url, req, res, p) {
   const suyo = await sesion.leer(req, 'dueno');
   const esSuDueno = Boolean(suyo) && creadores.normalizar(suyo.slug) === slug;
 
+  /*
+   * Y EL RELOJ, QUE NO ES UNA RED.
+   *
+   * Esta ruta es la del chat abierto y sigue siendo publica con la Sala
+   * apagada, pero el `estado` inicial lleva SIEMPRE la pelicula que
+   * haya puesta en el canal: los eventos sin `red` pasan todos los
+   * filtros, por definicion. O sea que un creador que deja una peli
+   * puesta y despues apaga su Sala seguiria regalando el titulo y el
+   * segundo a cualquier `curl /eventos/<slug>`.
+   *
+   * Lo ve el dueño de ESTA sala siempre, aunque la tenga apagada. Es lo
+   * coherente con `/api/panel`, que le sigue contando su propio reloj:
+   * si el panel dijera "reproduciendo" y su propio bus dijera "nada
+   * puesto", la contradiccion la tendria que resolver el.
+   */
+  const veElReloj = esSuDueno || await creadores.salaAbierta(slug);
+
   /* La politica se carga ANTES de suscribir: `suscribir` manda el
      buffer de los ultimos 200 mensajes en el acto, y lo tiene que
      mandar ya filtrado con la regla de verdad y no con la de "todavia
@@ -1897,6 +2002,7 @@ async function eventos(url, req, res, p) {
   const pide = redesPedidas(url);
   canales.suscribir(p.slug, req, res, {
     redes: esSuDueno ? pide : () => recortar(redesPublicas(slug), pide),
+    conReloj: veElReloj,
   });
 
   anotarPresencia(p.slug);
@@ -1935,6 +2041,12 @@ function anotarPresencia(slug) {
  * La pagina de la Sala. Se sirve solo para un canal que existe: un
  * `/sala/lo-que-sea` que devolviera la pagina dejaria a alguien
  * mirando una pantalla de carga eterna en vez de un 404.
+ *
+ * Y desde el 2026-09-22, solo si ademas ese creador tiene la Sala
+ * PRENDIDA. Con el interruptor apagado esta direccion contesta el mismo
+ * 404 que un slug inventado: es lo que hace que "la Sala esta cerrada"
+ * sea verdad para el de afuera y no un cartel que la pagina se cuenta a
+ * si misma.
  */
 async function paginaSala(url, req, res, p) {
   /* OJO, TRAMPA DEL ENRUTADOR: `/sala/:slug` tapa TODO lo que cuelgue
@@ -1947,7 +2059,7 @@ async function paginaSala(url, req, res, p) {
     if (await estatico(url, req, res)) return;
     return texto(res, 404, 'no existe');
   }
-  if (!await canalPermitido(p.slug)) return texto(res, 404, 'esa sala no existe');
+  if (!await salaPermitida(p.slug)) return texto(res, 404, 'esa sala no existe');
   return servirPagina('sala.html')(url, req, res, p);
 }
 

@@ -162,11 +162,28 @@ function soltarSiVacio(c) {
   return true;
 }
 
-/** El estado que recibe alguien apenas se conecta. */
-export const estadoDe = c => ({
+/**
+ * El estado que recibe alguien apenas se conecta.
+ *
+ * `conReloj` en false deja el reloj en null aunque el canal tenga una
+ * pelicula puesta. Lo usa `/eventos/:slug` cuando la Sala de ese
+ * creador esta CERRADA (el interruptor de `creadores.salaAbierta`): ese
+ * mismo bus es el del chat abierto, que sigue siendo publico y sin
+ * sesion, asi que sin esto un `curl` a `/eventos/<slug>` seguiria
+ * contando el titulo y el segundo de la pelicula que quedo puesta antes
+ * de apagarla.
+ *
+ * No es un caso del filtro por red: el reloj no lleva `red` y por eso
+ * pasa siempre (ver `leDaEl`). Y no hace falta filtrar ademas los
+ * eventos `reloj` en vivo, porque lo unico que los genera es
+ * `reloj.aplicarYDifundir`, al que solo se llega por rutas que con la
+ * Sala cerrada contestan 404 antes de tocar nada. Lo que se escapaba
+ * era la FOTO vieja, no el evento nuevo.
+ */
+export const estadoDe = (c, conReloj = true) => ({
   slug: c.slug,
   conectados: c.clientes.size,
-  reloj: c.reloj,
+  reloj: conReloj ? c.reloj : null,
   desde: c.desde,
 });
 
@@ -179,11 +196,15 @@ export const estadoDe = c => ({
  * seria regalarle el chat en vivo a cualquier sitio que lo quiera
  * embeber.
  *
- * @param {{redes?:string[]|(() => string[]|null)}} [opciones]  que
- *        redes quiere esta conexion. Sin `redes` llega todo; con
- *        `['kick']` llega solo Kick; con una funcion, lo que conteste
- *        en cada evento. Quien decide es la ruta, no este modulo: ver
- *        `leDaEl`.
+ * @param {{redes?:string[]|(() => string[]|null), conReloj?:boolean}} [opciones]
+ *        `redes`: que redes quiere esta conexion. Sin `redes` llega
+ *        todo; con `['kick']` llega solo Kick; con una funcion, lo que
+ *        conteste en cada evento. Quien decide es la ruta, no este
+ *        modulo: ver `leDaEl`.
+ *        `conReloj`: si el `estado` inicial lleva la pelicula que haya
+ *        puesta. Por defecto si, que es como se comporto siempre; lo
+ *        apaga la ruta cuando la Sala de ese creador esta cerrada (ver
+ *        `estadoDe`).
  */
 export function suscribir(slug, req, res, opciones = {}) {
   const c = canal(slug);
@@ -212,7 +233,7 @@ export function suscribir(slug, req, res, opciones = {}) {
   /* Lo primero que ve el que llega: donde esta parado. Sin esto, una
      pestaña recien abierta no sabe si el servidor la escucha hasta que
      alguien hable, y en un chat tranquilo eso son minutos de duda. */
-  escribir(res, ++seq, 'estado', estadoDe(c));
+  escribir(res, ++seq, 'estado', estadoDe(c, opciones.conReloj !== false));
 
   /* Y despues, lo que se perdio. Con el chat vacio no manda nada, asi
      que en la Fase 0 esto no se nota; existe aca porque el buffer vive

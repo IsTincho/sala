@@ -313,6 +313,28 @@ html, body{
 
 /* ---------- caja de escritura ---------- */
 
+/* El botón de bloquear de cada mensaje, sólo en la ventana del
+   creador. Se queda tenue hasta que el puntero pasa por el mensaje:
+   está ahí para el día que haga falta, no para leerlo todas las
+   noches. En una pantalla táctil no hay hover, así que nunca baja del
+   todo. */
+.boton-bloquear{
+  font: inherit;
+  font-size: 0.7em;
+  background: none;
+  color: var(--texto-tenue);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0 0.35em;
+  cursor: pointer;
+  opacity: 0.35;
+}
+
+.mensaje:hover .boton-bloquear,
+.boton-bloquear:focus-visible{ opacity: 1; }
+
+.boton-bloquear:hover{ color: var(--mal); border-color: var(--mal); }
+
 /* ---------- /chat/<slug>: con que cuenta escribe cada espectador ----------
 
    Va pegada arriba de la caja de escribir, con el mismo fondo, para

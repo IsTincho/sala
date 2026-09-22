@@ -2092,12 +2092,20 @@ async function apiChatYo(url, req, res, p) {
     conectadas[red] = { nombre: v[red].nombre || v[red].login || '' };
   }
 
+  /* Se le dice que esta bloqueado, y no se le esconde la caja sin
+     explicacion: quedarse escribiendo contra una pared que no avisa es
+     peor que un "el creador te bloqueo en este chat". Sabe de si mismo
+     y de nadie mas: nunca quien MAS esta bloqueado. */
+  const bloqueado = abiertas.filter(red => v[red] && creadores.estaBloqueado(c, red, v[red].usuarioId));
+
   return json(res, 200, {
     entrado: true,
     abierto: c.activo,
     redes: abiertas,
     conectadas,
-    puedeEscribir: abiertas.filter(red => v[red] && espectadores.puedeEscribirEn(v, red)),
+    bloqueado,
+    puedeEscribir: abiertas.filter(red =>
+      v[red] && espectadores.puedeEscribirEn(v, red) && !bloqueado.includes(red)),
   });
 }
 
@@ -2155,6 +2163,19 @@ async function apiChatEnviarEspectador(url, req, res, p) {
 
   const faltan = redes.filter(red => !v[red]);
   if (faltan.length) return json(res, 403, { error: `todavia no conectaste ${nombresDeRedes(faltan)}` });
+
+  /* El creador lo bloqueo EN ESTA HERRAMIENTA. No es un baneo de la
+     plataforma: sigue pudiendo escribir desde kick.com o twitch.tv, y
+     ahi manda la moderacion de cada una. Se corta antes de gastar un
+     pedido, y se dice cual es el motivo: un 403 mudo lo dejaria
+     reintentando. */
+  const bloqueadas = redes.filter(red => creadores.estaBloqueado(c, red, v[red].usuarioId));
+  if (bloqueadas.length) {
+    return json(res, 403, {
+      error: 'el creador te bloqueó en este chat',
+      bloqueado: bloqueadas,
+    });
+  }
   const sinPermiso = redes.filter(red => !espectadores.puedeEscribirEn(v, red));
   if (sinPermiso.length) {
     return json(res, 403, { error: `el permiso que diste en ${nombresDeRedes(sinPermiso)} no incluye escribir` });
@@ -2252,10 +2273,17 @@ async function apiPanelChat(url, req, res) {
     const cambios = {};
     if (pedido?.activo !== undefined) cambios.activo = pedido.activo;
     if (pedido?.redes !== undefined) cambios.redes = pedido.redes;
+    /* De a uno y nunca la lista entera: con dos pestanas del panel
+       abiertas, mandar la lista completa haria que la segunda pisara
+       el bloqueo que acaba de hacer la primera. */
+    if (pedido?.bloquear !== undefined) cambios.bloquear = pedido.bloquear;
+    if (pedido?.desbloquear !== undefined) cambios.desbloquear = pedido.desbloquear;
     const problema = creadores.porQueNoSePuedeAbrir(cambios);
     if (problema) return json(res, 400, { error: problema });
 
-    const c = await creadores.ponerChatAbierto(slug, cambios);
+    let c;
+    try { c = await creadores.ponerChatAbierto(slug, cambios); }
+    catch (e) { return json(res, 400, { error: e.message }); }
     if (!c) return json(res, 403, { error: 'tu sesion no corresponde a ninguna sala' });
 
     console.log(`[chat] ${slug}: chat abierto ${c.activo ? `con ${c.redes.join(' y ')}` : 'cerrado'}`);
@@ -2264,7 +2292,10 @@ async function apiPanelChat(url, req, res) {
       abierto: c.activo,
       redes: c.activo ? [...c.redes] : [],
     });
-    return json(res, 200, { ok: true, chatAbierto: { activo: c.activo, redes: [...c.redes] } });
+    return json(res, 200, {
+      ok: true,
+      chatAbierto: { activo: c.activo, redes: [...c.redes], bloqueados: [...c.bloqueados] },
+    });
   });
 }
 

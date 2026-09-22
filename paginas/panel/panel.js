@@ -75,6 +75,8 @@
   const notaTwitchChat = el('nota-twitch-chat');
   const linkChatAbierto = el('link-chat-abierto');
   const abrirChatAbierto = el('abrir-chat-abierto');
+  const bloqueBloqueados = el('bloque-bloqueados');
+  const listaBloqueados = el('lista-bloqueados');
   const CONTROLES_DEL_CHAT = [interruptorChat, redChatKick, redChatTwitch];
 
   /* Los controles que un plan sin reproducción no puede tocar. Está
@@ -414,7 +416,52 @@
     const link = linkDelChat(slug ?? '');
     linkChatAbierto.textContent = link;
     abrirChatAbierto.href = link;
+    pintarBloqueados(chat.bloqueados);
     tarjetaChatAbierto.hidden = false;
+  }
+
+  /**
+   * La lista de bloqueados, con su botón para soltarlos.
+   *
+   * Nada de innerHTML: el nombre lo escribió una persona desconocida
+   * en su plataforma. Sin nadie bloqueado, el bloque entero no se ve:
+   * es una lista vacía que no le dice nada a nadie.
+   */
+  function pintarBloqueados(lista) {
+    const gente = Array.isArray(lista) ? lista : [];
+    listaBloqueados.textContent = '';
+    bloqueBloqueados.hidden = !gente.length;
+
+    for (const b of gente) {
+      const fila = document.createElement('li');
+      fila.className = 'fila-bloqueado';
+
+      const red = document.createElement('span');
+      red.className = 'chip-red chip-red-' + (b.red === 'kick' ? 'kick' : 'twitch');
+      red.textContent = b.red === 'kick' ? 'Kick' : 'Twitch';
+      fila.appendChild(red);
+
+      const quien = document.createElement('span');
+      quien.className = 'nombre-bloqueado';
+      /* Sin nombre guardado queda el id, que es lo único seguro que
+         hay: se bloqueó a un id y no a un nombre, justamente porque
+         los nombres se cambian. */
+      quien.textContent = b.nombre || b.id;
+      fila.appendChild(quien);
+
+      const soltar = document.createElement('button');
+      soltar.type = 'button';
+      soltar.className = 'boton-panel';
+      soltar.textContent = 'Desbloquear';
+      soltar.addEventListener('click', () => {
+        soltar.disabled = true;
+        mandarChatAbierto({ desbloquear: { red: b.red, id: b.id } })
+          .then(() => { soltar.disabled = false; });
+      });
+      fila.appendChild(soltar);
+
+      listaBloqueados.appendChild(fila);
+    }
   }
 
   function mandarChat(tocado) {
@@ -430,15 +477,25 @@
       return;
     }
 
+    return mandarChatAbierto({ activo: Boolean(interruptorChat.checked), redes });
+  }
+
+  /**
+   * Un cambio del chat abierto: abrir/cerrar, las redes, o soltar a
+   * alguien. Nunca va el slug: el servidor usa el de la cookie.
+   *
+   * Salga bien o mal, la pantalla termina diciendo lo que dice el
+   * servidor: si falló, el interruptor vuelve a donde estaba.
+   */
+  function mandarChatAbierto(cuerpo) {
     enviandoChat = true;
     for (const c of CONTROLES_DEL_CHAT) c.disabled = true;
 
-    /* Nunca va el slug: el servidor usa el de la cookie. */
-    fetch('/api/panel/chat', {
+    return fetch('/api/panel/chat', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activo: Boolean(interruptorChat.checked), redes }),
+      body: JSON.stringify(cuerpo),
     })
       .then(async r => {
         const datos = await r.json().catch(() => null);
@@ -452,8 +509,6 @@
         for (const c of CONTROLES_DEL_CHAT) c.disabled = false;
         if (!ultimoPanel) return;
         if (chat) ultimoPanel.chatAbierto = chat;
-        /* Salga bien o mal, la pantalla vuelve a decir lo que dice el
-           servidor: si falló, el interruptor vuelve a donde estaba. */
         pintarChatAbierto(ultimoPanel.chatAbierto, ultimoPanel.slug, ultimoPanel.salud);
       });
   }

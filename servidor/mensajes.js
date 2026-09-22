@@ -7,13 +7,29 @@
      {
        tipo: "chat",
        red: "kick" | "twitch",
-       id, usuario, color,
+       id, usuario, usuarioId, color,
        insignias: [{ tipo, texto }],
        texto,
        emotes: [{ id, inicio, fin, url }],
        hora,                       // ISO
        respondeA?: { id, usuario, texto }
      }
+
+   ---------------------------------------------------------------
+   POR QUE VIAJA `usuarioId`
+
+   Es el id de quien escribio EN SU RED, y esta para una sola cosa:
+   que el creador pueda bloquear a alguien en esta herramienta desde
+   el menu de su mensaje (Fase 5.4). Por nombre no sirve: los nombres
+   se cambian, y el que se bloqueo ayer puede ser otra persona manana.
+
+   Sale por el bus para todos, no solo para el creador, y eso se
+   penso: es el mismo id que Kick manda en `sender.user_id` y Twitch
+   en `chatter_user_id` (y en el tag `user-id` de IRC) a cualquiera
+   que lea ese chat publico. No es un dato nuestro sobre nadie; es lo
+   que la plataforma ya publica de un mensaje publico. Filtrarlo por
+   conexion costaria una copia del objeto por mensaje y por persona
+   mirando, para esconder algo que esta a un pedido de distancia.
 
    ---------------------------------------------------------------
    POR QUE UN SOLO FORMATO Y NO EL PAYLOAD CRUDO
@@ -223,6 +239,7 @@ export function deKick(cuerpo, { hora } = {}) {
     red: 'kick',
     id: String(cuerpo.message_id ?? ''),
     usuario: String(emisor.username ?? '').slice(0, 80),
+    usuarioId: String(emisor.user_id ?? ''),
     color: colorSeguro(identidad?.username_color),
     insignias: insigniasDeKick(identidad),
     texto,
@@ -300,6 +317,7 @@ export function deTwitch(evento, metadata = {}) {
        eligio; chatter_user_login es el de la URL, todo en minuscula.
        Se muestra el primero. */
     usuario: String(evento.chatter_user_name ?? evento.chatter_user_login ?? '').slice(0, 80),
+    usuarioId: String(evento.chatter_user_id ?? ''),
     color: colorSeguro(evento.color),
     insignias: insigniasDeTwitch(evento.badges),
     texto,
@@ -391,6 +409,7 @@ export function deIrc(tags, usuarioIrc, texto) {
     red: 'twitch',
     id: String(t.get('id') ?? ''),
     usuario: String(t.get('display-name') || usuarioIrc || '').slice(0, 80),
+    usuarioId: String(t.get('user-id') ?? ''),
     color: colorSeguro(t.get('color')),
     insignias: insigniasDeTagIrc(t.get('badges'), t.get('badge-info')),
     texto: cuerpo,

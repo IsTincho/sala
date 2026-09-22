@@ -835,6 +835,60 @@ test('copiar el link lo manda al portapapeles', async () => {
   p.cerrar();
 });
 
+test('sin nadie bloqueado, la lista no se ve', async () => {
+  /* Una lista vacía con un título no le dice nada a nadie. */
+  const p = abrir(conChat({ activo: true, redes: ['kick'], bloqueados: [] }));
+  await asentarse();
+  assert.equal(p.el('bloque-bloqueados').hidden, true);
+  p.cerrar();
+});
+
+test('los bloqueados salen con su red, y el botón los suelta', async () => {
+  const p = abrir(conChat({
+    activo: true,
+    redes: ['kick', 'twitch'],
+    bloqueados: [
+      { red: 'kick', id: '909', nombre: 'Fulana', desde: Date.now() },
+      { red: 'twitch', id: '77', nombre: '', desde: Date.now() },
+    ],
+  }));
+  await asentarse();
+
+  assert.equal(p.el('bloque-bloqueados').hidden, false);
+  const filas = p.el('lista-bloqueados').children;
+  assert.equal(filas.length, 2);
+  assert.match(filas[0].textContent, /Kick/);
+  assert.match(filas[0].textContent, /Fulana/);
+  /* Sin nombre guardado queda el id, que es lo único seguro que hay. */
+  assert.match(filas[1].textContent, /Twitch/);
+  assert.match(filas[1].textContent, /77/);
+
+  /* Y el texto dice que esto no es un baneo de la plataforma. */
+  assert.match(p.el('bloque-bloqueados').textContent, /kick\.com/);
+
+  const soltar = filas[0].children.find(c => c.tagName === 'BUTTON');
+  soltar.disparar('click');
+  await asentarse();
+
+  const ultimo = envios(p).at(-1);
+  assert.deepEqual(JSON.parse(ultimo.cuerpo), { desbloquear: { red: 'kick', id: '909' } },
+    'se suelta de a uno: mandar la lista entera haría que dos pestañas se pisen');
+  p.cerrar();
+});
+
+test('el nombre de un bloqueado no puede inventar etiquetas', async () => {
+  /* El nombre lo escribió una persona desconocida en su plataforma. */
+  const p = abrir(conChat({
+    activo: true, redes: ['kick'],
+    bloqueados: [{ red: 'kick', id: '1', nombre: '<img src=x onerror=alert(1)>', desde: 0 }],
+  }));
+  await asentarse();
+  const fila = p.el('lista-bloqueados').children[0];
+  assert.match(fila.textContent, /<img src=x/, 'entra como texto y no como HTML');
+  assert.equal(fila.children.filter(c => c.tagName === 'IMG').length, 0);
+  p.cerrar();
+});
+
 test('sin sesión el bloque del chat abierto no se ve', async () => {
   const p = abrir({ estadoPanel: () => ({ ok: false, status: 401, json: async () => ({ error: 'no hay sesion' }) }) });
   await asentarse();

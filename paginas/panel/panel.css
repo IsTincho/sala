@@ -235,3 +235,46 @@ button:focus-visible, a:focus-visible, select:focus-visible{
   outline: 2px solid var(--acento);
   outline-offset: 2px;
 }
+
+/* ---------- los bloqueados del chat abierto ---------- */
+
+.titulo-bloqueados{
+  margin: var(--espacio-3) 0 var(--espacio-1);
+  font-size: 1rem;
+}
+
+.lista-bloqueados{
+  list-style: none;
+  margin: var(--espacio-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-1);
+}
+
+.fila-bloqueado{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--espacio-2);
+}
+
+.nombre-bloqueado{
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* El mismo chip de red que en el chat: de un vistazo se ve en qué
+   plataforma está bloqueada esa persona. */
+.chip-red{
+  flex: none;
+  font-size: 0.7em;
+  font-weight: 600;
+  border-radius: 0.3em;
+  padding: 0.05em 0.4em;
+  color: #04110a; /* texto oscuro fijo: los chips van sobre fondos claros de marca */
+}
+
+.chip-red-kick{ background: var(--kick); }
+.chip-red-twitch{ background: var(--twitch); color: #fff; }

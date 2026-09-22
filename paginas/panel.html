@@ -55,7 +55,8 @@
     <h2>Chat para tu comunidad</h2>
     <p class="linea-tenue">
       Un link para que tu gente lea tu chat de Kick y el de Twitch juntos, en vivo,
-      sin tener que entrar con nada. Por ahora es para leer: escribir desde ahí llega después.
+      sin tener que entrar con nada. Para escribir, cada quien conecta su propia cuenta
+      de Kick o de Twitch y el mensaje sale en el chat de verdad con su nombre.
     </p>
 
     <label class="fila-interruptor">
@@ -76,6 +77,18 @@
     <div class="fila-controles">
       <button type="button" id="boton-copiar-link-chat" class="boton-panel">Copiar link</button>
       <a id="abrir-chat-abierto" class="boton-panel" href="/chat/" target="_blank" rel="noopener">Abrir</a>
+    </div>
+
+    <!-- la lista sólo aparece si hay alguien: se bloquea desde el
+         mensaje, en tu Chat Global, no escribiendo nombres acá -->
+    <div id="bloque-bloqueados" hidden>
+      <h3 class="titulo-bloqueados">Bloqueados en este chat</h3>
+      <p class="linea-tenue">
+        No pueden escribir desde esta herramienta. En kick.com y en twitch.tv sí:
+        ahí manda la moderación de cada plataforma. Para bloquear a alguien, tocá
+        <b>bloquear</b> en su mensaje, en tu Chat Global.
+      </p>
+      <ul class="lista-bloqueados" id="lista-bloqueados"></ul>
     </div>
 
     <p class="aviso-pantalla">

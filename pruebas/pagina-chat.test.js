@@ -29,10 +29,20 @@ const esperar = ms => new Promise(ok => setTimeout(ok, ms));
 const asentarse = () => esperar(10);
 
 const mensaje = (extra = {}) => ({
-  tipo: 'chat', red: 'kick', id: 'm1', usuario: 'ElkaChonda',
+  tipo: 'chat', red: 'kick', id: 'm1', usuario: 'ElkaChonda', usuarioId: '909',
   color: '#53fc18', insignias: [], texto: 'hola', emotes: [],
   hora: new Date().toISOString(), ...extra,
 });
+
+/** El primer elemento con esa etiqueta, a cualquier profundidad. */
+function buscarEtiqueta(nodo, etiqueta) {
+  for (const h of nodo.children ?? []) {
+    if (h.tagName === etiqueta) return h;
+    const dentro = buscarEtiqueta(h, etiqueta);
+    if (dentro) return dentro;
+  }
+  return null;
+}
 
 const SALUD_SANA = {
   kick: { vinculado: true, ultima: new Date().toISOString(), suscripcion: 'activa', vivo: true, sospechoso: false },
@@ -854,6 +864,82 @@ test('?demo=1 en /chat/<slug> no toca la red ni muestra la salud del creador', a
   assert.ok(p.el('lista-mezclada').children.length >= 5);
   assert.equal(p.el('banda-resuscribir').hidden, true);
   assert.equal(p.el('caja-escritura').hidden, true);
+  p.cerrar();
+});
+
+/* ============ bloquear desde el mensaje (sólo en /chat) ============ */
+
+/** Abre /chat con un `/api/panel/chat` de mentira que anota lo que le mandan. */
+function abrirConPanel() {
+  const llamadas = [];
+  const p = abrir({
+    respuestas: {
+      '/api/panel/chat': async (op) => {
+        llamadas.push(JSON.parse(op.body));
+        return { ok: true, status: 200, json: async () => ({ ok: true, chatAbierto: { activo: true, redes: ['kick'], bloqueados: [] } }) };
+      },
+    },
+  });
+  return { ...p, llamadas };
+}
+
+test('el creador bloquea a alguien desde su mensaje, y puede deshacerlo', async () => {
+  const p = abrirConPanel();
+  await asentarse();
+  p.llega(mensaje({ id: 'k1', red: 'kick', usuario: 'Fulana', usuarioId: '909' }));
+
+  const boton = buscarEtiqueta(p.el('lista-mezclada').children[0], 'BUTTON');
+  assert.ok(boton, 'cada mensaje de /chat tiene su botón de bloquear');
+  assert.equal(boton.textContent, 'bloquear');
+
+  /* La escucha está en la lista, no en el botón: así hacen click los
+     navegadores y así sobrevive el clon de la columna. */
+  p.el('lista-mezclada').disparar('click', { target: boton });
+  await asentarse();
+
+  assert.deepEqual(p.llamadas.at(-1), { bloquear: { red: 'kick', id: '909', nombre: 'Fulana' } },
+    'se bloquea por id y por red, no por nombre');
+  assert.match(p.el('texto-aviso-envio').textContent, /Fulana/);
+  assert.match(p.el('texto-aviso-envio').textContent, /en su plataforma sigue pudiendo/);
+  assert.equal(p.el('boton-deshacer-aviso').hidden, false);
+
+  p.el('boton-deshacer-aviso').disparar('click');
+  await asentarse();
+  assert.deepEqual(p.llamadas.at(-1), { desbloquear: { red: 'kick', id: '909' } });
+  p.cerrar();
+});
+
+test('el botón de la columna también bloquea, aunque sea un clon', async () => {
+  /* EL BUG QUE ESTO EVITA: /chat clona el <li> para la columna de su
+     red, y un clon no se lleva las escuchas. Con la escucha puesta en
+     el botón, el de la columna no hacía nada y nadie se enteraba. */
+  const p = abrirConPanel();
+  await asentarse();
+  p.llega(mensaje({ id: 't1', red: 'twitch', usuario: 'Purple', usuarioId: '77' }));
+
+  const clon = buscarEtiqueta(p.el('lista-twitch').children[0], 'BUTTON');
+  p.el('lista-twitch').disparar('click', { target: clon });
+  await asentarse();
+
+  assert.deepEqual(p.llamadas.at(-1), { bloquear: { red: 'twitch', id: '77', nombre: 'Purple' } });
+  p.cerrar();
+});
+
+test('un mensaje viejo sin id no trae botón: no hay a quién bloquear', async () => {
+  const p = abrirConPanel();
+  await asentarse();
+  p.llega(mensaje({ id: 'k2', usuarioId: '' }));
+  assert.equal(buscarEtiqueta(p.el('lista-mezclada').children[0], 'BUTTON'), null);
+  p.cerrar();
+});
+
+test('en /chat/<slug> nadie puede bloquear: el botón ni existe', async () => {
+  const p = abrirPublico({ yo: CON_KICK });
+  await asentarse();
+  p.llega('chat', mensaje({ id: 'k1', usuarioId: '909' }));
+
+  assert.equal(buscarEtiqueta(p.el('lista-mezclada').children[0], 'BUTTON'), null,
+    'esconderlo con CSS no alcanza: en la página de la comunidad no tiene que estar');
   p.cerrar();
 });
 

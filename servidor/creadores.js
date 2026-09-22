@@ -522,7 +522,33 @@ export const REDES_CHAT = Object.freeze(['kick', 'twitch']);
    abra. "Las dos" y no "solo Kick" porque la gracia del chat abierto
    es justamente ver Kick y Twitch juntos; si el creador no vinculo
    Twitch, de esa red no llega nada y el panel se lo dice. */
-export const CHAT_POR_DEFECTO = Object.freeze({ activo: false, redes: REDES_CHAT });
+export const CHAT_POR_DEFECTO = Object.freeze({
+  activo: false,
+  redes: REDES_CHAT,
+  bloqueados: Object.freeze([]),
+});
+
+/* Tope de la lista de bloqueados. Una lista mas larga que esto no la
+   mira nadie, y el ajuste entero viaja en cada pedido al panel. */
+export const TOPE_BLOQUEADOS = 200;
+
+/* Un id de una plataforma. Son numericos en las dos, pero se acepta
+   cualquier cosa corta y sin caracteres raros: lo que no se acepta es
+   que el id salga de un mensaje de chat sin mirarlo. */
+const idValido = id => /^[0-9a-zA-Z_-]{1,64}$/.test(String(id ?? ''));
+
+/** Un bloqueado limpio, o null si el pedido no sirve. */
+function bloqueadoLimpio(b) {
+  if (!REDES_CHAT.includes(b?.red) || !idValido(b?.id)) return null;
+  return {
+    red: b.red,
+    id: String(b.id),
+    /* El nombre es SOLO para que el creador reconozca a quien bloqueo:
+       no se compara nunca contra nada, porque los nombres se cambian. */
+    nombre: String(b.nombre ?? '').slice(0, 80),
+    desde: Number(b.desde) || Date.now(),
+  };
+}
 
 const chatEnMemoria = new Map();   // slug -> { activo, redes } (congelado)
 
@@ -534,11 +560,27 @@ const redesValidas = lista =>
 export function chatAbiertoDelDoc(doc) {
   const guardado = doc?.chatAbierto;
   const redes = redesValidas(guardado?.redes);
+  const bloqueados = (Array.isArray(guardado?.bloqueados) ? guardado.bloqueados : [])
+    .map(bloqueadoLimpio)
+    .filter(Boolean)
+    .slice(0, TOPE_BLOQUEADOS);
   return Object.freeze({
     activo: guardado?.activo === true,
     redes: Object.freeze(redes.length ? redes : [...REDES_CHAT]),
+    bloqueados: Object.freeze(bloqueados),
   });
 }
+
+/**
+ * Si esta persona esta bloqueada en esta sala, por su id en esa red.
+ *
+ * Por id y no por nombre: los nombres se cambian, y bloquear un nombre
+ * es bloquear a quien lo tenga manana. El bloqueo es de ESTA
+ * herramienta: la persona sigue pudiendo escribir desde kick.com o
+ * twitch.tv, donde manda la moderacion de cada plataforma.
+ */
+export const estaBloqueado = (chat, red, id) =>
+  (chat?.bloqueados ?? []).some(b => b.red === red && b.id === String(id ?? ''));
 
 /**
  * Lo que se sabe AHORA del chat abierto de esta sala, sin esperar.
@@ -586,13 +628,17 @@ export async function chatAbierto(slug) {
  * lista vacia no se "arreglan" en silencio, porque el creador creeria
  * que eligio algo que no quedo guardado.
  */
-export function porQueNoSePuedeAbrir({ activo, redes } = {}) {
+export function porQueNoSePuedeAbrir({ activo, redes, bloquear, desbloquear } = {}) {
   if (activo !== undefined && typeof activo !== 'boolean') return 'activo tiene que ser true o false';
   if (redes !== undefined) {
     if (!Array.isArray(redes)) return 'redes tiene que ser una lista';
     if (!redes.length) return 'elegí al menos una red';
     const raras = redes.filter(r => !REDES_CHAT.includes(r));
     if (raras.length) return `no existe la red ${String(raras[0]).slice(0, 20)}`;
+  }
+  for (const [campo, valor] of [['bloquear', bloquear], ['desbloquear', desbloquear]]) {
+    if (valor === undefined) continue;
+    if (!bloqueadoLimpio(valor)) return `${campo} necesita una red y un id de esa red`;
   }
   return '';
 }
@@ -622,11 +668,36 @@ export async function ponerChatAbierto(slug, pedido = {}) {
   }
 
   const antes = chatAbiertoDelDoc(doc);
+
+  /* La lista de bloqueados se toca de a uno: el panel manda "bloquea a
+     este" o "desbloquea a este", nunca la lista entera. Mandar la lista
+     entera haria que dos pestanas del panel abiertas a la vez se
+     pisaran los bloqueos sin que nadie se entere. */
+  let bloqueados = [...antes.bloqueados];
+  if (pedido.desbloquear) {
+    const fuera = bloqueadoLimpio(pedido.desbloquear);
+    bloqueados = bloqueados.filter(b => !(b.red === fuera.red && b.id === fuera.id));
+  }
+  if (pedido.bloquear) {
+    const nuevoB = bloqueadoLimpio(pedido.bloquear);
+    /* Bloquear a alguien que ya estaba no lo duplica ni le mueve la
+       fecha: el creador toco dos veces el mismo boton y ya esta. */
+    if (!bloqueados.some(b => b.red === nuevoB.red && b.id === nuevoB.id)) {
+      if (bloqueados.length >= TOPE_BLOQUEADOS) {
+        throw new Error(`no entran mas de ${TOPE_BLOQUEADOS} bloqueados: sacá alguno`);
+      }
+      bloqueados.push(nuevoB);
+    }
+  }
+
   const nuevo = Object.freeze({
     activo: pedido.activo ?? antes.activo,
     redes: Object.freeze(pedido.redes !== undefined ? redesValidas(pedido.redes) : [...antes.redes]),
+    bloqueados: Object.freeze(bloqueados),
   });
-  await escribir(s, { chatAbierto: { activo: nuevo.activo, redes: [...nuevo.redes] } });
+  await escribir(s, {
+    chatAbierto: { activo: nuevo.activo, redes: [...nuevo.redes], bloqueados: [...nuevo.bloqueados] },
+  });
   chatEnMemoria.set(s, nuevo);
   return nuevo;
 }

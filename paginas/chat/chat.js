@@ -99,9 +99,10 @@
 
   const bandaSesion = document.getElementById('banda-sesion');
 
-  const avisoEnvio       = document.getElementById('aviso-envio');
-  const textoAvisoEnvio  = document.getElementById('texto-aviso-envio');
-  const botonCerrarAviso = document.getElementById('boton-cerrar-aviso');
+  const avisoEnvio        = document.getElementById('aviso-envio');
+  const textoAvisoEnvio   = document.getElementById('texto-aviso-envio');
+  const botonCerrarAviso  = document.getElementById('boton-cerrar-aviso');
+  const botonDeshacerAviso = document.getElementById('boton-deshacer-aviso');
 
   const campoTexto        = document.getElementById('campo-texto');
   const selectDestino     = document.getElementById('select-destino');
@@ -159,7 +160,57 @@
       ul.scrollTop = ul.scrollHeight;
     });
 
+    // El botón de bloquear de cada mensaje se escucha ACÁ, en la lista,
+    // y no en el botón: /chat clona el <li> para la columna de su red y
+    // un clon no se lleva las escuchas.
+    ul.addEventListener('click', alClickEnLista);
+
     return info;
+  }
+
+  // ---------- bloquear a alguien en esta herramienta ----------
+
+  function alClickEnLista(ev) {
+    const boton = ev?.target;
+    const id = boton?.dataset?.bloquearId;
+    if (!id) return;
+    bloquear({
+      red: boton.dataset.bloquearRed,
+      id,
+      nombre: boton.dataset.bloquearNombre || '',
+    });
+  }
+
+  // El bloqueo va con la cookie del creador y a SU sala: el servidor
+  // saca el slug de ahí y nunca del cuerpo.
+  function mandarAlPanel(cuerpo) {
+    return fetch('/api/panel/chat', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    }).then(async r => {
+      const datos = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(datos?.error || 'http ' + r.status);
+      return datos;
+    });
+  }
+
+  function bloquear({ red, id, nombre }) {
+    const quien = nombre || id;
+    mandarAlPanel({ bloquear: { red, id, nombre } })
+      .then(() => mostrarAviso(
+        `bloqueaste a ${quien} en ${NOMBRE_RED[red] ?? red}: no puede escribir desde esta herramienta ` +
+        '(en su plataforma sigue pudiendo)',
+        // Un click de más no tiene que costar una visita al panel.
+        { deshacer: () => desbloquear({ red, id, nombre }) }))
+      .catch(e => mostrarAviso('no se pudo bloquear: ' + e.message));
+  }
+
+  function desbloquear({ red, id, nombre }) {
+    mandarAlPanel({ desbloquear: { red, id } })
+      .then(() => mostrarAviso(`${nombre || id} ya no está bloqueado`, { autoOcultar: true }))
+      .catch(e => mostrarAviso('no se pudo desbloquear: ' + e.message));
   }
 
   function estaPegadoAbajo(ul) {
@@ -203,7 +254,10 @@
   // mismos mensajes con el mismo formato unico, y dos copias del mismo
   // armado terminan siendo dos comportamientos distintos el dia que
   // alguien arregla uno de los dos.
-  const crearElementoMensaje = datos => window.SalaMensajes.crear(datos);
+  // `conBloquear` sólo en /chat: es la ventana del creador y el bloqueo
+  // se hace con SU cookie. En /chat/<slug> y en la Sala, ni existe.
+  const crearElementoMensaje = datos =>
+    window.SalaMensajes.crear(datos, { conBloquear: !modoPublico && !modoDemo });
 
   // ---------- entrada de un mensaje de chat ----------
 
@@ -463,8 +517,16 @@
 
   let avisoOcultarTimeout = null;
 
-  function mostrarAviso(texto, { autoOcultar = false } = {}) {
+  // lo que hace el botón "Deshacer" del aviso, o null si no hay nada
+  // que deshacer. Vive acá y no en el botón para que el aviso siguiente
+  // no herede el deshacer del anterior.
+  let deshacerDelAviso = null;
+
+  function mostrarAviso(texto, { autoOcultar = false, deshacer = null } = {}) {
     textoAvisoEnvio.textContent = texto;
+    deshacerDelAviso = deshacer;
+    botonDeshacerAviso.hidden = !deshacer;
+    botonDeshacerAviso.disabled = false;
     avisoEnvio.hidden = false;
     if (avisoOcultarTimeout) clearTimeout(avisoOcultarTimeout);
     avisoOcultarTimeout = autoOcultar ? setTimeout(ocultarAviso, 8000) : null;
@@ -472,8 +534,17 @@
 
   function ocultarAviso() {
     avisoEnvio.hidden = true;
+    deshacerDelAviso = null;
+    botonDeshacerAviso.hidden = true;
     if (avisoOcultarTimeout) { clearTimeout(avisoOcultarTimeout); avisoOcultarTimeout = null; }
   }
+
+  botonDeshacerAviso.addEventListener('click', () => {
+    const hacer = deshacerDelAviso;
+    if (!hacer) return;
+    botonDeshacerAviso.disabled = true;
+    hacer();
+  });
 
   botonCerrarAviso.addEventListener('click', ocultarAviso);
 

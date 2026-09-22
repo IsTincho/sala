@@ -556,6 +556,112 @@ test('un 429 de Kick frena el CANAL, y no calla a Twitch', async () => {
   assert.equal(porTwitch.estado, 200, 'callar Twitch porque Kick frena seria callar a todos sin motivo');
 });
 
+/* ====================== bloqueados por el creador (Fase 5.4) */
+
+const panelChat = cuerpo => pedir('/api/panel/chat', { metodo: 'POST', cookie: sesionAna, cuerpo });
+
+test('a quien el creador bloqueó le rebota el mensaje, y la otra red le sigue andando', async () => {
+  const r = await panelChat({ bloquear: { red: 'kick', id: `kick-${ID_LAS_DOS}`, nombre: 'la bloqueada' } });
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.datos.chatAbierto.bloqueados.map(b => b.red), ['kick']);
+
+  const kick = await enviar(conLasDos, { red: 'kick', texto: 'hola' });
+  assert.equal(kick.estado, 403);
+  assert.match(kick.datos.error, /te bloqueó/);
+  assert.deepEqual(kick.datos.bloqueado, ['kick']);
+  assert.equal(pedidosKick.length, 0, 'se corta antes de gastar un pedido');
+
+  /* El bloqueo es por red y por id: su Twitch no tiene nada que ver. */
+  espectadores.reiniciar();
+  const twitch = await enviar(conLasDos, { red: 'twitch', texto: 'hola' });
+  assert.equal(twitch.estado, 200);
+
+  /* Y con "ambas" rebota entero, porque una de las dos está bloqueada. */
+  espectadores.reiniciar();
+  const ambas = await enviar(conLasDos, { red: 'ambas', texto: 'hola' });
+  assert.equal(ambas.estado, 403);
+
+  /* A otra persona no le pasa nada. */
+  espectadores.reiniciar();
+  const otra = await enviar(conKick, { red: 'kick', texto: 'yo no soy' });
+  assert.equal(otra.estado, 200);
+
+  await panelChat({ desbloquear: { red: 'kick', id: `kick-${ID_LAS_DOS}` } });
+});
+
+test('el desbloqueo vale al instante', async () => {
+  await panelChat({ bloquear: { red: 'kick', id: `kick-${ID_KICK}` } });
+  assert.equal((await enviar(conKick, { red: 'kick', texto: 'uno' })).estado, 403);
+
+  const r = await panelChat({ desbloquear: { red: 'kick', id: `kick-${ID_KICK}` } });
+  assert.deepEqual(r.datos.chatAbierto.bloqueados, []);
+
+  espectadores.reiniciar();
+  assert.equal((await enviar(conKick, { red: 'kick', texto: 'dos' })).estado, 200);
+});
+
+test('a quien está bloqueado se le dice, en vez de esconderle la caja sin explicación', async () => {
+  await panelChat({ bloquear: { red: 'twitch', id: `twitch-${ID_TWITCH}`, nombre: 'ese' } });
+
+  const { datos } = await pedir(`/api/chat/${ANA}/yo`, { cookie: conTwitch });
+  assert.deepEqual(datos.bloqueado, ['twitch']);
+  assert.deepEqual(datos.puedeEscribir, [], 'bloqueado no puede escribir, aunque tenga la red conectada');
+  assert.deepEqual(Object.keys(datos.conectadas), ['twitch'], 'lo suyo sigue siendo suyo');
+
+  await panelChat({ desbloquear: { red: 'twitch', id: `twitch-${ID_TWITCH}` } });
+});
+
+test('la lista de bloqueados no sale por ninguna ruta pública', async () => {
+  /* Es del creador: quién está bloqueado no se cuenta en la página que
+     lee cualquiera, y menos en el bus. */
+  await panelChat({ bloquear: { red: 'kick', id: 'un-id-secreto', nombre: 'alguien' } });
+
+  const abierto = await pedir(`/api/chat/${ANA}/abierto`);
+  assert.deepEqual(Object.keys(abierto.datos).sort(), ['abierto', 'redes']);
+
+  const yo = await pedir(`/api/chat/${ANA}/yo`, { cookie: conKick });
+  assert.equal(JSON.stringify(yo.datos).includes('un-id-secreto'), false);
+  assert.equal(JSON.stringify(yo.datos).includes('alguien'), false);
+
+  await panelChat({ desbloquear: { red: 'kick', id: 'un-id-secreto' } });
+});
+
+test('bloquear pide una red y un id de verdad', async () => {
+  for (const bloquear of [{ red: 'kick' }, { id: '123' }, { red: 'mastodon', id: '1' },
+                          { red: 'kick', id: 'con espacios' }, { red: 'kick', id: 'a'.repeat(65) }]) {
+    const r = await panelChat({ bloquear });
+    assert.equal(r.estado, 400, JSON.stringify(bloquear));
+  }
+});
+
+test('bloquear dos veces a la misma persona no la duplica', async () => {
+  await panelChat({ bloquear: { red: 'kick', id: '4242', nombre: 'dos veces' } });
+  const r = await panelChat({ bloquear: { red: 'kick', id: '4242', nombre: 'dos veces' } });
+  assert.equal(r.datos.chatAbierto.bloqueados.length, 1);
+  await panelChat({ desbloquear: { red: 'kick', id: '4242' } });
+});
+
+test('el bloqueo es de una sala, no del servicio', async () => {
+  /* Cada sala es un inquilino: que Ana bloquee a alguien no lo bloquea
+     en el chat de Beto. */
+  await almacen.poner('creadores', 'beto2', { slug: 'beto2', plan: 'amigo', creado: Date.now() });
+  await creadores.ponerChatAbierto('beto2', { activo: true, redes: ['kick'] });
+  await vinculos.guardar('beto2', 'kick', {
+    usuarioId: '8888', nombre: 'Beto', login: 'beto2', slug: 'beto2',
+    accessToken: 'a', refreshToken: 'r', venceEn: Date.now() + 3600_000, scopes: 'chat:write',
+  });
+  await panelChat({ bloquear: { red: 'kick', id: `kick-${ID_KICK}` } });
+
+  assert.equal((await enviar(conKick, { red: 'kick', texto: 'en la de ana' })).estado, 403);
+  espectadores.reiniciar();
+  const enBeto = await pedir('/api/chat/beto2/enviar', {
+    metodo: 'POST', cookie: conKick, cuerpo: { red: 'kick', texto: 'en la de beto' },
+  });
+  assert.equal(enBeto.estado, 200, 'el bloqueo de Ana no puede callarlo en la sala de Beto');
+
+  await panelChat({ desbloquear: { red: 'kick', id: `kick-${ID_KICK}` } });
+});
+
 /* ================================================== CSRF */
 
 test('un POST con Origin ajeno no escribe nada', async () => {

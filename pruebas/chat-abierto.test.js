@@ -246,8 +246,9 @@ test('con el chat cerrado, el bus público no trae Twitch', async () => {
 test('abierto con las dos redes, el bus público trae Kick y Twitch', async () => {
   const r = await abrirChat(sesionAna, { activo: true });
   assert.equal(r.estado, 200);
-  /* Sin decir redes, nace con las dos: la gracia es verlas juntas. */
-  assert.deepEqual(r.datos.chatAbierto, { activo: true, redes: ['kick', 'twitch'] });
+  /* Sin decir redes, nace con las dos: la gracia es verlas juntas. Y
+     sin nadie bloqueado, que es como nace la lista. */
+  assert.deepEqual(r.datos.chatAbierto, { activo: true, redes: ['kick', 'twitch'], bloqueados: [] });
 
   const abierto = await pedir(`/api/chat/${ANA}/abierto`);
   assert.deepEqual(abierto.datos, { abierto: true, redes: ['kick', 'twitch'] });
@@ -497,7 +498,7 @@ test('/api/panel trae el chat abierto de SU sala', async () => {
   await abrirChat(sesionBeto, { activo: true, redes: ['kick'] });
   const r = await pedir('/api/panel', { cookie: sesionBeto });
   assert.equal(r.estado, 200);
-  assert.deepEqual(r.datos.chatAbierto, { activo: true, redes: ['kick'] });
+  assert.deepEqual(r.datos.chatAbierto, { activo: true, redes: ['kick'], bloqueados: [] });
   /* El link no viaja: lo arma la página con el origen desde el que la
      miran, que detrás de un proxy no es el de Railway. */
   assert.ok(!JSON.stringify(r.datos).includes('/chat/beto'));

@@ -31,7 +31,7 @@ const deKick = (conRespuesta) => mensajes.deKick({
   message_id: 'k1',
   content: 'hola',
   created_at: AHORA,
-  sender: { username: 'Fulana', identity: { username_color: '#53fc18', badges: [] } },
+  sender: { username: 'Fulana', user_id: 909, identity: { username_color: '#53fc18', badges: [] } },
   ...(conRespuesta
     ? { replies_to: { message_id: 'k0', content: 'que tal', sender: { username: 'Mengana' } } }
     : {}),
@@ -40,6 +40,7 @@ const deKick = (conRespuesta) => mensajes.deKick({
 const deTwitch = (conRespuesta) => mensajes.deTwitch({
   message_id: 't1',
   chatter_user_name: 'Fulana',
+  chatter_user_id: '909',
   color: '#9146ff',
   badges: [],
   message: { text: 'hola', fragments: [{ type: 'text', text: 'hola' }] },
@@ -51,6 +52,7 @@ const deTwitch = (conRespuesta) => mensajes.deTwitch({
 const deIrc = (conRespuesta) => mensajes.deIrc({
   id: 'i1',
   'display-name': 'Fulana',
+  'user-id': '909',
   color: '#9146ff',
   badges: '',
   'tmi-sent-ts': String(Date.now()),
@@ -78,7 +80,16 @@ test('las tres traducciones devuelven el mismo juego de claves', () => {
   /* Que la lista sea la del plan, y no tres iguales entre si pero
      otra cosa. */
   assert.deepEqual(claves(k),
-    ['color', 'emotes', 'hora', 'id', 'insignias', 'red', 'texto', 'tipo', 'usuario']);
+    ['color', 'emotes', 'hora', 'id', 'insignias', 'red', 'texto', 'tipo', 'usuario', 'usuarioId']);
+
+  /* `usuarioId` es el id de quien escribio EN SU RED, y es lo unico
+     con lo que se puede bloquear a alguien: por nombre no sirve,
+     porque los nombres se cambian. Las tres traducciones tienen que
+     traerlo o bloquear anda en Kick y no en Twitch (o al reves, la
+     noche que EventSub se cae y entra el plan B de IRC). */
+  for (const [nombre, m] of [['kick', k], ['twitch', t], ['irc', i]]) {
+    assert.ok(m.usuarioId, `${nombre} no trajo el id de quien escribio`);
+  }
 });
 
 test('las tres traducciones dan el mismo respondeA', () => {

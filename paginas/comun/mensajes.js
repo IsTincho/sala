@@ -13,7 +13,7 @@
    aca, los tests explotan en vez de pasar.
 
    Expone `window.SalaMensajes`:
-     crear(datos)                 -> un <li> listo
+     crear(datos, opciones)       -> un <li> listo
      colorDeUsuario(datos)        -> el color ya validado y aclarado
      recortarTexto(texto, limite)
 
@@ -100,7 +100,21 @@
     }
   }
 
-  function crear(datos) {
+  /**
+   * Un <li> de mensaje.
+   *
+   * `opciones.conBloquear` agrega el boton de bloquear al lado del
+   * nombre. Lo pide SOLO la ventana del creador (/chat): la Sala y el
+   * chat abierto pasan de largo, asi que el boton no existe ahi ni
+   * escondido con CSS.
+   *
+   * El boton no lleva su propia escucha: lleva los datos en `dataset` y
+   * quien lo puso escucha el click en la lista. Es a proposito, porque
+   * /chat CLONA el <li> para ponerlo en la columna de su red y un
+   * clon no se lleva las escuchas: el boton de la columna no haria
+   * nada y nadie se enteraria hasta que alguien lo tocara.
+   */
+  function crear(datos, opciones = {}) {
     const li = document.createElement('li');
     li.className = 'mensaje';
     li.dataset.id = datos.id;
@@ -144,6 +158,21 @@
     usuarioEl.textContent = datos.usuario;
     usuarioEl.style.color = colorDeUsuario(datos);
     filaPrincipal.appendChild(usuarioEl);
+
+    /* Sin id no hay a quien bloquear: por nombre no sirve, porque los
+       nombres se cambian. Un mensaje viejo del buffer, de antes de que
+       el id viajara, simplemente no trae el boton. */
+    if (opciones.conBloquear && datos.usuarioId) {
+      const boton = document.createElement('button');
+      boton.type = 'button';
+      boton.className = 'boton-bloquear';
+      boton.textContent = 'bloquear';
+      boton.title = `Que ${datos.usuario} no pueda escribir desde esta herramienta`;
+      boton.dataset.bloquearRed = datos.red === 'kick' ? 'kick' : 'twitch';
+      boton.dataset.bloquearId = String(datos.usuarioId);
+      boton.dataset.bloquearNombre = String(datos.usuario ?? '');
+      filaPrincipal.appendChild(boton);
+    }
 
     li.appendChild(filaPrincipal);
 

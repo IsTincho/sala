@@ -421,6 +421,12 @@ export async function conectarTwitch(slug) {
     return { vinculado: false };
   }
   c.twitch.vinculado = true;
+  /* Sin vinculo, `emotes.js` no tiene id que preguntarle a 7TV y lo
+     anota como "este creador no tiene esa red", que vence a la hora.
+     Vincular Twitch es justo el momento en que ese "no" dejo de ser
+     cierto: si no se lo vence aca, el creador conecta su Twitch y sus
+     emotes de 7TV tardan hasta una hora en aparecer. */
+  emotes.vencer(c.slug, 'twitch');
 
   /* El tope se mira ANTES de cerrar la conexion vieja: si esta sala ya
      tenia una, reconectarla no suma ninguna y tiene que poder hacerse

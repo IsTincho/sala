@@ -61,6 +61,16 @@ decidirlo: lo único que los genera es `reloj.aplicarYDifundir`, al que sólo se
 `POST /api/sala/:slug/reloj` y por el borrado de un video, y las dos contestan 404 antes de
 tocar nada. Lo que se escapaba era la foto vieja, no el evento nuevo.
 
+**Y buscando el resto de esa fuga apareció la puerta grande: `/api/estado`.** Es pública,
+sin sesión, la consulta la página `/`, y publicaba `canales[].reloj` **entero**: el título,
+la URL y el segundo de la película de todos los canales a la vez, sin necesidad de saber
+ningún slug. No lo usaba nadie —ni la página de estado, ni el Worker de Cloudflare, ni una
+prueba—. Queda un booleano `conReloj`, que se gana el lugar porque explica algo que si no no
+se puede ver desde afuera: un canal con reloj puesto no se libera de memoria aunque no quede
+nadie mirando. Cerrar una sola de las dos puertas no cerraba nada, y esto vale también con
+la Sala prendida: nunca hubo motivo para que `/api/estado` contara qué está pasando cada
+creador.
+
 ### El dueño del servicio no es la excepción, por una vez
 
 `existe()` sí lo trata aparte: contesta `true` sin tocar el almacén, y es lo que hace que su
@@ -111,7 +121,7 @@ de un creador nuevo se rompe con "Falta aceptar los terminos"—. Sigue en `'1'`
 
 `servidor/creadores.js` (el campo, `salaAbierta()`, `ponerSalaAbierta()`), `servidor/index.js`
 (`salaPermitida`, `salaCerrada`, las dos rutas nuevas, el `conReloj` de `/eventos`),
-`servidor/canales.js` (`estadoDe` con `conReloj`), `paginas/panel.html` y `paginas/panel/panel.js`
+`servidor/canales.js` (`estadoDe` con `conReloj`, y `resumen()` sin el reloj), `paginas/panel.html` y `paginas/panel/panel.js`
 (la tarjeta del interruptor), `paginas/admin.html` y `paginas/admin/admin.js` (la columna
 *Sala*), `paginas/crear.html`, `paginas/index.html`, `paginas/terminos.html`,
 `pruebas/sala-cerrada.test.js` (nuevo) y los ajustes de `creadores`, `sala-http`, `multicanal`,

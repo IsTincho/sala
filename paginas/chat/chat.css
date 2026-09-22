@@ -67,6 +67,41 @@ html, body{
   flex-wrap: wrap;
 }
 
+/* solo en /chat/<slug>: de quien es el chat. Chico, para que la barra
+   siga entrando en una linea en una ventana angosta. */
+.titulo-chat{
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* /chat/<slug> con el chat cerrado: ocupa el lugar de los mensajes */
+.pantalla-cerrado{
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--espacio-2);
+  padding: var(--espacio-3);
+  text-align: center;
+}
+
+.titulo-cerrado{
+  margin: 0;
+  font-size: 1.25em;
+  font-weight: 600;
+}
+
+.pantalla-cerrado .texto-tenue{
+  margin: 0;
+  max-width: 32rem;
+}
+
 .boton-chip{
   font: inherit;
   font-size: 0.85em;

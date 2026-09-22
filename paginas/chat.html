@@ -31,12 +31,16 @@
   </div>
 
   <header class="barra-superior">
+    <!-- sólo en /chat/<slug>: de quién es este chat. En /chat no hace
+         falta, es la ventana del propio creador. -->
+    <h1 id="titulo-chat" class="titulo-chat" hidden></h1>
     <div class="barra-controles">
       <button type="button" id="boton-vista" class="boton-chip" aria-pressed="false">Vista: mezclada</button>
       <button type="button" id="boton-letra" class="boton-chip" aria-pressed="false">Letra: normal</button>
       <button type="button" id="boton-filtro" class="boton-chip" aria-pressed="false">Filtro: todas</button>
     </div>
-    <div class="barra-salud" role="status" aria-live="polite">
+    <!-- la salud es de la cuenta del creador: en /chat/<slug> no se muestra -->
+    <div class="barra-salud" id="barra-salud" role="status" aria-live="polite">
       <span class="item-salud">
         <span id="puntito-kick" class="puntito mal"></span>
         <span id="texto-kick">Kick · sin datos</span>
@@ -47,6 +51,14 @@
       </span>
     </div>
   </header>
+
+  <!-- /chat/<slug> con el chat cerrado (o una sala que ya no está).
+       El texto lo pone chat.js; la página se sigue fijando sola cada
+       tanto y, cuando el creador lo abre, esto se va sin recargar. -->
+  <section id="pantalla-cerrado" class="pantalla-cerrado" hidden aria-live="polite">
+    <p id="titulo-cerrado" class="titulo-cerrado">Este chat está cerrado</p>
+    <p id="texto-cerrado" class="texto-tenue">El creador todavía no lo abrió a su comunidad.</p>
+  </section>
 
   <main class="area-mensajes" id="area-mensajes">
     <!-- vista mezclada: una sola lista -->
@@ -79,7 +91,8 @@
     <button type="button" id="boton-cerrar-aviso" aria-label="Cerrar aviso">×</button>
   </div>
 
-  <footer class="caja-escritura">
+  <!-- en /chat/<slug> no se ve: escribir como espectador es la Fase 5.2 -->
+  <footer class="caja-escritura" id="caja-escritura">
     <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
       placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
     <div class="fila-controles-envio">

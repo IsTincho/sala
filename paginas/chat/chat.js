@@ -15,6 +15,17 @@
                     history.replaceState para que el estado sea
                     compartible y sobreviva a un F5.
 
+   Y un modo mas, que no sale de un parametro sino del CAMINO:
+     /chat/<slug>   el chat de esa sala, abierto a su comunidad
+                    (Fase 5.1, PLAN-MULTICHAT.md). Solo lectura: sin
+                    salud (es de la cuenta del creador) y sin caja de
+                    escribir (escribir como espectador es la 5.2). Le
+                    pregunta a /api/chat/<slug>/abierto si esta abierto
+                    y con que redes; cerrado, muestra "este chat esta
+                    cerrado" y se vuelve a fijar sola cada tanto. El
+                    slug sale del camino y de ningun otro lado: ?canal=
+                    no lo cambia.
+
    Nada de innerHTML con datos que vengan de la red: el texto de
    un mensaje lo escribe gente desconocida, asi que todo pasa por
    textContent / createTextNode.
@@ -22,6 +33,22 @@
 (() => {
   const parametrosURL = new URLSearchParams(location.search);
   const modoDemo = parametrosURL.get('demo') === '1';
+
+  // /chat/<slug>. Un %ZZ en el camino no puede tirar la pagina entera:
+  // se trata como si no hubiera slug.
+  const slugPublico = (() => {
+    const m = /^\/chat\/([^/]+)\/?$/.exec(location.pathname);
+    if (!m) return '';
+    try { return decodeURIComponent(m[1]).toLowerCase(); } catch { return ''; }
+  })();
+  const modoPublico = Boolean(slugPublico);
+
+  // Que redes se ven. En /chat, las dos; en /chat/<slug>, las que el
+  // creador eligio compartir. No filtra nada que llegue (eso lo hace el
+  // servidor, por conexion): decide que columnas y que filtro tienen
+  // sentido en pantalla.
+  const REDES = ['kick', 'twitch'];
+  let redesVisibles = REDES.slice();
 
   // ---------- estado de la vista, leido de la URL ----------
 
@@ -74,6 +101,13 @@
   const selectDestino     = document.getElementById('select-destino');
   const contadorCaracteres = document.getElementById('contador-caracteres');
   const botonEnviar       = document.getElementById('boton-enviar');
+
+  const tituloChat      = document.getElementById('titulo-chat');
+  const barraSalud      = document.getElementById('barra-salud');
+  const cajaEscritura   = document.getElementById('caja-escritura');
+  const pantallaCerrado = document.getElementById('pantalla-cerrado');
+  const tituloCerrado   = document.getElementById('titulo-cerrado');
+  const textoCerrado    = document.getElementById('texto-cerrado');
 
   // ---------- listas de mensajes: una por cada zona de scroll ----------
   // cada entrada guarda su propio estado de pausa/autoscroll, porque en
@@ -196,20 +230,29 @@
     botonLetra.setAttribute('aria-pressed', String(estado.letra === 'grande'));
   }
 
+  // Con una sola red compartida, el filtro es esa red y no hay nada que
+  // elegir. Pasa en /chat/<slug> cuando el creador comparte solo Kick, o
+  // le saca Twitch con la pagina abierta: lo que ya habia llegado de
+  // Twitch se esconde con el mismo CSS del filtro, sin borrar nada.
+  const filtroEfectivo = () => (redesVisibles.length === 1 ? redesVisibles[0] : estado.filtro);
+
   function aplicarFiltro() {
     const etiqueta = estado.filtro === 'todas' ? 'todas' : estado.filtro === 'kick' ? 'solo Kick' : 'solo Twitch';
     botonFiltro.textContent = 'Filtro: ' + etiqueta;
     botonFiltro.setAttribute('aria-pressed', String(estado.filtro !== 'todas'));
+    botonFiltro.hidden = redesVisibles.length < 2;
+
+    const filtro = filtroEfectivo();
 
     // en la vista mezclada el filtro esconde los mensajes de la otra
     // red con CSS, no sacandolos de la lista: si se sacaran, volver a
     // "todas" no los podria traer de vuelta.
-    listas.mezclada.ul.dataset.filtro = estado.filtro;
+    listas.mezclada.ul.dataset.filtro = filtro;
 
     // en columnas el filtro esconde la columna entera
     const columnas = estado.vista === 'columnas';
-    columnaKick.hidden = !columnas || estado.filtro === 'twitch';
-    columnaTwitch.hidden = !columnas || estado.filtro === 'kick';
+    columnaKick.hidden = !columnas || filtro === 'twitch';
+    columnaTwitch.hidden = !columnas || filtro === 'kick';
 
     pegarAbajoLasVisibles();
   }
@@ -514,6 +557,115 @@
     } catch { /* nada: no puede romper la pagina */ }
   }
 
+  // ---------- /chat/<slug>: el chat abierto de una sala ----------
+
+  // Cerrado, se vuelve a preguntar cada tanto: asi, cuando el creador
+  // lo abre, la pagina aparece sola. Es un pedido chico que se contesta
+  // de memoria en el servidor.
+  const CADA_CONSULTA_CERRADO = 30000;
+
+  let conexionBus = null;        // lo que devuelve Sala.conectar, para poder cerrarla
+  let enElBus = false;
+  let yaHuboEstado = false;
+  let temporizadorAbierto = null;
+
+  function prepararModoPublico() {
+    tituloChat.textContent = 'Chat de ' + slugPublico;
+    tituloChat.hidden = false;
+    document.title = 'Chat de ' + slugPublico + ' · Sala';
+    barraSalud.hidden = true;
+    bandaSesion.hidden = true;
+    cajaEscritura.hidden = true;
+  }
+
+  function mostrarCerrado(titulo, texto) {
+    tituloCerrado.textContent = titulo;
+    textoCerrado.textContent = texto;
+    pantallaCerrado.hidden = false;
+    areaMensajes.hidden = true;
+  }
+
+  function vaciarListas() {
+    for (const info of Object.values(listas)) {
+      info.ul.textContent = '';
+      despausar(info);
+    }
+  }
+
+  function conectarPublico() {
+    if (enElBus) return;
+    enElBus = true;
+    yaHuboEstado = false;
+    // El servidor le manda los ultimos mensajes a cada conexion nueva:
+    // si quedara lo de antes de cerrar, al reabrir saldria repetido.
+    vaciarListas();
+    conexionBus = window.Sala.conectar(slugPublico, (tipo, datos) => {
+      if (tipo === 'chat') return manejarMensajeChat(datos);
+      if (tipo === 'chat-abierto') return aplicarAbierto(datos);
+      // El estado llega con cada conexion. La primera vez no dice nada
+      // nuevo (se acaba de preguntar); despues de un corte, si: el
+      // creador pudo cerrar el chat mientras esta pagina no escuchaba,
+      // y el aviso por el bus se perdio.
+      if (tipo === 'estado') {
+        if (yaHuboEstado) consultarAbierto();
+        yaHuboEstado = true;
+      }
+    });
+  }
+
+  function desconectarPublico() {
+    if (!enElBus) return;
+    enElBus = false;
+    try { conexionBus?.cerrar?.(); } catch { /* ya estaba cerrada */ }
+    conexionBus = null;
+  }
+
+  function programarConsultaAbierto() {
+    if (temporizadorAbierto) clearTimeout(temporizadorAbierto);
+    temporizadorAbierto = setTimeout(consultarAbierto, CADA_CONSULTA_CERRADO);
+  }
+
+  // Lo que dice el servidor, venga de /abierto o del aviso por el bus.
+  function aplicarAbierto(datos) {
+    if (!datos?.abierto) {
+      // Cerrado se cierra de verdad: sin conexion al bus. Quedarse
+      // escuchando mandaria el Kick de la sala a una pantalla que no lo
+      // muestra, y contaria como alguien mirando la peli.
+      desconectarPublico();
+      mostrarCerrado('Este chat está cerrado',
+        'El creador todavía no lo abrió a su comunidad. Esta página se fija sola cada tanto.');
+      programarConsultaAbierto();
+      return;
+    }
+    const redes = REDES.filter(r => Array.isArray(datos.redes) && datos.redes.includes(r));
+    redesVisibles = redes.length ? redes : REDES.slice();
+    pantallaCerrado.hidden = true;
+    areaMensajes.hidden = false;
+    aplicarFiltro();
+    conectarPublico();
+  }
+
+  function consultarAbierto() {
+    return fetch(`/api/chat/${encodeURIComponent(slugPublico)}/abierto`, { credentials: 'same-origin' })
+      .then(async r => {
+        if (r.status === 404) {
+          desconectarPublico();
+          mostrarCerrado('Esta sala no existe', 'Revisá el link: puede que esté mal escrito.');
+          return;
+        }
+        if (!r.ok) throw new Error('http ' + r.status);
+        ocultarAviso();
+        aplicarAbierto(await r.json());
+      })
+      .catch(() => {
+        // Un corte suelto no cierra un chat que se estaba viendo: si ya
+        // hay bus, sigue; si no, se avisa y se vuelve a probar.
+        if (enElBus) return;
+        mostrarAviso('no se pudo consultar el chat: se vuelve a intentar solo');
+        programarConsultaAbierto();
+      });
+  }
+
   // ---------- arranque ----------
 
   function iniciarModoDemo() {
@@ -521,7 +673,8 @@
     script.src = 'chat/demo.js';
     script.onload = () => {
       window.SalaDemo.mensajes().forEach(manejarMensajeChat);
-      aplicarSalud(window.SalaDemo.salud());
+      // la salud es de la cuenta del creador: en /chat/<slug> no va
+      if (!modoPublico) aplicarSalud(window.SalaDemo.salud());
       setInterval(() => manejarMensajeChat(window.SalaDemo.siguiente()), 2000);
     };
     document.head.appendChild(script);
@@ -562,10 +715,19 @@
   }
 
   function iniciar() {
-    registrarServiceWorker();
+    // /chat/<slug> no se instala: el service worker y el manifest son
+    // los de la ventana del creador (start_url /chat). El de cada sala
+    // es de la Fase 5.4.
+    if (modoPublico) prepararModoPublico();
+    else registrarServiceWorker();
 
     if (modoDemo) {
       iniciarModoDemo();
+      return;
+    }
+
+    if (modoPublico) {
+      consultarAbierto();
       return;
     }
 

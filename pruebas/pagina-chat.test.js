@@ -595,3 +595,238 @@ test('sin ?canal, el slug sale de /api/estado y se abre el bus', async () => {
 
   p.cerrar();
 });
+
+/* ================================= /chat/<slug>: el chat abierto (5.1) */
+
+/* Los turnos de una promesa sin usar setTimeout: las pruebas que
+   falsean setTimeout (la reconsulta de "cerrado" es cada 30 s) no
+   pueden esperar con él. */
+const turnos = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(ok => setImmediate(ok)); };
+
+const ABIERTO_LAS_DOS = { abierto: true, redes: ['kick', 'twitch'] };
+const CERRADO = { abierto: false, redes: [] };
+
+/**
+ * La misma página, abierta en /chat/<slug>. El bus de mentira anota
+ * cada conexión y deja ver si se cerró.
+ */
+function abrirPublico({ ruta = '/chat/ana', busqueda = '', abierto = ABIERTO_LAS_DOS, estado = 200 } = {}) {
+  const pedidos = [];
+  const conexiones = [];
+  let respuesta = { estado, datos: abierto };
+
+  const responder = async (url, opciones = {}) => {
+    const r = String(url);
+    pedidos.push({ url: r, opciones });
+    if (/^\/api\/chat\/[^/]+\/abierto$/.test(r)) {
+      const { estado: s, datos } = respuesta;
+      return { ok: s === 200, status: s, json: async () => datos };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const pagina = abrirPagina({
+    ruta,
+    busqueda,
+    antes: ['comun/mensajes.js'],
+    fetch: responder,
+    Sala: {
+      conectar: (slug, fn) => {
+        const c = { slug, fn, cerrada: false, cerrar() { this.cerrada = true; } };
+        conexiones.push(c);
+        return c;
+      },
+    },
+  });
+
+  return {
+    ...pagina,
+    pedidos,
+    conexiones,
+    /** algo que llega por la ultima conexion abierta */
+    llega: (tipo, datos) => conexiones.at(-1)?.fn(tipo, datos),
+    /** lo que va a contestar /abierto la proxima vez */
+    contestar: (datos, s = 200) => { respuesta = { estado: s, datos }; },
+    consultasAbierto: () => pedidos.filter(x => /\/abierto$/.test(x.url)).length,
+  };
+}
+
+test('/chat/<slug> abierto: Kick y Twitch mezclados, sin salud y sin caja de escribir', async () => {
+  const p = abrirPublico();
+  await asentarse();
+
+  assert.ok(p.pedidos.some(x => x.url === '/api/chat/ana/abierto'));
+  assert.ok(!p.pedidos.some(x => x.url === '/api/chat/salud' || x.url === '/api/estado'),
+    'la salud y /api/estado son de la ventana del creador');
+  assert.equal(p.conexiones.length, 1);
+  assert.equal(p.conexiones[0].slug, 'ana');
+
+  p.llega('chat', mensaje({ id: 'k1', red: 'kick', texto: 'desde kick' }));
+  p.llega('chat', mensaje({ id: 't1', red: 'twitch', usuario: 'purple', texto: 'desde twitch' }));
+  assert.equal(p.el('lista-mezclada').children.length, 2, 'las dos redes, juntas, por defecto');
+  assert.equal(p.el('lista-mezclada').dataset.filtro, 'todas');
+  assert.equal(p.el('columna-mezclada').hidden, false, 'la vista por defecto es la mezclada');
+
+  assert.equal(p.el('caja-escritura').hidden, true, 'escribir es la Fase 5.2');
+  assert.equal(p.el('barra-salud').hidden, true);
+  assert.equal(p.el('banda-sesion').hidden, true);
+  assert.equal(p.el('pantalla-cerrado').hidden, true);
+  assert.equal(p.el('titulo-chat').hidden, false);
+  assert.match(p.el('titulo-chat').textContent, /ana/);
+
+  /* Y lo de /chat se reusa tal cual: vista, letra y pausa del scroll. */
+  p.el('boton-vista').disparar('click');
+  assert.equal(p.el('columna-kick').hidden, false);
+  assert.equal(p.el('columna-twitch').hidden, false);
+  p.cerrar();
+});
+
+test('en /chat/<slug> el slug sale del camino: ?canal= no lo cambia', async () => {
+  const p = abrirPublico({ busqueda: '?canal=istincho' });
+  await asentarse();
+  assert.equal(p.conexiones[0].slug, 'ana');
+  assert.ok(!p.pedidos.some(x => x.url.includes('istincho')));
+  p.cerrar();
+});
+
+test('cerrado: lo dice y NO se conecta al bus', async () => {
+  const p = abrirPublico({ abierto: CERRADO });
+  await asentarse();
+
+  assert.equal(p.el('pantalla-cerrado').hidden, false);
+  assert.match(p.el('titulo-cerrado').textContent, /cerrado/i);
+  assert.equal(p.el('area-mensajes').hidden, true);
+  assert.equal(p.conexiones.length, 0,
+    'escuchar el bus con el chat cerrado cuenta como alguien mirando y trae el Kick de la sala');
+  p.cerrar();
+});
+
+test('una sala que no existe (o que se dio de baja) lo dice', async () => {
+  const p = abrirPublico({ estado: 404, abierto: { error: 'esa sala no existe' } });
+  await asentarse();
+  assert.equal(p.el('pantalla-cerrado').hidden, false);
+  assert.match(p.el('titulo-cerrado').textContent, /no existe/);
+  assert.equal(p.conexiones.length, 0);
+  p.cerrar();
+});
+
+test('si el creador lo cierra con la página abierta, se corta el bus y se ve cerrado', async () => {
+  const p = abrirPublico();
+  await asentarse();
+  p.llega('chat', mensaje({ id: 'k1', red: 'kick' }));
+
+  p.llega('chat-abierto', { tipo: 'chat-abierto', abierto: false, redes: [] });
+
+  assert.equal(p.conexiones[0].cerrada, true, 'la conexión se tiene que cerrar');
+  assert.equal(p.el('pantalla-cerrado').hidden, false);
+  assert.equal(p.el('area-mensajes').hidden, true);
+  p.cerrar();
+});
+
+test('cerrado se vuelve a fijar solo, y cuando lo abren aparece sin recargar', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const p = abrirPublico({ abierto: CERRADO });
+  await turnos();
+  assert.equal(p.consultasAbierto(), 1);
+  assert.equal(p.conexiones.length, 0);
+
+  /* Todavía cerrado a los 30 s: vuelve a preguntar y sigue esperando. */
+  t.mock.timers.tick(30_000);
+  await turnos();
+  assert.equal(p.consultasAbierto(), 2);
+  assert.equal(p.conexiones.length, 0);
+
+  /* El creador lo abre. */
+  p.contestar(ABIERTO_LAS_DOS);
+  t.mock.timers.tick(30_000);
+  await turnos();
+  assert.equal(p.el('pantalla-cerrado').hidden, true);
+  assert.equal(p.el('area-mensajes').hidden, false);
+  assert.equal(p.conexiones.length, 1, 'y recién ahí se conecta al bus');
+  p.cerrar();
+});
+
+test('al reabrir no se repite lo que ya estaba: el servidor lo manda de nuevo', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const p = abrirPublico();
+  await turnos();
+  p.llega('chat', mensaje({ id: 'k1', red: 'kick', texto: 'de antes' }));
+  assert.equal(p.el('lista-mezclada').children.length, 1);
+
+  p.contestar(CERRADO);
+  p.llega('chat-abierto', { abierto: false, redes: [] });
+  p.contestar(ABIERTO_LAS_DOS);
+  t.mock.timers.tick(30_000);
+  await turnos();
+
+  assert.equal(p.conexiones.length, 2);
+  assert.equal(p.el('lista-mezclada').children.length, 0,
+    'cada conexión nueva recibe los últimos mensajes: si quedaban los viejos, salían dos veces');
+  p.llega('chat', mensaje({ id: 'k1', red: 'kick', texto: 'de antes' }));
+  assert.equal(p.el('lista-mezclada').children.length, 1);
+  p.cerrar();
+});
+
+test('con una sola red compartida no hay filtro que elegir, y lo de la otra se esconde', async () => {
+  const p = abrirPublico({ abierto: { abierto: true, redes: ['kick'] } });
+  await asentarse();
+
+  assert.equal(p.el('boton-filtro').hidden, true);
+  assert.equal(p.el('lista-mezclada').dataset.filtro, 'kick');
+
+  /* El creador suma Twitch con la página abierta: vuelve el filtro. */
+  p.llega('chat-abierto', { abierto: true, redes: ['kick', 'twitch'] });
+  assert.equal(p.el('boton-filtro').hidden, false);
+  assert.equal(p.el('lista-mezclada').dataset.filtro, 'todas');
+  assert.equal(p.conexiones.length, 1, 'sin reconectar');
+
+  /* Y se lo saca: lo que ya había llegado de Twitch se esconde con el
+     mismo CSS del filtro, sin borrarse. */
+  p.llega('chat', mensaje({ id: 't1', red: 'twitch' }));
+  p.llega('chat-abierto', { abierto: true, redes: ['kick'] });
+  assert.equal(p.el('lista-mezclada').dataset.filtro, 'kick');
+  assert.equal(p.el('lista-mezclada').children.length, 1);
+  p.cerrar();
+});
+
+test('después de un corte del bus vuelve a preguntar si sigue abierto', async () => {
+  /* Si el creador lo cerró mientras esta pestaña no escuchaba, el aviso
+     por el bus se perdió. El estado llega con cada conexión: el primero
+     no dice nada nuevo, los siguientes son una reconexión. */
+  const p = abrirPublico();
+  await asentarse();
+  const antes = p.consultasAbierto();
+
+  p.llega('estado', { tipo: 'estado', conectados: 1 });
+  await asentarse();
+  assert.equal(p.consultasAbierto(), antes, 'el primer estado no vuelve a preguntar');
+
+  p.contestar(CERRADO);
+  p.llega('estado', { tipo: 'estado', conectados: 1 });
+  await asentarse();
+  assert.equal(p.consultasAbierto(), antes + 1);
+  assert.equal(p.el('pantalla-cerrado').hidden, false);
+  p.cerrar();
+});
+
+test('?demo=1 en /chat/<slug> no toca la red ni muestra la salud del creador', async () => {
+  const p = abrirPublico({ busqueda: '?demo=1' });
+  await asentarse();
+  assert.equal(p.pedidos.length, 0);
+  assert.equal(p.conexiones.length, 0);
+  assert.ok(p.el('lista-mezclada').children.length >= 5);
+  assert.equal(p.el('banda-resuscribir').hidden, true);
+  assert.equal(p.el('caja-escritura').hidden, true);
+  p.cerrar();
+});
+
+test('/chat a secas sigue siendo la ventana del creador', async () => {
+  const p = abrir();
+  await asentarse();
+  assert.equal(p.el('caja-escritura').hidden, false);
+  assert.equal(p.el('barra-salud').hidden, false);
+  assert.equal(p.el('titulo-chat').hidden, true);
+  assert.equal(p.el('boton-filtro').hidden, false);
+  assert.ok(!p.pedidos.some(x => /\/abierto$/.test(x.url)));
+  p.cerrar();
+});

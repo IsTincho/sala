@@ -209,6 +209,40 @@ test('con la Sala apagada, /sala/:slug es indistinguible de una sala que no exis
     'el cuerpo tiene que ser el mismo que el de una sala inventada');
 });
 
+test('con la colección de creadores vacía la Sala del dueño tampoco existe', async () => {
+  /*
+   * EL PRIMER DÍA EN PRODUCCIÓN, que es el caso que casi se cuela.
+   *
+   * La sala del dueño del servicio existe por `KICK_SLUG` y funciona
+   * con `creadores` VACÍA: `existe()` le contesta true sin tocar el
+   * almacén. Si el interruptor hubiera copiado ese criterio, apagar el
+   * producto habría dejado prendida justamente la única Sala que hoy
+   * tiene una película puesta.
+   *
+   * Se le saca la fila entera (los demás tests se la crean al apagarla)
+   * y se comprueba que sin fila la respuesta es la misma.
+   */
+  await almacen.quitar('creadores', SLUG);
+  creadores.invalidar(SLUG);
+
+  assert.equal(await creadores.existe(SLUG), true, 'su sala tiene que seguir existiendo');
+  assert.equal(await creadores.salaAbierta(SLUG), false);
+  assert.equal((await pedir(`/sala/${SLUG}`)).estado, 404);
+  assert.equal((await pedir(`/api/sala/${SLUG}/yo`)).estado, 404);
+
+  /* Y su chat abierto sigue en pie sin fila, como siempre. */
+  assert.equal((await pedir(`/chat/${SLUG}`)).estado, 200);
+  assert.equal((await pedir(`/api/chat/${SLUG}/abierto`)).estado, 200);
+
+  /* Prenderla le crea la fila, que es el caso raro que atiende
+     `ponerSalaAbierta`. */
+  const r = await pedir('/api/panel/sala', {
+    metodo: 'POST', cookie: sesionDueno, cuerpo: { abierta: true },
+  });
+  assert.equal(r.estado, 200, `contestó ${r.estado}: ${r.texto.slice(0, 120)}`);
+  assert.equal((await pedir(`/sala/${SLUG}`)).estado, 200);
+});
+
 test('prendida, la misma dirección vuelve a servir la página', async () => {
   /* El control negativo: sin esto, un 404 clavado pasaría el test de
      arriba y la Sala no se podría reabrir nunca. */

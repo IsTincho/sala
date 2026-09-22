@@ -1030,6 +1030,46 @@ test('tener Twitch conectado no alcanza si el creador no lo abrió', async () =>
   p.cerrar();
 });
 
+test('al que bloquearon se le dice, en vez de esconderle la caja sin motivo', async () => {
+  const p = abrirPublico({
+    yo: {
+      entrado: true, abierto: true, redes: ['kick', 'twitch'],
+      conectadas: { kick: { nombre: 'unaespectadora' } },
+      bloqueado: ['kick'],
+      puedeEscribir: [],
+    },
+  });
+  await asentarse();
+
+  assert.equal(p.el('caja-escritura').hidden, true);
+  assert.match(p.el('texto-conectar').textContent, /te bloqueó/);
+  assert.match(p.el('texto-conectar').textContent, /Kick/);
+  /* Y se le dice que en el canal del creador sigue pudiendo: el bloqueo
+     es de esta herramienta y nada más. */
+  assert.match(p.el('texto-conectar').textContent, /seguís pudiendo/);
+  p.cerrar();
+});
+
+test('bloqueado en una red y no en la otra: escribe por la que le queda', async () => {
+  const p = abrirPublico({
+    yo: {
+      entrado: true, abierto: true, redes: ['kick', 'twitch'],
+      conectadas: { kick: { nombre: 'una' }, twitch: { nombre: 'Una' } },
+      bloqueado: ['kick'],
+      puedeEscribir: ['twitch'],
+    },
+  });
+  await asentarse();
+
+  assert.equal(p.el('caja-escritura').hidden, false);
+  assert.deepEqual(p.el('select-destino').children.map(o => o.getAttribute('value')), ['twitch'],
+    'sin "las dos": a Kick no puede');
+  const texto = p.el('texto-conectar').textContent;
+  assert.match(texto, /Escribís como Una en Twitch/);
+  assert.match(texto, /te bloqueó en Kick/, 'si no se dice, parece que Kick desapareció solo');
+  p.cerrar();
+});
+
 test('salió en una y falló en la otra: se dice cuál y por qué', async () => {
   const p = abrirPublico({ yo: CON_LAS_DOS });
   await asentarse();

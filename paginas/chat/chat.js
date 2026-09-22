@@ -755,6 +755,10 @@
     const abiertas = Array.isArray(datos?.redes) ? datos.redes : [];
     const conectadas = datos?.conectadas ?? {};
     const puede = Array.isArray(datos?.puedeEscribir) ? datos.puedeEscribir : [];
+    // En qué redes el creador la bloqueó, si es que en alguna. Lo dice
+    // el servidor: la página no lo adivina.
+    const bloqueado = Array.isArray(datos?.bloqueado) ? datos.bloqueado : [];
+    const nombresBloqueadas = bloqueado.map(r => NOMBRE_RED[r] ?? r).join(' y ');
 
     // Se ofrece conectar sólo lo que sirve acá: una red que el creador
     // no abrió no tiene por qué pedirle permisos a nadie.
@@ -765,14 +769,24 @@
     if (puede.length) {
       armarSelector(puede);
       cajaEscritura.hidden = false;
-      const como = REDES.filter(r => conectadas[r])
+      const como = REDES.filter(r => conectadas[r] && !bloqueado.includes(r))
         .map(r => `${conectadas[r].nombre || ''} en ${NOMBRE_RED[r]}`.trim());
-      textoConectar.textContent = 'Escribís como ' + como.join(' y ');
+      textoConectar.textContent = 'Escribís como ' + como.join(' y ')
+        // Le quedó una red, pero en la otra lo bloquearon: si no se
+        // dice, parece que la otra desapareció sola.
+        + (bloqueado.length ? ` · el creador te bloqueó en ${nombresBloqueadas}` : '');
     } else {
       cajaEscritura.hidden = true;
-      textoConectar.textContent = datos?.entrado
-        ? 'Conectá una de las redes que abrió este chat para poder escribir.'
-        : 'Conectá tu cuenta y escribí con tu nombre, en el chat de verdad.';
+      // El bloqueo va primero: esconderle la caja y decirle "conectá
+      // una red" a alguien que ya la conectó sería mentirle.
+      if (bloqueado.length) {
+        textoConectar.textContent = `El creador te bloqueó en este chat (${nombresBloqueadas}). ` +
+          'En su canal seguís pudiendo escribir como siempre.';
+      } else {
+        textoConectar.textContent = datos?.entrado
+          ? 'Conectá una de las redes que abrió este chat para poder escribir.'
+          : 'Conectá tu cuenta y escribí con tu nombre, en el chat de verdad.';
+      }
     }
 
     barraConectar.hidden = false;

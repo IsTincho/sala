@@ -92,6 +92,26 @@ test('las tres traducciones devuelven el mismo juego de claves', () => {
   }
 });
 
+test('las tres traducciones dan emotes con las mismas claves', () => {
+  /* El mismo razonamiento que arriba, un nivel mas adentro. Los
+     emotes de 7TV se agregan a este array desde `emotes.js` con un
+     campo `fuente`; si una de las tres traducciones no lo pusiera en
+     los nativos, habria mensajes donde algunos emotes lo tienen y
+     otros no, y el primero que lo lea se rompe justo con una red. */
+  const k = mensajes.partirTextoDeKick('hola [emote:4148074:HYPERCLAP]').emotes[0];
+  const t = mensajes.deTwitch({
+    message: { fragments: [{ type: 'emote', text: 'Kappa', emote: { id: '25' } }] },
+  }).emotes[0];
+  const i = mensajes.deIrc(new Map([['emotes', '25:0-4']]), 'x', 'Kappa').emotes[0];
+
+  assert.deepEqual(claves(k), ['fin', 'fuente', 'id', 'inicio', 'url']);
+  assert.deepEqual(claves(t), claves(k), 'deTwitch no da las mismas claves de emote que deKick');
+  assert.deepEqual(claves(i), claves(k), 'deIrc tampoco, y deIrc es el plan B');
+
+  assert.deepEqual([k.fuente, t.fuente, i.fuente], ['kick', 'twitch', 'twitch'],
+    'la fuente dice de donde salio el emote, no de que traductor');
+});
+
 test('las tres traducciones dan el mismo respondeA', () => {
   const k = deKick(true);
   const t = deTwitch(true);

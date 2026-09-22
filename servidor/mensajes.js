@@ -10,10 +10,24 @@
        id, usuario, usuarioId, color,
        insignias: [{ tipo, texto }],
        texto,
-       emotes: [{ id, inicio, fin, url }],
+       emotes: [{ id, inicio, fin, url, fuente }],
        hora,                       // ISO
        respondeA?: { id, usuario, texto }
      }
+
+   ---------------------------------------------------------------
+   DE DONDE SALIO CADA EMOTE: `fuente`
+
+   Vale 'kick' o 'twitch' para los que manda la plataforma, y '7tv'
+   para los que resuelve `emotes.js` por palabra. Los traductores de
+   aca solo ponen los dos primeros.
+
+   Esta en TODOS los emotes y no solo en los de terceros a proposito:
+   un array donde algunos elementos tienen una clave y otros no es la
+   forma de que el dia que alguien la use se le rompa justo con los
+   mensajes de una red. Es aditivo: un cliente viejo lo ignora. Hoy la
+   pagina no lo mira; esta para quien quiera decir en pantalla de donde
+   salio el emote, que es una decision de diseño todavia abierta.
 
    ---------------------------------------------------------------
    POR QUE VIAJA `usuarioId`
@@ -210,7 +224,7 @@ export function partirTextoDeKick(content) {
     texto += nombre;
     puntos += largoEnPuntos(nombre);
 
-    emotes.push({ id, inicio, fin: puntos, url: URL_EMOTE_KICK(id) });
+    emotes.push({ id, inicio, fin: puntos, url: URL_EMOTE_KICK(id), fuente: 'kick' });
     desde = m.index + m[0].length;
   }
   texto += crudo.slice(desde);
@@ -301,7 +315,11 @@ export function deTwitch(evento, metadata = {}) {
       texto += trozo;
       puntos += largoEnPuntos(trozo);
       const id = f?.type === 'emote' ? f?.emote?.id : null;
-      if (id) emotes.push({ id: String(id), inicio, fin: puntos, url: URL_EMOTE_TWITCH(id) });
+      if (id) {
+        emotes.push({
+          id: String(id), inicio, fin: puntos, url: URL_EMOTE_TWITCH(id), fuente: 'twitch',
+        });
+      }
       if (texto.length > TOPE_TEXTO) break;
     }
   } else {
@@ -367,7 +385,7 @@ function emotesDeTag(tag, texto) {
       if (!Number.isInteger(inicio) || !Number.isInteger(finInclusivo)) continue;
       const fin = finInclusivo + 1;
       if (inicio < 0 || fin <= inicio || fin > puntos.length) continue;
-      emotes.push({ id, inicio, fin, url: URL_EMOTE_TWITCH(id) });
+      emotes.push({ id, inicio, fin, url: URL_EMOTE_TWITCH(id), fuente: 'twitch' });
     }
   }
   emotes.sort((x, y) => x.inicio - y.inicio);

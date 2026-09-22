@@ -706,13 +706,22 @@ test('bloquear dos veces a la misma persona no la duplica', async () => {
   await panelChat({ desbloquear: { red: 'kick', id: '4242' } });
 });
 
-test('dos bloqueos al mismo tiempo no se pisan', async () => {
-  /* EL BUG QUE ESTO ATAJA: guardar un bloqueo es leer-cambiar-guardar
-     sobre la lista, y el almacén no sabe actualizar un campo suelto.
-     Sin cola, el segundo lee la lista sin el primero y la guarda sin
-     él: el bloqueo desaparece en silencio. Pasa tocando "bloquear" en
-     dos mensajes seguidos, que es justo lo que se hace en una tanda
-     de spam. */
+test('tres bloqueos seguidos por el panel quedan los tres', async () => {
+  /*
+   * ESTE TEST NO PRUEBA LA CARRERA, y decirlo es la mitad del test.
+   *
+   * Se escribió como "dos bloqueos al mismo tiempo no se pisan", pero
+   * lo comprobado no era eso: sacándole la cola a `creadores.js` seguía
+   * pasando. Tres POST disparados juntos no llegan juntos a la parte
+   * que importa —cada pedido pasa antes por la cookie y por el cuerpo,
+   * y eso alcanza para que lleguen de a uno—, así que lo que cubre de
+   * verdad es la RUTA: que tres bloqueos seguidos por el panel queden
+   * los tres, y que desbloquearlos los saque.
+   *
+   * La carrera se prueba donde sí ocurre, llamando al módulo derecho:
+   * `pruebas/creadores.test.js`, "tres bloqueos al mismo tiempo no se
+   * pisan" (sin cola falla 20 de 20).
+   */
   await Promise.all([
     panelChat({ bloquear: { red: 'kick', id: '10001', nombre: 'uno' } }),
     panelChat({ bloquear: { red: 'kick', id: '10002', nombre: 'dos' } }),

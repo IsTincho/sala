@@ -291,6 +291,43 @@ test('desconectar una red mientras se conecta la otra no borra la que llega', as
   await espectadores.olvidar(UNO);
 });
 
+test('leer mientras se conecta una red no la borra al anotar el último uso', async () => {
+  /*
+   * LA CARRERA MÁS CALLADA DEL MÓDULO, y la que estaba abierta.
+   *
+   * `leer` anota "esta persona sigue viniendo" (`tocar`) como mucho
+   * cada seis horas, y esa anotación escribe el DOCUMENTO ENTERO. La
+   * escritura entraba en la cola, sí, pero con la foto que `leer` había
+   * sacado AFUERA de la cola: serializaba y guardaba lo viejo igual.
+   *
+   * Es justo el caso de quien vuelve después de una semana a sumar
+   * Twitch: hace más de seis horas que no viene, así que la anotación
+   * se dispara, y si cae después del `conectar` le borra el Twitch que
+   * acaba de conectar. Medido antes del arreglo: 20 de 20 veces.
+   *
+   * `conectar` y `desconectar` ya releían adentro de la cola; ésta era
+   * la única que no.
+   */
+  await espectadores.conectar(UNO, 'kick', KICK);
+
+  /* Hace rato que no viene: sin esto `tocar` no escribe y el test no
+     prueba nada. */
+  const doc = await almacen.obtener('espectadores', UNO);
+  await almacen.poner('espectadores', UNO,
+    { ...doc, ultimoUso: Date.now() - 7 * 24 * 60 * 60 * 1000 });
+
+  await Promise.all([
+    espectadores.leer(UNO),
+    espectadores.conectar(UNO, 'twitch', TWITCH),
+  ]);
+
+  const v = await espectadores.leer(UNO);
+  assert.deepEqual(espectadores.redesDe(v), ['kick', 'twitch'],
+    'anotar el último uso no puede pisar la red que se acababa de conectar');
+  assert.equal(v.twitch.accessToken, TWITCH.accessToken);
+  await espectadores.olvidar(UNO);
+});
+
 /* ---------------------------------------------- el vencimiento */
 
 test('el que no vuelve en 60 dias pierde sus tokens, y el que vuelve no', async () => {

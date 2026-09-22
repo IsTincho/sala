@@ -367,18 +367,50 @@ export async function hayLugar() {
   return (await cuantos()) < TOPE_CANALES;
 }
 
+/*
+ * TODA escritura sobre el documento de un creador pasa por aca, y por
+ * UNA SOLA COLA por creador.
+ *
+ * `poner` reemplaza el documento entero —el almacen no sabe actualizar
+ * un campo suelto—, asi que esto es leer-cambiar-guardar: sin cola, el
+ * segundo lee antes de que el primero guarde y al guardar lo borra.
+ *
+ * NO ES TEORICO, Y NO ES RARO. La cola vivia un piso mas arriba, en
+ * `ponerChatAbierto` y `ponerSalaAbierta`, asi que solo protegia a esas
+ * dos entre si. Todo lo demas —el plan, el uso de R2, la suscripcion,
+ * el alta, el webhook de cobro— escribia por afuera. Medido con el
+ * backend de archivo, 20 de 20 veces: prender la Sala de alguien desde
+ * /admin justo cuando entra su pago perdia EL PLAN PAGADO, en silencio.
+ *
+ * `cambios` puede ser un objeto o una FUNCION del documento guardado
+ * (`null` si no hay). La funcion es para quien necesita mirar lo que
+ * habia antes de decidir que escribe —la lista de bloqueados, el chat
+ * abierto, el alta que no puede pisar un plan— porque leerlo afuera y
+ * escribirlo adentro es la misma carrera un piso mas arriba.
+ *
+ * OJO AL LLAMARLA: la funcion corre ADENTRO de la cola de este creador,
+ * asi que no puede esperar nada que entre a la misma cola (otro
+ * `escribir` del mismo slug) o se espera a si misma para siempre.
+ */
 async function escribir(slug, cambios) {
   const s = normalizar(slug);
-  const anterior = (await almacen.obtener('creadores', s)) ?? {};
-  const { id: _sinId, ...viejo } = anterior;
-  const doc = { ...viejo, ...cambios, slug: s };
-  await almacen.poner('creadores', s, doc);
-  invalidar(s);
-  /* El indice se actualiza en el acto en vez de invalidarse entero:
-     una alta no tiene por que costarle a los siguientes mensajes de
-     chat una lectura de toda la coleccion. */
-  if (indice && doc.usuarioId) indice.set(String(doc.usuarioId), s);
-  return aCreador({ id: s, ...doc });
+  return almacen.enCola('creadores', s, async () => {
+    const anterior = await almacen.obtener('creadores', s);
+    let viejo = null;
+    if (anterior) {
+      const { id: _sinId, ...resto } = anterior;
+      viejo = resto;
+    }
+    const parche = typeof cambios === 'function' ? cambios(viejo) : cambios;
+    const doc = { ...(viejo ?? {}), ...parche, slug: s };
+    await almacen.poner('creadores', s, doc);
+    invalidar(s);
+    /* El indice se actualiza en el acto en vez de invalidarse entero:
+       una alta no tiene por que costarle a los siguientes mensajes de
+       chat una lectura de toda la coleccion. */
+    if (indice && doc.usuarioId) indice.set(String(doc.usuarioId), s);
+    return aCreador({ id: s, ...doc });
+  });
 }
 
 /**
@@ -390,15 +422,23 @@ export async function crear({ slug, usuarioId, nombre, terminos = '' }) {
   const s = normalizar(slug);
   if (!slugValido(s)) throw new Error('slug invalido');
 
-  const ya = await almacen.obtener('creadores', s);
-  if (ya) {
-    return escribir(s, {
-      usuarioId: String(usuarioId ?? ya.usuarioId ?? ''),
-      nombre: String(nombre ?? ya.nombre ?? '').slice(0, 80),
-    });
-  }
-
-  return escribir(s, {
+  /* "¿Ya estaba?" se pregunta ADENTRO de la cola: preguntarlo afuera y
+     escribir despues es la carrera que hace que dos logins a la vez
+     —o un login mientras entra el pago— le apliquen el alta a alguien
+     que ya existia, y le pisen el plan con "pendiente". */
+  return escribir(s, ya => (ya ? {
+    usuarioId: String(usuarioId ?? ya.usuarioId ?? ''),
+    nombre: String(nombre ?? ya.nombre ?? '').slice(0, 80),
+    /* Si la fila existe pero NUNCA se anotaron los terminos, este login
+       los anota. No es "reaceptar": es la primera vez. Le pasa al dueño
+       del servicio, cuya fila puede nacer de un interruptor
+       (`ponerSalaAbierta` se la crea) y quedaba sin terminos para
+       siempre, porque su login posterior ya la veia existente. Una
+       version ya anotada sigue sin pisarse. */
+    ...(terminos && !ya.terminos?.version
+      ? { terminos: { version: String(terminos), cuando: Date.now() } }
+      : {}),
+  } : {
     usuarioId: String(usuarioId ?? ''),
     nombre: String(nombre ?? '').slice(0, 80),
     plan: 'pendiente',
@@ -409,7 +449,7 @@ export async function crear({ slug, usuarioId, nombre, terminos = '' }) {
     cobro: { proveedor: '', clienteId: '', suscripcionId: '' },
     bytes: 0,
     bytesAl: 0,
-  });
+  }));
 }
 
 /**
@@ -442,15 +482,17 @@ export async function marcarSuscrito(slug, suscrito) {
 /** Guarda los datos del proveedor de cobro (cliente y suscripcion). */
 export async function guardarCobro(slug, { proveedor, clienteId, suscripcionId }) {
   const s = normalizar(slug);
-  const doc = await almacen.obtener('creadores', s);
-  if (!doc) return null;
-  return escribir(s, {
+  if (!await almacen.obtener('creadores', s)) return null;
+  /* Lo que no viene queda como estaba, y ese "como estaba" se lee
+     adentro de la cola: si no, el webhook que llega mientras se escribe
+     otra cosa guarda el cobro viejo encima del nuevo. */
+  return escribir(s, doc => ({
     cobro: {
-      proveedor: String(proveedor ?? doc.cobro?.proveedor ?? ''),
-      clienteId: String(clienteId ?? doc.cobro?.clienteId ?? ''),
-      suscripcionId: String(suscripcionId ?? doc.cobro?.suscripcionId ?? ''),
+      proveedor: String(proveedor ?? doc?.cobro?.proveedor ?? ''),
+      clienteId: String(clienteId ?? doc?.cobro?.clienteId ?? ''),
+      suscripcionId: String(suscripcionId ?? doc?.cobro?.suscripcionId ?? ''),
     },
-  });
+  }));
 }
 
 /**
@@ -664,24 +706,32 @@ export async function ponerChatAbierto(slug, pedido = {}) {
   const problema = porQueNoSePuedeAbrir(pedido);
   if (problema) throw new Error(problema);
 
-  /* En cola: esto es leer-cambiar-guardar sobre la lista de
-     bloqueados, y dos a la vez se pisan. Pasa de verdad cuando el
-     creador toca "bloquear" en dos mensajes seguidos en medio de una
-     tanda de spam: el segundo leyo la lista sin el primero y la
-     guardaria sin el, en silencio. */
-  return almacen.enCola('creadores', s, () => cambiarChatAbierto(s, pedido));
-}
-
-async function cambiarChatAbierto(s, pedido) {
-  let doc = await almacen.obtener('creadores', s);
-  if (!doc) {
+  /* El alta del dueño sin fila va ANTES de entrar a la cola: `crear`
+     escribe por la misma cola de este creador, y llamarlo desde adentro
+     seria esperarse a si mismo. */
+  if (!await almacen.obtener('creadores', s)) {
     if (!esDueno(s)) return null;
     await crear({ slug: s });
-    doc = await almacen.obtener('creadores', s);
   }
 
-  const antes = chatAbiertoDelDoc(doc);
+  /* El calculo entra ADENTRO de `escribir`, o sea adentro de la cola:
+     esto es leer-cambiar-guardar sobre la lista de bloqueados y dos a
+     la vez se pisan. Pasa de verdad cuando el creador toca "bloquear"
+     en dos mensajes seguidos en medio de una tanda de spam: el segundo
+     leyo la lista sin el primero y la guardaria sin el, en silencio. */
+  let nuevo = null;
+  await escribir(s, (doc) => {
+    nuevo = calcularChatAbierto(chatAbiertoDelDoc(doc), pedido);
+    return {
+      chatAbierto: { activo: nuevo.activo, redes: [...nuevo.redes], bloqueados: [...nuevo.bloqueados] },
+    };
+  });
+  chatEnMemoria.set(s, nuevo);
+  return nuevo;
+}
 
+/** El ajuste que queda despues de aplicarle `pedido` al que habia. */
+function calcularChatAbierto(antes, pedido) {
   /* La lista de bloqueados se toca de a uno: el panel manda "bloquea a
      este" o "desbloquea a este", nunca la lista entera. Mandar la lista
      entera haria que dos pestanas del panel abiertas a la vez se
@@ -703,16 +753,11 @@ async function cambiarChatAbierto(s, pedido) {
     }
   }
 
-  const nuevo = Object.freeze({
+  return Object.freeze({
     activo: pedido.activo ?? antes.activo,
     redes: Object.freeze(pedido.redes !== undefined ? redesValidas(pedido.redes) : [...antes.redes]),
     bloqueados: Object.freeze(bloqueados),
   });
-  await escribir(s, {
-    chatAbierto: { activo: nuevo.activo, redes: [...nuevo.redes], bloqueados: [...nuevo.bloqueados] },
-  });
-  chatEnMemoria.set(s, nuevo);
-  return nuevo;
 }
 
 /* ------------------------------------------------- la Sala prendida
@@ -771,22 +816,25 @@ export async function salaAbierta(slug) {
  * quede escrito ahi no se lee nunca: `planDe` contesta 'dueno' antes de
  * mirar el documento.
  *
- * En cola por lo mismo que el chat abierto: `escribir` es
- * leer-cambiar-guardar sobre el documento ENTERO, asi que prender la
- * Sala mientras se guarda un bloqueo (o un plan, o el uso de R2) se
- * pisarian en silencio. La cola es por creador, asi que no frena a
- * nadie mas.
+ * La cola la pone `escribir`, que es por donde pasa TODA escritura de
+ * este modulo: prender la Sala mientras se guarda un bloqueo (o un
+ * plan, o el uso de R2) se pisaban en silencio, y la cola vieja —la que
+ * estaba aca arriba— solo protegia a estas dos funciones entre si.
+ *
+ * `valor === true` y no `Boolean(valor)`: lo que no es exactamente
+ * `true` cierra. Es la defensa en profundidad del 400 de las rutas; un
+ * `"false"` de texto que prendiera la Sala seria justo el error que no
+ * se descubre hasta que alguien entra.
  */
 export async function ponerSalaAbierta(slug, valor) {
   const s = normalizar(slug);
-  return almacen.enCola('creadores', s, () => cambiarSalaAbierta(s, valor === true));
-}
-
-async function cambiarSalaAbierta(s, abierta) {
+  /* Igual que el chat abierto: el alta del dueño sin fila va antes de
+     la cola, porque `crear` escribe por la misma. */
   if (!await almacen.obtener('creadores', s)) {
     if (!esDueno(s)) return null;
     await crear({ slug: s });
   }
+  const abierta = valor === true;
   await escribir(s, { salaAbierta: abierta });
   return abierta;
 }

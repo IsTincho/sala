@@ -272,7 +272,7 @@ function descifrarRed(r) {
 export async function leer(id) {
   const doc = await documento(id);
   if (!doc || !cifrado.hayClave()) return null;
-  await tocar(doc);
+  await tocar(doc.id ?? String(id), Number(doc.ultimoUso ?? 0));
 
   try {
     const v = { id: doc.id ?? String(id), creado: doc.creado ?? 0, ultimoUso: doc.ultimoUso ?? 0 };
@@ -305,16 +305,31 @@ export async function leer(id) {
  * escritura se dispara.
  *
  * Esperarla cuesta una escritura cada seis horas por persona.
+ *
+ * ---------------------------------------------------------------
+ * Y POR ESO SE VUELVE A LEER ADENTRO DE LA COLA
+ *
+ * La cola sola no alcanzaba. Recibia el documento que `leer` habia
+ * leido AFUERA, asi que serializaba la escritura pero guardaba una foto
+ * vieja: con `leer` y `conectar` corriendo a la vez, la red recien
+ * conectada se perdia 20 de 20 veces (medido). `conectar` y
+ * `desconectar` ya releian adentro; esta era la unica que no.
+ *
+ * El id y la fecha entran como datos sueltos justamente para que no
+ * quede ninguna tentacion de escribir la foto de afuera.
  */
-async function tocar(doc) {
-  const ahora = Date.now();
-  if (ahora - Number(doc.ultimoUso ?? 0) < REFRESCAR_USO) return;
-  doc.ultimoUso = ahora;
+async function tocar(id, ultimoUso) {
+  if (Date.now() - ultimoUso < REFRESCAR_USO) return;
   try {
-    /* En la misma cola que `conectar`: esta escritura lleva el
-       documento entero, asi que sin la cola puede aterrizar despues de
-       un conectar y devolverlo a como estaba. */
-    await almacen.enCola('espectadores', doc.id, () => almacen.poner('espectadores', doc.id, doc));
+    await almacen.enCola('espectadores', id, async () => {
+      const fresco = await documento(id);
+      /* Se fue mientras tanto (salio, o se le desconecto la ultima
+         red): anotarle el uso lo resucitaria a medias. */
+      if (!fresco) return;
+      /* Otro ya lo anoto mientras esperaba el turno. */
+      if (Date.now() - Number(fresco.ultimoUso ?? 0) < REFRESCAR_USO) return;
+      await almacen.poner('espectadores', id, { ...fresco, ultimoUso: Date.now() });
+    });
   } catch (e) {
     /* Que no se pueda anotar el ultimo uso no es motivo para que la
        persona no pueda escribir. */

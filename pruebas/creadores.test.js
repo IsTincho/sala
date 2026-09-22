@@ -532,6 +532,109 @@ test('dos escrituras a la vez sobre el mismo creador no se pisan', async () => {
   assert.equal(c.chatAbierto.activo, true, 'se perdió el del chat abierto');
 });
 
+test('prender la Sala mientras entra el plan pagado no pierde el plan', async () => {
+  /*
+   * ESTE ES EL QUE CUESTA PLATA, y el que el test de arriba no agarra:
+   * aquel enfrenta las dos únicas funciones que compartían cola.
+   * `ponerPlan`, `anotarUso`, `marcarSuscrito` y `crear` escribían por
+   * afuera, así que el dueño habilitándole la Sala a alguien desde
+   * /admin justo cuando cae el webhook de Paddle perdía EL PLAN PAGADO.
+   * Medido antes del arreglo: 20 de 20 veces.
+   */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  await Promise.all([
+    creadores.ponerSalaAbierta('ana', true),
+    creadores.ponerPlan('ana', 'pago', { quien: 'cobro', vence: Date.now() + 86_400_000 }),
+  ]);
+
+  creadores.olvidarCache();
+  const c = await creadores.obtener('ana');
+  assert.equal(c.plan, 'pago', 'se perdió el plan que alguien pagó');
+  assert.equal(Boolean(c.salaAbierta), true, 'y tampoco se puede haber perdido la Sala');
+
+  /* Lo mismo con el uso de R2, que lo escribe el mismo /admin. */
+  await Promise.all([
+    creadores.ponerSalaAbierta('ana', false),
+    creadores.anotarUso('ana', 12_345),
+  ]);
+  creadores.olvidarCache();
+  const d = await creadores.obtener('ana');
+  assert.equal(d.bytes, 12_345, 'se perdieron los bytes medidos');
+  assert.equal(Boolean(d.salaAbierta), false);
+});
+
+test('tres bloqueos al mismo tiempo no se pisan', async () => {
+  /*
+   * EL BUG QUE ESTO ATAJA: guardar un bloqueo es leer-cambiar-guardar
+   * sobre la lista, y el almacén no sabe actualizar un campo suelto.
+   * Sin cola, el segundo lee la lista sin el primero y la guarda sin
+   * él: el bloqueo desaparece en silencio. Pasa tocando "bloquear" en
+   * dos mensajes seguidos, que es justo lo que se hace en una tanda de
+   * spam. Medido sin la cola: falta alguno 20 de 20 veces.
+   *
+   * VA ACÁ Y NO EN LA PRUEBA HTTP: la de `chat-enviar.test.js` manda
+   * tres POST a la vez, pero cada pedido pasa antes por la cookie y por
+   * el cuerpo, y con eso los tres terminan llegando de a uno a la parte
+   * que importa. Aquella prueba el panel; la carrera se prueba acá,
+   * llamando al módulo derecho.
+   */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  await Promise.all([
+    creadores.ponerChatAbierto('ana', { bloquear: { red: 'kick', id: '10001', nombre: 'uno' } }),
+    creadores.ponerChatAbierto('ana', { bloquear: { red: 'kick', id: '10002', nombre: 'dos' } }),
+    creadores.ponerChatAbierto('ana', { bloquear: { red: 'twitch', id: '10003', nombre: 'tres' } }),
+  ]);
+
+  creadores.olvidarCache();
+  const c = await creadores.chatAbierto('ana');
+  assert.deepEqual(c.bloqueados.map(b => b.id).sort(), ['10001', '10002', '10003'],
+    'los tres tienen que haber quedado');
+});
+
+test('a quien le crearon la fila sin términos, el login se los anota', async () => {
+  /*
+   * LE PASA AL DUEÑO DEL SERVICIO Y A NADIE MÁS, pero le pasa siempre.
+   * Su fila puede nacer de un interruptor (`ponerSalaAbierta` /
+   * `ponerChatAbierto` se la crean, porque su sala existe por
+   * KICK_SLUG), y esa fila queda con `terminos.version` vacío. Como
+   * `crear` no le toca los términos a quien ya existe —para no
+   * "reaceptar" lo que nadie leyó esta vez—, su login posterior lo
+   * dejaba en blanco para siempre.
+   *
+   * Anotarlos la PRIMERA vez no es reaceptar nada: antes no había
+   * ninguno. Lo que sigue sin pasar es pisar una versión ya anotada.
+   */
+  await creadores.ponerSalaAbierta(DUENO, true);
+  assert.equal((await creadores.obtener(DUENO)).terminos.version, '', 'la fila nace sin términos');
+
+  await creadores.crear({ slug: DUENO, usuarioId: '99', nombre: 'IsTincho', terminos: '1' });
+  creadores.olvidarCache();
+  const c = await creadores.obtener(DUENO);
+  assert.equal(c.terminos.version, '1', 'el login tiene que poder anotar los términos');
+  assert.ok(c.terminos.cuando > 0);
+
+  /* Y una versión ya anotada no se pisa con la de otro login. */
+  await creadores.crear({ slug: DUENO, usuarioId: '99', nombre: 'IsTincho', terminos: '2' });
+  creadores.olvidarCache();
+  assert.equal((await creadores.obtener(DUENO)).terminos.version, '1',
+    'volver a entrar no puede "reaceptar" términos que nadie leyó esta vez');
+});
+
+test('a la Sala se la prende con true y con nada más', async () => {
+  /* Defensa en profundidad del 400 de las rutas: si el día de mañana
+     alguien llama a esto con lo que vino en un JSON, un `"false"` de
+     texto no puede prender nada. */
+  await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
+
+  for (const valor of ['true', 1, 'false', {}, [], 'si']) {
+    assert.equal(await creadores.ponerSalaAbierta('ana', valor), false, JSON.stringify(valor));
+    assert.equal(await creadores.salaAbierta('ana'), false, JSON.stringify(valor));
+  }
+  assert.equal(await creadores.ponerSalaAbierta('ana', true), true);
+});
+
 test('la Sala prendida sale en la lista de /admin', async () => {
   await creadores.crear({ slug: 'ana', usuarioId: '111', terminos: '1' });
   await creadores.crear({ slug: 'beto', usuarioId: '222', terminos: '1' });

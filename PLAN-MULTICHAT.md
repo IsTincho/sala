@@ -1,8 +1,8 @@
 # Plan: Multichat por sala — el streamer lo abre, los espectadores lo usan
 
-Fecha: 2026-09-22. Estado: **plan, nada construido.** Complemento de
-[PLAN.md](PLAN.md), que sigue mandando sobre todo lo demás. Nada de acá está
-aprobado para construir hasta que el dueño lo diga.
+Fecha: 2026-09-22. Estado: **5.1 construida** (chat abierto, sólo lectura; ver
+la BITACORA del 2026-09-22). **5.2 a 5.5 sin construir** y sin aprobar.
+Complemento de [PLAN.md](PLAN.md), que sigue mandando sobre todo lo demás.
 
 ---
 
@@ -255,6 +255,10 @@ final.** Las fases 5.1 a 5.4 no lo necesitan.
 ---
 
 ## 7. Lo que decide el dueño antes de construir
+
+> **Decidido el 2026-09-22**: (1) todos los planes, incluido "pendiente";
+> (2) leer sin login; (3) cuenta de espectador global; (4) el creador no ve
+> quién escribió; (5) la 5.5 queda afuera de este plan.
 
 1. **¿En qué plan entra el chat abierto?** Opciones: en todos, incluido
    "pendiente" (gancho para que prueben la herramienta), o sólo en amigo/pago.

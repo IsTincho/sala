@@ -4,6 +4,179 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-22 — Fase 5.1: el chat abierto, sólo lectura
+
+Primera fase de [`PLAN-MULTICHAT.md`](PLAN-MULTICHAT.md). Cada creador puede **abrir su
+Chat Global a la comunidad**: un link `/chat/<slug>` donde cualquiera, sin login, lee su
+chat de Kick y su chat de Twitch **juntos y en vivo**. Escribir desde ahí es la 5.2.
+
+Lo que decidió el dueño antes de construir (sección 7 del plan): entra en **todos** los
+planes, incluido "pendiente"; **leer no pide login**; la cuenta de espectador va a ser
+global (no aplica todavía); el creador **no** ve quién escribió; la 5.5 queda afuera. Y el
+énfasis: **Kick y Twitch a la vez**. Abrir sin elegir redes deja las dos, y la vista por
+defecto es la mezclada.
+
+**662 pruebas en verde** (eran 618). `herramientas/` no se tocó.
+
+### Qué hay
+
+- **`/panel` → "Chat para tu comunidad"**: interruptor abierto/cerrado, qué redes se ven
+  (Kick, Twitch o las dos), el link para copiar, un botón para abrirlo, y el aviso de que
+  **no va como fuente en OBS si se transmite a Twitch** (las reglas de simulcast de Twitch
+  no dejan mostrar en el stream un chat mezclado con otras plataformas). Si Twitch está
+  elegido y no vinculado, lo dice. Con plan "pendiente" la película está apagada y el chat no.
+- **`POST /api/panel/chat`** `{ activo?, redes? }`, con cookie de creador. **El slug sale
+  de la cookie**: un `slug` en el cuerpo no se lee. Lo que no viene queda como estaba; una
+  red que no existe o una lista vacía dan 400 y no se guardan a medias.
+- **`GET /chat/:slug`**: la **misma** `chat.html` en modo público. Sin salud (es de la
+  cuenta del creador), sin caja de escribir, con título "Chat de <slug>". Mezclado,
+  columnas, letra y pausa al subir el scroll son los de `/chat`, reusados tal cual. **404
+  si la sala no existe**, con el mismo criterio que `/sala/:slug`.
+- **Cerrado**, la página dice "este chat está cerrado", **no se conecta al bus** y vuelve a
+  preguntar cada 30 s: cuando el creador lo abre, aparece sin recargar. Si lo cierra con la
+  página abierta, llega un aviso por el bus (`chat-abierto`) y la página corta su conexión
+  en el acto.
+- **`GET /api/chat/:slug/abierto`**: `{ abierto, redes }`, público. Cerrado contesta
+  `redes: []`: de un chat cerrado no se cuenta nada.
+
+### El filtro del bus, que es lo que importa
+
+| Quién se conecta a `/eventos/:slug` | Qué redes recibe |
+|---|---|
+| El dueño **de esa sala** | Las dos, siempre |
+| Cualquier otro, chat abierto | Las que eligió el creador |
+| Cualquier otro, chat cerrado | Sólo Kick, como siempre (la Sala depende de eso) |
+
+**1. La regla se pregunta en cada evento, no al conectar.** Hasta ahora cada conexión
+guardaba una lista fija. `canales.suscribir` acepta ahora que `redes` sea una **función**,
+y `leDaEl` la llama en cada mensaje. `index.js` le pasa una que lee el chat abierto de la
+sala. Así, cerrar o sacarle Twitch con gente mirando corta el Twitch **para el próximo
+mensaje**, sin esperar la reconexión, y sin recorrer conexiones. `canales.js` sigue sin
+saber qué es un chat abierto.
+
+**2. La respuesta vive en memoria, y no vence.** El filtro corre por mensaje y por
+conexión: no puede esperar a Mongo. `creadores.chatAbierto(slug)` lo lee del almacén la
+primera vez y lo deja en un Map; después lo cambia sólo `ponerChatAbierto`. La carrera
+"alguien se conecta, se lee el valor viejo, y en el medio el creador cierra" se cierra con
+dos líneas: **la carga escribe el Map sólo si está vacío, y la escritura del creador lo pisa
+siempre**. En cualquier orden gana la escritura. `/api/chat/:slug/abierto` contesta de la
+misma memoria, así que la pantalla y el cable no se pueden contradecir.
+
+**3. Si el almacén falla, no se memoriza nada.** Y acá apareció algo que no se veía:
+**`almacen.obtener` no tira cuando Mongo se cae**. Degrada a archivo y contesta lo que haya
+en el disco efímero del contenedor, que es nada. Memorizar eso habría dejado el chat
+cerrado (o abierto) hasta el próximo deploy. Se agregó `almacen.degradado()` (Mongo
+configurado pero guardando en archivo) y en ese estado la lectura se usa una vez y no se
+guarda. Mientras no se sabe, el público recibe sólo Kick: ante la duda, lo cerrado.
+
+**4. La política se carga ANTES de suscribir.** `suscribir` manda los últimos 200 mensajes
+en el acto. Si la regla se cargara después, el primero en llegar tras un deploy recibiría
+el buffer filtrado con "no se sabe" (sólo Kick). Hay prueba que lo exige.
+
+**5. Arreglo de paso: "dueño" quería decir "cualquier creador".** `/eventos/:slug` le daba
+las dos redes a **cualquier** cookie de creador, en cualquier sala. Con un solo creador era
+lo mismo; con varios, Ana con su sesión leía el Twitch de Beto con un curl. Ahora es la
+cookie del dueño **de esa** sala, como pide la tabla del plan. Prueba: "la cookie de OTRA
+sala no destapa Twitch".
+
+### Decisiones que se apartan de lo previsto, y por qué
+
+**6. `/chat/:slug` sirve `chat.html` con `<base href="/">` y sin el manifest.** `chat.html`
+pide sus archivos con rutas **relativas** a propósito: así `?demo=1` anda abriendo el archivo
+suelto con `file://`. Desde `/chat/istincho` esas rutas apuntan a `/chat/comun/base.css`, y
+la página cargaría sin estilos ni código. Se descartó pasarla a rutas absolutas (rompía el
+demo con `file://`) y hacer una segunda página (dos copias del mismo HTML). El servidor le
+agrega una `<base>` (una raíz del sitio, no un host: detrás del proxy de Cloudflare Pages
+sigue andando) y le saca el manifest, que es el de la ventana del creador (`start_url:
+/chat`): un espectador que "instalara" el chat terminaría abriendo el de otra persona. El
+manifest por sala es de la 5.4. **`/chat` a secas sale byte por byte igual**, con prueba.
+Y la misma trampa que `/sala/:slug`: la ruta tapa `/chat/chat.js`, `/chat/chat.css` y
+`/chat/demo.js`, así que lo que no parece un slug va a los estáticos.
+
+**7. La Sala sigue mostrando sólo Kick aunque el chat se abra con Twitch.** El pedido era
+que el bus público mande las redes del chat abierto, y así quedó: `curl /eventos/<slug>`
+trae Twitch si está abierto. Pero la Sala usa ese mismo bus, y sin hacer nada habría
+empezado a mostrar Twitch en la sala de la película, donde la gente escribe a Kick y no
+puede contestarle a nadie de Twitch. Nadie pidió ese cambio. Así que **`/eventos` acepta
+`?redes=kick` para pedir menos (nunca más)** y la Sala lo pide. Lo resuelve el servidor, no
+la página: la prueba "la página NO filtra por red" sigue en pie. **Si el dueño quiere
+Twitch en la Sala cuando abre el chat, es sacar `{ redes: ['kick'] }` de `sala.js`.**
+
+**8. El link del panel lo arma el navegador**, con el origen desde el que se mira el panel
+(`new URL('/chat/<slug>', location.href)`). Si lo armara el servidor con `URL_BASE`, detrás
+del proxy de Cloudflare Pages el link sería el de Railway.
+
+**9. El dueño del servicio puede abrir su chat aunque no tenga documento.** Su sala existe
+por `KICK_SLUG`, no por la base. El ajuste va al mismo lugar que el de todos (su documento
+en `creadores`) y, si no lo tiene, se le crea con los valores del alta. El plan que queda
+escrito ahí no se lee nunca: `planDe` contesta "dueno" antes de mirar el documento. Su
+próximo login sólo completa id y nombre.
+
+**10. Cerrado, la página no escucha el bus.** Quedarse conectada traería el Kick de la sala
+a una pantalla que no lo muestra y contaría como alguien mirando la película. Al reabrir se
+vacían las listas antes de conectar: el servidor manda los últimos mensajes a cada conexión
+nueva, y si quedaban los viejos salían dos veces.
+
+### Cómo se verificó
+
+- **Mutaciones**: 10 sobre el servidor (cualquier cookie de creador, lista fija al conectar,
+  slug del cuerpo, sin cargar la regla antes del buffer, la escritura sin pisar la memoria,
+  sin la trampa de los estáticos, `?redes` ignorado, cerrado que cuenta las redes, sin
+  aviso por el bus, cerrado que igual deja las redes), 7 sobre `chat.js`, 4 sobre
+  `panel.js` y 2 sobre el camino de la Sala (`bus.js` que no manda `?redes`, `sala.js` que
+  no lo pide). **Las 23 las caza al menos una prueba.**
+- **En vivo**, con un servidor local limpio (archivos JSON en una carpeta temporal, sin
+  `servidor/.env`, sin Mongo ni tokens reales, clave de cifrado descartable) y el navegador:
+  `/chat/ana` cerrado → interruptor en el panel → la pestaña pública se abrió sola a los
+  30 s → dos mensajes de Kick por `/api/prueba/webhook` aparecieron en vivo → cerrar desde
+  el panel → la pestaña pasó a "cerrado" en el acto y **el canal quedó con 0 conexiones**.
+  `/chat/ana?demo=1` muestra Kick y Twitch mezclados; en 375 px de ancho no hay scroll
+  horizontal. La Sala pide `/eventos/ana?redes=kick`. `/chat` se ve como antes.
+
+### Archivos tocados
+
+`servidor/{canales,creadores,almacen,index}.js`, `paginas/chat.html`,
+`paginas/chat/{chat.js,chat.css}`, `paginas/panel.html`, `paginas/panel/{panel.js,panel.css}`,
+`paginas/comun/bus.js`, `paginas/sala/sala.js`. Pruebas: `pruebas/chat-abierto.test.js`
+(nueva, 20), y agregados en `canales`, `pagina-chat`, `pagina-panel` y `pagina-sala`.
+Docs: `README.md`, `PLAN-MULTICHAT.md` (estado).
+
+### Cómo verlo funcionando
+
+```bash
+npm test
+npm run local
+# /panel → "Chat para tu comunidad" → prender el interruptor
+curl -s localhost:8778/api/chat/<tu-slug>/abierto     # {"abierto":true,"redes":["kick","twitch"]}
+curl -sN localhost:8778/eventos/<tu-slug>             # sin cookie: trae Twitch sólo si está abierto
+# y /chat/<tu-slug> en otra ventana, sin sesión
+```
+
+### Pendiente
+
+- **El Twitch del chat abierto no se vio en vivo, sólo en pruebas.** Localmente no hay forma
+  de meter un mensaje de Twitch en el bus desde afuera (`/api/prueba/webhook` es de Kick).
+  Lo que falta es mirarlo en producción: abrir el chat desde `/panel` y ver
+  `/chat/istincho` en una ventana sin sesión mientras hay gente hablando en los dos chats.
+- **Dos guardas sin prueba, declaradas**: el "la carga no pisa la escritura" de
+  `creadores.chatAbierto` (es una carrera de milisegundos que no se puede provocar sin un
+  almacén lento) y el `almacen.degradado()` (hace falta un Mongo que se caiga). Sacar
+  cualquiera de las dos no rompe la suite.
+- **`/chat` de un creador que no es el dueño muestra el bus del dueño.** Es de antes: la
+  página saca el slug de `/api/estado`, que es `KICK_SLUG`. Con el arreglo del punto 5 ya
+  no le filtra el Twitch del dueño, pero sigue mirando la sala equivocada. Tendría que usar
+  el slug de su cookie.
+- **"N mirando" de la Sala cuenta también a quien lee `/chat/<slug>`**: los dos usan el mismo
+  bus. Con el chat cerrado no pasa (la página no se conecta).
+- Reconectar el bus reenvía los últimos 200 mensajes y `/chat` y la Sala no deduplican por
+  id: después de un corte puede verse un tramo repetido. Es de antes; `/chat/<slug>` lo
+  evita al reabrir vaciando las listas.
+- El navegador del panel de vista previa no deja registrar el service worker de `/chat`
+  ("unknown error when fetching the script"). `/sw.js` sale bien por curl y no cambió; la
+  página ya atrapa ese error.
+
+---
+
 ## 2026-09-09 — Primera prueba contra las APIs reales: el Chat Global anda
 
 Hasta hoy **nada del proyecto habia tocado una API de verdad**: las cuatro fases se

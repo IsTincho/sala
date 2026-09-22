@@ -119,7 +119,7 @@ servidor/
   espectadores.js  los tokens de quien entra a ver, y el límite de envío
   metricas.js   mensajes por hora, envíos, 429 y espectadores pico
 paginas/
-  chat.html     el Chat Global, instalable como app
+  chat.html     el Chat Global, instalable como app; en /chat/<slug>, el chat abierto de una sala
   sala.html     la Sala: cámara, película y chat
   panel.html    el panel de cada creador (el dueño incluido)
   crear.html    el alta: los términos y el botón de entrar con Kick
@@ -155,12 +155,13 @@ Reglas que no se negocian:
 |---|---|
 | `/` | Página de estado: si el servidor está vivo y conectado al bus |
 | `/chat` | **Chat Global**: Kick y Twitch juntos, con caja para escribir a los dos. Se instala como app |
+| `/chat/:slug` | **El chat abierto de una sala** (Fase 5.1): la misma página que `/chat`, para la comunidad del creador. Sólo lectura y sin login: las redes que el creador eligió, mezcladas en vivo, sin salud ni caja de escribir. Si el creador no lo abrió dice "este chat está cerrado" y se vuelve a fijar sola cada 30 s. **404 si la sala no existe**, igual que `/sala/:slug`. Se sirve `chat.html` con `<base href="/">` y sin el manifest del creador; `/chat` a secas sale byte por byte igual. No va como fuente en OBS si se transmite a Twitch (reglas de simulcast) |
 | `/panel` | Panel de **cada creador**: entrar con Kick, vincular Twitch, ver la salud, manejar la película, la clave de subida y el plan. Con un plan sin reproducción se ve en modo sólo lectura, con el botón de suscribirse |
 | `/crear` | El alta. Aceptar los términos y entrar con Kick: crea la sala con plan "pendiente" |
 | `/terminos` | El texto que se acepta al crear la sala |
 | `/admin` | La lista de creadores, su plan y su uso. **Da 404 a todo el que no sea el dueño del servicio**: un 403 ya anunciaría que existe |
 | `/sala/:slug` | **La Sala**: cámara, película en HLS y chat de Kick. Da 404 si el canal no existe |
-| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404 |
+| `/eventos/:slug` | SSE. Manda un evento `estado` apenas te conectás, y un ping cada 25 s. `HEAD` contesta y no abre stream. **El slug tiene que ser el del dueño o el de un creador dado de alta**: cualquier otro da 404. Qué redes manda depende de quién pregunta y del chat abierto de la sala (ver "Qué redes ve cada conexión"). `?redes=kick` pide menos, nunca más |
 | `/api/estado` | JSON con modo, almacén, canales y qué variables faltan |
 | `/oauth/kick/entrar` · `/oauth/kick/volver` | Login con Kick (OAuth 2.1 + PKCE) |
 | `/oauth/twitch/entrar` · `/oauth/twitch/volver` | Vinculación de Twitch |
@@ -169,6 +170,7 @@ Reglas que no se negocian:
 | `/api/chat/salud` | Cómo está cada red **de la sala de quien pregunta**. Pide cookie de creador |
 | `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos, con la cuenta de quien pide. Pide cookie de creador |
 | `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick de su sala. Pide cookie de creador |
+| `/api/chat/:slug/abierto` | `GET` público: `{ abierto, redes }`. Cerrado contesta `redes: []`: de un chat cerrado no se cuenta nada. 404 si la sala no existe. Contesta de la misma memoria que usa el filtro del bus |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
 | `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie |
 | `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script |
@@ -177,10 +179,11 @@ Reglas que no se negocian:
 | `/api/sala/:slug/yo` | Si esta persona entró y si puede escribir. Nunca la lista de quién está en la sala |
 | `/api/sala/:slug/salir` | Cierra la sesión del espectador y **olvida su token**: el refresh token es de esa persona, no del dueño |
 
-| `/api/panel` | Todo lo que muestra `/panel` en un pedido: plan, salud, reloj, videos, métricas, clave y uso de R2. Cookie de creador |
+| `/api/panel` | Todo lo que muestra `/panel` en un pedido: plan, salud, reloj, videos, métricas, clave, uso de R2 y el chat abierto (`chatAbierto: { activo, redes }`). El link del chat abierto no viaja: lo arma la página con el origen desde el que se la mira. Cookie de creador |
 | `/api/panel/clave` | `POST` genera la clave de subida de su sala (se devuelve una sola vez), `DELETE` la revoca |
 | `/api/panel/twitch` | `DELETE` desvincula Twitch de su sala: cierra la conexión y borra el token |
 | `/api/panel/suscribirse` | `POST` devuelve la URL del checkout del proveedor de cobro |
+| `/api/panel/chat` | `POST { activo?, redes? }` abre o cierra el chat abierto de **su** sala y elige las redes (`kick`, `twitch` o las dos). Lo que no viene queda como estaba; una red desconocida o una lista vacía da 400. **El slug sale de la cookie**: un `slug` en el cuerpo no se lee. Entra en todos los planes. Vale en el acto para la gente conectada y se avisa por el bus (`chat-abierto`) |
 | `/api/subida` | `POST` firma las URL de subida a R2 de su prefijo `<slug>/<id>/`. **402 si su plan no sube, 409 si no entra en su tope de GB.** Acepta la cookie **o** la cabecera `X-Clave-Subida`: el script corre en una terminal |
 | `/api/subida/borrar` | `POST` firma los DELETE de todo lo que haya bajo `<slug>/<id>/`. Misma autenticación |
 | `/api/admin/creadores` | La lista con plan, vencimiento y uso. Sólo el dueño del servicio |
@@ -248,17 +251,27 @@ data: {"tipo":"chat","red":"kick","id":"01JG…","usuario":"unaespectadora","tex
 
 No como `event: <tipo>`. Por la especificación de SSE, un evento con nombre sólo llega al listener de ese nombre y nunca dispara `message`: el cliente no puede suscribirse a un tipo que todavía no existe. Con el tipo adentro del `data`, `window.Sala.conectar(slug, (tipo, datos) => …)` recibe cualquier cosa que difunda el servidor, incluidos los tipos que agreguen las fases siguientes.
 
-Los tipos que existen hoy: `estado` (al conectarse), `chat` (un mensaje, en el formato único), `reloj` (en qué segundo va la película) y `presencia` (cuánta gente está mirando).
+Los tipos que existen hoy: `estado` (al conectarse), `chat` (un mensaje, en el formato único), `reloj` (en qué segundo va la película), `presencia` (cuánta gente está mirando) y `chat-abierto` (`{ abierto, redes }`, cuando el creador abre, cierra o cambia las redes de su chat abierto; la Sala lo ignora).
 
 **Lo que NO sale por el bus: la salud.** El bus de un canal es público —lo escucha cualquiera que esté mirando la peli— y la salud dice si el dueño tiene vinculada cada red y en qué modo está su conexión. Eso se pide contra `/api/chat/salud`, que exige la cookie del dueño.
 
 ### Qué redes ve cada conexión
 
-`/eventos/:slug` **sin sesión manda sólo Kick**. Con la cookie del dueño manda las dos redes.
+| Quién se conecta a `/eventos/:slug` | Qué redes recibe |
+|---|---|
+| El dueño **de esa sala** (su cookie de creador) | Las dos, siempre |
+| Cualquier otro, con el chat abierto | Las que el creador eligió en `/panel` |
+| Cualquier otro, con el chat cerrado (como nace) | Sólo Kick, como siempre: la Sala depende de eso |
 
-Por el canal del dueño viaja también su chat de Twitch, porque `/chat` los muestra juntos. Pero ese bus no pide sesión, y desde la Fase 2 lo escucha cualquiera que abra la Sala a ver la película: esa gente no tiene nada que ver con la comunidad de Twitch del streamer, ni al revés.
+Por el canal de cada sala viaja también su chat de Twitch, porque `/chat` los muestra juntos. Pero ese bus no pide sesión, y desde la Fase 2 lo escucha cualquiera que abra la Sala a ver la película: esa gente no tiene nada que ver con la comunidad de Twitch del streamer, ni al revés. Desde la Fase 5.1 el creador puede **abrir** su chat (`/chat/<slug>`), y recién ahí el bus público lleva Twitch.
+
+"De esa sala" importa: hasta la Fase 5.1 alcanzaba **cualquier** cookie de creador para recibir las dos redes de cualquier sala.
 
 Se filtra **en el servidor y por conexión** (`canales.js`, `leDaEl`), no en el navegador: filtrando en el navegador, el chat de Twitch igual saldría por el cable hacia trescientas pestañas y un `curl /eventos/istincho` lo vería entero. La página de la Sala **no** vuelve a filtrar, a propósito: si lo hiciera, una regresión en esa puerta sería invisible. Una sola fuente de verdad, y es el servidor.
+
+**La regla del público se pregunta en cada evento, no al conectar.** La conexión guarda una función, no una lista. Así, si el creador cierra el chat o le saca Twitch con gente mirando, el próximo mensaje de Twitch ya no sale por el cable hacia esas conexiones, sin esperar a que reconecten. La respuesta vive en memoria (`creadores.chatAbierto`): se lee del almacén la primera vez y después la cambia sólo `POST /api/panel/chat`. Con una sola instancia en Railway no se desincroniza; si algún día hay dos, hay que moverla.
+
+**`?redes=kick` pide menos, nunca más.** La Sala lo manda (`Sala.conectar(slug, fn, { redes: ['kick'] })`): la gente de la película escribe a Kick, así que aunque el creador abra su chat con Twitch, la Sala sigue mostrando sólo Kick. Lo decide el servidor, no la página.
 
 ### El formato único de mensaje
 

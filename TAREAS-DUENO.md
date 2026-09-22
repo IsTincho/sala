@@ -166,6 +166,8 @@ Está construido. Sin esto, `/chat/<slug>` se sigue leyendo igual; lo que no and
 
   > Los pasos 20 y 21 van juntos y en ese orden. Si cargás `ORIGENES` sin registrar los redirect, el login desde el dominio lindo rebota del lado de Kick y de Twitch ("redirect_uri mismatch"). Si registrás los redirect y no cargás `ORIGENES`, no pasa nada malo: sigue todo como hoy.
 
+  **Cómo saber si quedó bien:** entrá a `https://multichat-osmiumstudio.pages.dev/chat/<tu-slug>` y tocá "Conectar Kick". Tenés que volver **a ese mismo dominio**, conectado. Si volvés al dominio de Railway, avisame: quiere decir que Railway está pisando la cabecera `X-Forwarded-Host` que manda el Worker, y se arregla del lado del Worker con una cabecera propia (dos líneas).
+
 - [ ] **22. Cuenta secundaria de Twitch** (además de la de Kick de la tarea 13), para probar el chat abierto como espectador: conectar las dos, escribir con "las dos" y ver que sale en los dos chats con esa cuenta.
 
 - [ ] **23. Apuntarle el celular al QR, una vez.** En `/panel`, al lado del link del chat, hay un QR. Lo verificó un decodificador de verdad 328 veces, pero una cámara agrega óptica, foco y una pantalla de por medio: conviene mirarlo una vez con el teléfono antes de ponerlo en cámara. De paso, probá **instalar** `/chat/<tu-slug>` desde el celular (Compartir → Agregar a inicio): tiene que abrir en tu chat y no en el Chat Global.

@@ -376,6 +376,12 @@ curl -s localhost:8778/api/chat/<tu-slug>/yo
   el `sender_id`); (3) un `drop_reason` de verdad, con una cuenta baneada o el AutoMod
   prendido; (4) el login desde el dominio de Cloudflare, que depende de las tareas 20 y
   21 del dueño.
+- **Y una duda concreta del (4)**: `baseDe` saca el dominio de `X-Forwarded-Host`, que es
+  la cabecera que manda el Worker de Pages. Si el borde de Railway la pisara con la suya,
+  el login desde el dominio lindo seguiría terminando en Railway —como hoy, sin romper
+  nada— y habría que mandar una cabecera propia desde el Worker. Son dos líneas, pero hay
+  que saberlo primero: la forma de saberlo es entrar por el dominio lindo y tocar
+  "Conectar Kick". Está escrito en la tarea 21.
 - **Los espectadores viejos huérfanos no se limpian solos.** La migración corre al leer,
   así que un documento de `tokens` cuya sesión ya venció se queda ahí. El vencimiento de
   60 días de la Fase 5.4 tiene que barrer también `tokens/espectador:*`.

@@ -379,6 +379,11 @@ test('con la Sala apagada, la clave, la subida y el catálogo dan 404 al dueño 
   const conCookie = [
     ['POST', '/api/panel/clave', {}],
     ['DELETE', '/api/panel/clave', {}],
+    /* Suscribirse es la que cuesta plata: era la única del grupo sin
+       esta guarda y salía un pedido de verdad al proveedor de cobro por
+       una suscripción a lo único que se cobra —pasar una película— que
+       hoy no se ofrece. */
+    ['POST', '/api/panel/suscribirse', {}],
     ['POST', '/api/subida', { cuerpo: { id: 'ep1', archivos: [{ ruta: 'maestra.m3u8', bytes: 1 }] } }],
     ['POST', '/api/subida/borrar', { cuerpo: { id: 'ep1' } }],
     ['GET', '/api/videos', {}],
@@ -409,6 +414,32 @@ test('con la Sala apagada, la clave, la subida y el catálogo dan 404 al dueño 
      borrada. Los códigos de estado no lo dicen solos. */
   assert.equal(await videos.obtener(SLUG, 'ep2'), null, 'se guardó una ficha con la Sala apagada');
   assert.ok(await videos.obtener(SLUG, 'ep1'), 'se borró una ficha con la Sala apagada');
+});
+
+test('con la Sala apagada no se manda a nadie a pagar', async () => {
+  /*
+   * LA QUE CUESTA PLATA. `/api/panel/suscribirse` era la única ruta del
+   * grupo sin la guarda del interruptor: un creador con la Sala apagada
+   * tocaba "Suscribirme por 5 USD al mes" y salía un pedido de verdad
+   * al proveedor de cobro. Lo único que se cobra es pasar una película,
+   * que es justo lo que hoy no se ofrece.
+   *
+   * Es el mismo argumento que ya estaba escrito para la subida y para
+   * el plan: primero se dice que la función no está, y recién si está
+   * se habla de plata.
+   */
+  for (const cookie of [sesionOtro, sesionFloja]) {
+    const r = await pedir('/api/panel/suscribirse', { metodo: 'POST', cookie });
+    assert.equal(r.estado, 404, `contestó ${r.estado}`);
+    assert.match(r.datos.error, /cerrada/i);
+  }
+
+  /* Control negativo: con la Sala prendida la ruta vuelve a contestar
+     lo suyo (acá, que el cobro no está configurado en este test). Sin
+     esto, un 404 clavado pasaría igual. */
+  await creadores.ponerSalaAbierta(OTRO, true);
+  const abierta = await pedir('/api/panel/suscribirse', { metodo: 'POST', cookie: sesionOtro });
+  assert.notEqual(abierta.estado, 404, `contestó ${abierta.estado}`);
 });
 
 test('el panel sigue abriéndose, y dice que la Sala está apagada', async () => {

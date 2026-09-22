@@ -341,6 +341,12 @@
     vencido: 'Tu suscripción venció y la sala dejó de reproducir. Tus videos siguen donde estaban.',
   };
 
+  /* Con la Sala apagada, lo de arriba es mentira: no hay nada que
+     reproducir ni, por lo tanto, nada que suscribir. Lo que se ofrece
+     hoy es el chat, y el chat no se cobra. */
+  const SIN_SALA = 'Hoy este servicio es sólo el chat: la Sala está apagada, ' +
+                   'así que no hay nada para suscribir. El chat no se cobra.';
+
   /**
    * Pinta el plan y, sobre todo, APAGA lo que el plan no deja hacer.
    *
@@ -351,9 +357,10 @@
    */
   function pintarPlan(datos) {
     const plan = datos.plan ?? '';
+    const salaAbierta = Boolean(datos.salaAbierta);
     puntitoPlan.className = 'puntito ' + (COLOR_PLAN[plan] ?? 'regular');
     textoPlan.textContent = plan || 'sin plan';
-    explicaPlan.textContent = EXPLICA_PLAN[plan] ?? '';
+    explicaPlan.textContent = salaAbierta ? (EXPLICA_PLAN[plan] ?? '') : SIN_SALA;
 
     const uso = datos.uso ?? {};
     if (uso.topeGb === null || uso.topeGb === undefined) {
@@ -369,7 +376,11 @@
         : ' (todavía sin medir contra R2)';
     }
 
-    const puedeSuscribirse = Boolean(datos.soloLectura) && !datos.esDueno;
+    /* CON LA SALA APAGADA NO SE OFRECE PAGAR, y no es sólo cosmética:
+       el servidor contesta 404 a `/api/panel/suscribirse` con la Sala
+       cerrada. Un botón vivo acá mandaría a alguien a pagar por pasar
+       una película que hoy no se pasa. */
+    const puedeSuscribirse = Boolean(datos.soloLectura) && !datos.esDueno && salaAbierta;
     botonSuscribirse.hidden = !puedeSuscribirse;
     if (puedeSuscribirse && datos.cobro && !datos.cobro.listo) {
       botonSuscribirse.disabled = true;

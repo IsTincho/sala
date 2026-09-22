@@ -1649,9 +1649,18 @@ async function apiTwitchDesvincular(url, req, res) {
  * ya esta abierta y que tiene que poder mostrar el error si el cobro
  * no esta configurado, en vez de mandar a la persona a un 500 de un
  * tercero.
+ *
+ * CON LA SALA CERRADA NO SE COBRA, y esta era la unica ruta del grupo
+ * que no lo miraba: salia un pedido de verdad al proveedor de cobro por
+ * una suscripcion a lo unico que se cobra —pasar una pelicula— que hoy
+ * no se ofrece. Es exactamente lo que dice el comentario de
+ * `salaCerrada`: el interruptor va antes que cualquier pregunta sobre
+ * el plan, porque contestar por el plan manda a alguien a pagar por
+ * algo que no le vamos a dar.
  */
 async function apiSuscribirse(url, req, res) {
   return conCreador(req, res, async (slug) => {
+    if (await salaCerrada(slug, res)) return;
     if (creadores.esDueno(slug)) {
       return json(res, 400, { error: 'el dueño del servicio no se suscribe a si mismo' });
     }

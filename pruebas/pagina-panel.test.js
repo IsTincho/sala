@@ -955,6 +955,42 @@ test('con la Sala apagada no se pinta ni la película, ni los videos, ni la clav
   p.cerrar();
 });
 
+test('con la Sala apagada no se ofrece pagar, y el texto del plan no miente', async () => {
+  /*
+   * LA PANTALLA ACOMPAÑABA AL AGUJERO. Un creador nuevo, con la Sala
+   * apagada, veía el botón "Suscribirme por 5 USD al mes" vivo y, al
+   * lado, "tu sala se puede abrir y leer el chat, pero todavía no puede
+   * reproducir. Suscribite...": las dos cosas mentira, porque su sala
+   * no se abre y suscribirse no la abriría.
+   *
+   * Esconderlo es comodidad, no seguridad —el servidor contesta 404 a
+   * `/api/panel/suscribirse` con la Sala cerrada—, pero un botón de
+   * pagar que el servidor va a rechazar es de los peores que hay.
+   */
+  const p = abrir(conSala({
+    esDueno: false, plan: 'pendiente', soloLectura: true, salaAbierta: false,
+    cobro: { proveedor: 'paddle', listo: true, falta: '', monto: 5, moneda: 'USD' },
+  }));
+  await asentarse();
+
+  assert.equal(p.el('boton-suscribirse').hidden, true, 'no se manda a nadie a pagar por algo que no se da');
+  assert.doesNotMatch(p.el('explica-plan').textContent, /Suscribite/,
+    'ni se lo invita por el texto de al lado');
+  assert.match(p.el('explica-plan').textContent, /sólo el chat/i);
+  p.cerrar();
+
+  /* Control negativo: con la Sala prendida, el mismo creador sí lo ve.
+     Sin esto, un `hidden = true` clavado pasaría igual. */
+  const conLaSala = abrir(conSala({
+    esDueno: false, plan: 'pendiente', soloLectura: true, salaAbierta: true,
+    cobro: { proveedor: 'paddle', listo: true, falta: '', monto: 5, moneda: 'USD' },
+  }));
+  await asentarse();
+  assert.equal(conLaSala.el('boton-suscribirse').hidden, false);
+  assert.match(conLaSala.el('boton-suscribirse').textContent, /5 USD/);
+  conLaSala.cerrar();
+});
+
 test('el interruptor de la Sala lo ve el dueño del servicio y nadie más', async () => {
   /* Esconderlo es comodidad, no seguridad: `/api/panel/sala` contesta
      403 a cualquier otro. Lo que evita es pintar un botón que el

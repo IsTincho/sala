@@ -34,6 +34,11 @@ import crypto from 'node:crypto';
 process.env.SALA_DATOS = path.join(os.tmpdir(), 'sala-pruebas-emotes');
 process.env.KICK_SLUG = 'istincho';
 process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
+/* El plazo de una bajada entera, cortito: hay una prueba que cuelga
+   una bajada a propósito y tiene que poder esperar a que venza. El
+   7TV de mentira contesta en microsegundos, así que a ninguna otra le
+   queda corto. */
+process.env.EMOTES_PLAZO_MS = '200';
 
 const emotes = await import('../servidor/emotes.js');
 const mensajes = await import('../servidor/mensajes.js');
@@ -47,6 +52,9 @@ const fetchDeVerdad = globalThis.fetch;
 /* `sets` es lo que 7TV "tiene": clave `<red>/<id>` -> lista de emotes,
    o el string 'no-existe' para que conteste 404, o 'roto' para un 500. */
 let sets = new Map();
+/* Sets que NO vienen incrustados en el usuario y hay que pedir aparte:
+   id de set -> lista de emotes. */
+let setsAparte = new Map();
 let pedidos = [];
 
 /** Un emote de 7TV como lo devuelve la API, con los pesos que se le pidan.
@@ -92,14 +100,25 @@ globalThis.fetch = async (recurso) => {
     return responder(200, { id: 'global', emotes: g });
   }
 
+  const s = url.match(/\/v3\/emote-sets\/(.+)$/);
+  if (s) {
+    const aparte = setsAparte.get(decodeURIComponent(s[1]));
+    if (!aparte) return responder(404, { error: 'set not found' });
+    return responder(200, { id: s[1], emotes: aparte });
+  }
+
   const m = url.match(/\/v3\/users\/(kick|twitch)\/(.+)$/);
   if (!m) return responder(404, { error: 'ruta desconocida' });
-  const guardado = sets.get(`${m[1]}/${m[2]}`);
+  const guardado = sets.get(`${m[1]}/${decodeURIComponent(m[2])}`);
   if (!guardado || guardado === 'no-existe') {
     return responder(404, { status: 'Not Found', error_code: 12000, error: 'user not found' });
   }
   if (guardado === 'roto') return responder(500, { error: '7tv esta caido' });
-  /* La forma real: el set viene incrustado en el usuario. */
+  /* Un objeto se devuelve tal cual: así se puede armar una respuesta
+     SIN el set incrustado y ejercitar la cascada de respaldo. */
+  if (!Array.isArray(guardado)) return responder(200, { id: 'u1', ...guardado });
+  /* La forma real, la que se observó contra el 7TV de verdad: el set
+     viene incrustado en el usuario. */
   return responder(200, { id: 'u1', emote_set: { id: 's1', emotes: guardado } });
 };
 
@@ -117,6 +136,7 @@ emotes.fijarIdentidad(async (slug, red) => {
 function arrancarDeCero() {
   emotes.olvidarTodo();
   sets = new Map();
+  setsAparte = new Map();
   identidades = new Map();
   pedidos = [];
 }
@@ -188,8 +208,12 @@ test('una palabra que no está en el set no se toca', async () => {
   arrancarDeCero();
   darle('istincho', 'kick', '262387', [emote('CHAD')]);
 
-  const m = await resolverConTabla(deKick('CHAd chadd hola'), 'istincho');
-  assert.deepEqual(m.emotes, []);
+  /* El `CHAD` pelado del final no es decorado: sin él, esta prueba
+     pasaría con 7TV apagado del todo, que es exactamente lo que no
+     queremos que pase inadvertido. */
+  const m = await resolverConTabla(deKick('CHAd chadd hola CHAD'), 'istincho');
+  assert.equal(m.emotes.length, 1);
+  assert.equal(m.emotes[0].inicio, 16, 'el único que resolvió es el último');
 });
 
 test('sólo la palabra entera: pegada a otra cosa no es un emote', async () => {
@@ -198,9 +222,12 @@ test('sólo la palabra entera: pegada a otra cosa no es un emote', async () => {
 
   /* Así funciona la extensión de 7TV y así tiene que funcionar esto:
      si "CHAD!" contara, cualquier mensaje con signos se llenaría de
-     imágenes donde la persona escribió texto. */
-  const m = await resolverConTabla(deKick('xCHAD CHAD! CHAD,'), 'istincho');
-  assert.deepEqual(m.emotes, []);
+     imágenes donde la persona escribió texto. El último, suelto, es el
+     testigo de que el mecanismo está prendido. */
+  const m = await resolverConTabla(deKick('xCHAD CHAD! CHAD, CHAD'), 'istincho');
+  assert.equal(m.emotes.length, 1);
+  assert.equal(recortar(m.texto, m.emotes[0]), 'CHAD');
+  assert.equal(m.emotes[0].inicio, 18, 'el que resolvió es el suelto, no el de los signos');
 });
 
 test('separa por cualquier espacio, incluido el salto de línea', async () => {
@@ -378,13 +405,42 @@ test('un 404 de 7TV deja el mensaje entero y con sus emotes nativos', async () =
   arrancarDeCero();
   identidades.set('sin7tv', { kick: '123' });
   sets.set('kick/123', 'no-existe');
+  /* Con un global que SÍ resuelve: si no, esta prueba pasaría también
+     con 7TV apagado entero, y entonces no dice nada sobre el 404. */
+  sets.set('global', [emote('Clap')]);
 
-  const m = await resolverConTabla(deKick('hola [emote:4148074:HYPERCLAP] CHAD 💀'), 'sin7tv');
+  const m = await resolverConTabla(deKick('hola [emote:4148074:HYPERCLAP] CHAD 💀 Clap'), 'sin7tv');
 
-  assert.equal(m.texto, 'hola HYPERCLAP CHAD 💀');
-  assert.equal(m.emotes.length, 1);
-  assert.equal(m.emotes[0].fuente, 'kick');
+  assert.equal(m.texto, 'hola HYPERCLAP CHAD 💀 Clap');
+  assert.deepEqual(m.emotes.map(e => e.fuente), ['kick', '7tv']);
   assert.equal(recortar(m.texto, m.emotes[0]), 'HYPERCLAP');
+  assert.equal(recortar(m.texto, m.emotes[1]), 'Clap');
+  assert.equal(m.emotes.filter(e => recortar(m.texto, e) === 'CHAD').length, 0,
+    'el canal contestó 404: de su set no sale nada');
+});
+
+test('un 404 se recuerda una hora; un fallo de verdad, un minuto', async () => {
+  arrancarDeCero();
+  identidades.set('sin7tv', { kick: '123' });
+  sets.set('kick/123', 'no-existe');
+  darle('roto', 'kick', '999', 'roto');
+
+  await resolverConTabla(deKick('CHAD'), 'sin7tv');
+  await resolverConTabla(deKick('CHAD'), 'roto');
+
+  /* Los dos dejan la tabla vacía y los dos siguen de largo. La
+     diferencia sólo se ve en CUÁNTO se lo recuerda, y no es un detalle:
+     con 900 creadores, tratar el 404 como un fallo cualquiera pasa de
+     unos 21 mil pedidos por día a 1,3 millones. */
+  const sin = emotes.comoEsta('sin7tv', 'kick');
+  const roto = emotes.comoEsta('roto', 'kick');
+
+  assert.equal(sin.estado, 'sin-cuenta');
+  assert.equal(roto.estado, 'fallo');
+  assert.ok(sin.vence - Date.now() > emotes.CADUCA,
+    'a un creador sin 7TV no se le vuelve a preguntar en diez minutos');
+  assert.ok(roto.vence - Date.now() <= emotes.REINTENTO,
+    'un 7TV caído sí se reintenta enseguida');
 });
 
 test('un creador sin 7TV no genera un pedido por mensaje', async () => {
@@ -409,9 +465,15 @@ test('un creador que no vinculó la red no pide nada', async () => {
 
   /* Un mensaje de Twitch de una sala sin Twitch vinculado no tiene id
      que preguntarle a 7TV. Ni siquiera se sale a la red. */
-  await resolverConTabla(deTwitch('CHAD'), 'solokick');
-
+  const t = await resolverConTabla(deTwitch('CHAD'), 'solokick');
+  assert.deepEqual(t.emotes, []);
   assert.equal(pedidos.filter(u => u.includes('/users/twitch/')).length, 0);
+
+  /* Y el Kick del MISMO creador sigue andando: sin esto, la prueba
+     pasaría igual con 7TV apagado entero. */
+  const k = await resolverConTabla(deKick('CHAD'), 'solokick');
+  assert.equal(k.emotes.length, 1);
+  assert.equal(pedidos.filter(u => u.includes('/users/kick/123')).length, 1);
 });
 
 test('varios mensajes de golpe no son varios pedidos', async () => {
@@ -424,6 +486,176 @@ test('varios mensajes de golpe no son varios pedidos', async () => {
   await emotes.reposo();
 
   assert.equal(pedidos.filter(u => u.includes('/users/kick/262387')).length, 1);
+});
+
+/* ============================== el contador de bajadas en vuelo
+
+   Ésta es la parte que casi se lleva puesta la funcionalidad entera y
+   que no tenía ni una prueba: si el contador de bajadas simultáneas no
+   vuelve a bajar, a la sexta 7TV queda apagado para TODOS los
+   creadores, para siempre, sin un pedido y sin una línea de log. */
+
+const esperar = ms => new Promise(ok => setTimeout(ok, ms));
+
+/** Espera a que un creador tenga tabla, con tope: si no llega, falla. */
+async function esperarTabla(slug, red, porque) {
+  const limite = Date.now() + 3000;
+  while (Date.now() < limite && !emotes.tabla(slug, red).size) await esperar(20);
+  assert.ok(emotes.tabla(slug, red).size, porque);
+}
+
+test('el tope frena la ráfaga y después el contador se destraba', async () => {
+  arrancarDeCero();
+  const todos = [];
+  for (let i = 0; i < emotes.EN_VUELO_MAX + 2; i++) {
+    const slug = `creador${i}`;
+    todos.push(slug);
+    darle(slug, 'kick', `id${i}`, [emote('CHAD')]);
+  }
+
+  /* Todos en el mismo tick. El primer `resolver` se lleva DOS lugares:
+     el del creador y el de los globales, que son de todos. Los que no
+     entran NO se encolan: se reintentan con el próximo mensaje, así
+     que después de que se vacíe el vuelo siguen sin pedir. */
+  for (const s of todos) emotes.resolver(deKick('CHAD'), s);
+  await emotes.reposo();
+  assert.equal(pedidos.filter(u => u.includes('/users/')).length, emotes.EN_VUELO_MAX - 1,
+    'sin tope, novecientos creadores despertando son novecientos fetch de una');
+
+  /* Y acá está el punto: los que no entraron tienen que entrar ahora.
+     Si el descuento del contador no corre, esto no pasa nunca. */
+  for (const s of todos) await esperarTabla(s, 'kick', `${s} se quedó sin tabla: el contador no se destrabó`);
+});
+
+test('una bajada colgada no apaga 7TV para todos', async () => {
+  arrancarDeCero();
+  /* El caso real: `vinculos.identidad` va a Mongo, y el cliente de
+     Mongo se crea sin socketTimeoutMS. Un socket medio abierto no
+     vence nunca y la promesa queda colgada para siempre. Sin un plazo
+     propio, seis de éstas dejan mudo al módulo entero. */
+  /* Los globales se bajan PRIMERO, y de verdad: si se los deja para
+     después se llevan uno de los cupos y, al terminar bien, lo
+     liberan. Ese cupo suelto alcanza para que el creador sano entre
+     aunque las colgadas no se destraben nunca, y la prueba pasaría sin
+     probar nada (comprobado: la mutación "sacar el plazo" sobrevivía). */
+  sets.set('global', [emote('Clap')]);
+  darle('calienta', 'kick', 'idcal', [emote('Clap')]);
+  await resolverConTabla(deKick('Clap'), 'calienta');
+
+  /* `sano` llega SIN tabla y SIN haber sido consultado, que es lo
+     único que hace que la espera de abajo mida algo. Se comprueba con
+     `comoEsta`, que sólo mira: preguntar con `tabla()` le agendaría la
+     bajada acá, antes de que se cuelguen los cupos, y entonces la
+     prueba pasaría con plazo y sin plazo. */
+  darle('sano', 'kick', 'idsano', [emote('CHAD')]);
+  assert.equal(emotes.comoEsta('sano', 'kick'), null);
+
+  const colgados = new Set();
+  for (let i = 0; i < emotes.EN_VUELO_MAX; i++) colgados.add(`colgado${i}`);
+  for (const s of colgados) sets.set(`kick/${s}`, [emote('CHAD')]);
+
+  const antes = identidades;
+  emotes.fijarIdentidad(async (slug, red) => {
+    if (colgados.has(slug)) return new Promise(() => { /* nunca contesta */ });
+    const i = antes.get(slug);
+    return i?.[red] ? { red, sala: slug, usuarioId: i[red] } : null;
+  });
+
+  /* Las seis colgadas se quedan con TODOS los cupos. */
+  for (const s of colgados) emotes.resolver(deKick('CHAD'), s);
+
+  await esperarTabla('sano', 'kick',
+    'las bajadas colgadas nunca soltaron su lugar: 7TV quedó apagado para todos');
+
+  /* Devolver la identidad de siempre para las pruebas que sigan. */
+  emotes.fijarIdentidad(async (slug, red) => {
+    const i = identidades.get(slug);
+    return i?.[red] ? { red, sala: slug, usuarioId: i[red] } : null;
+  });
+});
+
+test('doscientos mensajes no son doscientas líneas de log', async () => {
+  arrancarDeCero();
+  identidades.set('sin7tv', { kick: '123' });
+  sets.set('kick/123', 'no-existe');
+
+  const log = console.log;
+  const warn = console.warn;
+  let lineas = 0;
+  console.log = () => { lineas++; };
+  console.warn = () => { lineas++; };
+  try {
+    for (let i = 0; i < 200; i++) {
+      emotes.resolver(deKick(`mensaje ${i} CHAD`), 'sin7tv');
+      await emotes.reposo();
+    }
+  } finally {
+    console.log = log;
+    console.warn = warn;
+  }
+
+  /* Una por el creador sin cuenta y una por los globales. El creador
+     sin 7TV es la MAYORÍA: si esto se afloja, el log de Railway se
+     vuelve inservible la primera noche movida. */
+  assert.ok(lineas <= 3, `doscientos mensajes dejaron ${lineas} líneas de log`);
+});
+
+/* ================================= lo que pasa con datos fuera de forma */
+
+test('resolver no tira nunca, aunque le llegue cualquier cosa', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD')]);
+  await resolverConTabla(deKick('CHAD'), 'istincho');
+
+  /* `resolver` corre adentro del webhook de Kick, DESPUÉS de que el
+     evento quedó marcado como visto y sin try alrededor: una excepción
+     acá no sería un emote que falta, sería el mensaje perdido y un 500. */
+  const raros = [
+    { tipo: 'chat', red: 'kick', texto: 12345, emotes: [] },
+    { tipo: 'chat', red: 'kick', texto: 'CHAD', emotes: [null] },
+    { tipo: 'chat', red: 'kick', texto: 'CHAD', emotes: [{ inicio: NaN, fin: NaN }] },
+    { tipo: 'chat', red: 'kick', texto: 'CHAD', emotes: 'no soy un array' },
+    { tipo: 'chat', red: 'kick' },
+    {},
+    null,
+  ];
+  for (const r of raros) {
+    assert.doesNotThrow(() => emotes.resolver(r, 'istincho'), `explotó con ${JSON.stringify(r)}`);
+  }
+});
+
+test('un rango nativo con NaN no deja pasar a los que vienen después', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD')]);
+  await resolverConTabla(deKick('CHAD'), 'istincho');
+
+  /* El puntero de rangos ocupados va sólo para adelante. Un rango con
+     NaN no se puede comparar con nada, así que sin saneo el puntero se
+     clava ahí y TODOS los nativos que vengan después dejan de estorbar:
+     saldría un emote de 7TV pisado encima de uno de Kick. */
+  const m = {
+    tipo: 'chat', red: 'kick', texto: 'uno CHAD',
+    emotes: [{ inicio: NaN, fin: NaN, id: 'x', url: 'u' }, { inicio: 4, fin: 8, id: 'k', url: 'u' }],
+  };
+  emotes.resolver(m, 'istincho');
+  const deSieteTv = m.emotes.filter(e => e.fuente === '7tv');
+  assert.deepEqual(deSieteTv, [], 'CHAD está tapado por un nativo: no lo puede resolver 7TV');
+});
+
+test('los nativos desordenados igual bloquean', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD'), emote('PEPE')]);
+  await resolverConTabla(deKick('CHAD'), 'istincho');
+
+  /* Los tres traductores entregan los nativos ordenados, pero el
+     puntero depende de eso y `resolver` es una entrada exportada. */
+  const m = {
+    tipo: 'chat', red: 'kick', texto: 'CHAD y PEPE',
+    emotes: [{ inicio: 7, fin: 11, id: 'b', url: 'u' }, { inicio: 0, fin: 4, id: 'a', url: 'u' }],
+  };
+  emotes.resolver(m, 'istincho');
+  assert.equal(m.emotes.filter(e => e.fuente === '7tv').length, 0,
+    'los dos están tapados por nativos, vengan en el orden que vengan');
 });
 
 /* ====================================================== tope de peso */
@@ -460,6 +692,82 @@ test('un emote que no entra ni en 1x no sale, y la palabra queda como texto', as
   assert.equal(m.emotes.length, 1);
   assert.equal(recortar(m.texto, m.emotes[0]), 'NORMAL');
   assert.equal(m.texto, 'MAXWIN NORMAL', 'el texto no se toca: la palabra se lee igual');
+});
+
+test('el presupuesto es inclusivo: lo que pesa justo, entra', async () => {
+  arrancarDeCero();
+  /* El borde exacto. Con `>=` en vez de `>`, un emote que pesa
+     exactamente el tope bajaría un escalón de calidad sin motivo. */
+  darle('istincho', 'kick', '262387', [emote('JUSTO', { kb2x: emotes.PRESUPUESTO / 1024 })]);
+
+  const m = await resolverConTabla(deKick('JUSTO'), 'istincho');
+  assert.equal(m.emotes[0].url, url2x('JUSTO'));
+});
+
+test('un peso que 7TV no dice, o que dice mal, no cuenta como liviano', async () => {
+  arrancarDeCero();
+  const roto = emote('ROTO');
+  /* `Number(-1) || 0` da -1, y `-1 > PRESUPUESTO` es false: un tamaño
+     negativo entraría como si fuera gratis. Y un `size` ausente no es
+     "liviano", es "no se sabe". */
+  roto.data.host.files = [
+    { name: '2x.webp', size: -1 },
+    { name: '1x.webp' },
+  ];
+  darle('istincho', 'kick', '262387', [roto, emote('SANO')]);
+
+  const m = await resolverConTabla(deKick('ROTO SANO'), 'istincho');
+  assert.equal(m.emotes.length, 1);
+  assert.equal(recortar(m.texto, m.emotes[0]), 'SANO');
+});
+
+test('una URL que no es de 7TV y por https no se le manda a nadie', async () => {
+  arrancarDeCero();
+  const malos = ['javascript:alert(1)', '//evil.example/emote/x', 'http://cdn.7tv.app/emote/x'];
+  const lista = malos.map((u, i) => {
+    const e = emote(`MALO${i}`);
+    e.data.host.url = u;
+    return e;
+  });
+  darle('istincho', 'kick', '262387', [...lista, emote('BUENO')]);
+
+  /* Esto termina en el `src` de un <img> en la pantalla de cada
+     espectador y lo arma un tercero. El estándar de la casa es el de
+     `colorSeguro()`: validar en el servidor además de en la página. */
+  const m = await resolverConTabla(deKick('MALO0 MALO1 MALO2 BUENO'), 'istincho');
+  assert.deepEqual(m.emotes.map(e => recortar(m.texto, e)), ['BUENO']);
+  assert.ok(m.emotes[0].url.startsWith('https://cdn.7tv.app/'));
+});
+
+test('un set que no viene incrustado se pide aparte', async () => {
+  arrancarDeCero();
+  identidades.set('istincho', { kick: '262387' });
+  /* La cascada de respaldo. Medido contra el 7TV real, el set viene
+     siempre incrustado en `emote_set` y esto no llega a usarse; está
+     porque una respuesta sin él es justo el caso en el que quedarse
+     sin emotes sería silencioso. */
+  sets.set('kick/262387', { emote_set_id: 'set-aparte' });
+  setsAparte.set('set-aparte', [emote('CHAD')]);
+
+  const m = await resolverConTabla(deKick('CHAD'), 'istincho');
+  assert.equal(m.emotes.length, 1);
+  assert.equal(pedidos.filter(u => u.includes('/emote-sets/set-aparte')).length, 1);
+});
+
+test('un mensaje que no es de chat no se toca, y una red desconocida no se pregunta', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '262387', [emote('CHAD')]);
+  await resolverConTabla(deKick('CHAD'), 'istincho');
+
+  const reloj = { tipo: 'reloj', red: 'kick', texto: 'CHAD', segundo: 12 };
+  emotes.resolver(reloj, 'istincho');
+  assert.equal('emotes' in reloj, false, 'un evento de reloj no tiene emotes y no los gana acá');
+
+  const otraRed = { tipo: 'chat', red: 'mastodon', texto: 'CHAD', emotes: [] };
+  emotes.resolver(otraRed, 'istincho');
+  assert.deepEqual(otraRed.emotes, []);
+  assert.equal(pedidos.filter(u => u.includes('/users/mastodon/')).length, 0,
+    'una red que 7TV no indexa no se le pregunta');
 });
 
 test('un mensaje no puede meter emotes sin límite', async () => {

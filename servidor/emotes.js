@@ -35,13 +35,19 @@
    veces tarda. Si la tabla todavia no esta, el mensaje sale sin
    emotes de 7TV y la bajada queda agendada para el proximo.
 
-   En la practica eso es UN mensaje por creador y por arranque: cuando
-   la tabla vence, se sigue sirviendo la vieja mientras se baja la
-   nueva, asi que no hay un segundo hueco. El unico mensaje que se
-   pierde los emotes es el primero que llega despues de un deploy. Lo
-   contrario —precalentar la tabla de los 900 creadores cada diez
-   minutos— seria 1800 pedidos cada diez minutos a un servicio
-   gratuito ajeno para chats que en su mayoria estan callados.
+   CUANTOS MENSAJES SALEN PELADOS, con los numeros medidos y no con la
+   frase linda: todos los que lleguen MIENTRAS se baja la tabla. Con un
+   creador solo y 7TV contestando rapido es uno. Pero la bajada tarda
+   lo que tarda, y ademas hay un tope de seis simultaneas: medido con
+   20 creadores mandando un mensaje cada 250 ms y 7TV a 600 ms, salieron
+   130 mensajes sin emotes, y el peor creador se comio 11 seguidos.
+   Pasa una sola vez por creador y por arranque —al vencer la tabla se
+   sigue sirviendo la vieja mientras se baja la nueva, asi que ahi no
+   hay hueco— y lo que se pierde es un adorno, no el mensaje.
+
+   Lo contrario —precalentar la tabla de los 900 creadores— serian
+   1800 pedidos por deploy a un servicio gratuito ajeno, la mayoria
+   para chats que esa noche no hablan. No compensa.
 
    ---------------------------------------------------------------
    TRES VENCIMIENTOS, NO UNO
@@ -131,9 +137,9 @@ export const PRESUPUESTO = Math.max(8, Number(process.env.EMOTES_KB ?? 128)) * 1
    navegadores afuera, es cambiar esta lista. */
 const TAMANOS = ['2x.webp', '1x.webp'];
 
-const CADUCA = 10 * 60 * 1000;
-const SIN_CUENTA = 60 * 60 * 1000;
-const REINTENTO = 60 * 1000;
+export const CADUCA = 10 * 60 * 1000;
+export const SIN_CUENTA = 60 * 60 * 1000;
+export const REINTENTO = 60 * 1000;
 const ESPERA = 8000;
 
 /* Cuantas bajadas pueden estar en vuelo a la vez, en todo el proceso.
@@ -141,7 +147,29 @@ const ESPERA = 8000;
    mensaje son 900 fetch de una. Las que no entran no se encolan: el
    proximo mensaje de ese canal lo vuelve a intentar, que es el mismo
    trato que ya tiene el primero. */
-const EN_VUELO_MAX = 6;
+export const EN_VUELO_MAX = 6;
+
+/* CUANTO PUEDE DURAR UNA BAJADA ENTERA antes de darla por perdida.
+
+   No alcanza con el timeout del `fetch`, y esto casi se lleva puesta
+   la funcionalidad entera: una bajada arranca pidiendole el id al
+   almacen (`vinculos.identidad` -> Mongo), y el cliente de Mongo se
+   crea con `serverSelectionTimeoutMS` pero sin `socketTimeoutMS`. Un
+   socket medio abierto no vence NUNCA, asi que esa promesa se queda
+   colgada, el descuento del contador de `enVuelo` no llega a
+   correr, y con seis colgadas 7TV queda apagado para TODOS los
+   creadores, para siempre y sin una sola linea de log.
+
+   Por eso el plazo cubre la bajada completa y no solo el pedido. Se le
+   da margen sobre los dos fetch encadenados (8 s cada uno) y encima el
+   viaje al almacen. Lo que vence se reintenta al minuto como cualquier
+   otro fallo. */
+const PLAZO = Math.max(1000, Number(process.env.EMOTES_PLAZO_MS ?? 20000));
+
+/* Cada cuanto, como mucho, se avisa que el tope de concurrencia esta
+   lleno. Sin esto seria una linea por mensaje; sin el aviso, un apagon
+   global seria invisible, que es como casi se escapa el bug de arriba. */
+const AVISO_TOPE = 60 * 1000;
 
 /* Cuantos emotes de 7TV puede agregar UN mensaje.
 
@@ -198,8 +226,29 @@ export function olvidarTodo() {
  * seria lo que llame un boton de "recargar mis emotes" en el panel.
  */
 export function vencer(slug, red) {
-  const c = cache.get(red ? clave(slug, red) : String(slug ?? ''));
-  if (c) c.vence = 0;
+  /* Sin red se vencen las dos. Es la forma que quiere un boton de
+     "recargar mis emotes": el creador no piensa en redes, piensa en su
+     canal. (Antes, sin red, se buscaba la clave `istincho` cuando las
+     claves son `istincho/kick`: no vencia nada y no lo decia.) */
+  for (const r of red ? [red] : ['kick', 'twitch']) {
+    const c = cache.get(clave(slug, r));
+    if (c) c.vence = 0;
+  }
+}
+
+/**
+ * Lo que sabe el modulo de un casillero, para mirarlo desde afuera.
+ * Sin red, el de los globales. `null` si nunca se consulto.
+ *
+ * Es de solo lectura y existe para poder comprobar COMO quedo la
+ * cache, no solo que devuelve: la diferencia entre "404, este creador
+ * no tiene 7TV" (vence a la hora) y "fallo, reintentar" (al minuto) no
+ * se puede ver de ninguna otra forma desde afuera, y confundirlas es
+ * pasar de ~21 mil pedidos por dia a 1,3 millones.
+ */
+export function comoEsta(slug, red) {
+  const c = cache.get(slug === undefined ? CLAVE_GLOBALES : clave(slug, red));
+  return c ? { emotes: c.tabla.size, vence: c.vence, estado: c.avisado } : null;
 }
 
 /**
@@ -262,18 +311,53 @@ async function pedirJson(url) {
  */
 function imagenDe(emote) {
   const host = emote?.data?.host;
-  if (!host?.url) return null;
+  if (typeof host?.url !== 'string' || !host.url) return null;
 
-  const porNombre = new Map((host.files ?? []).map(f => [f.name, f]));
+  const porNombre = new Map((host.files ?? []).map(f => [f?.name, f]));
   for (const nombre of TAMANOS) {
     const f = porNombre.get(nombre);
-    const bytes = Number(f?.size) || 0;
-    if (!f || !bytes || bytes > PRESUPUESTO) continue;
+    const bytes = Number(f?.size);
+    /* Se exige un peso POSITIVO y conocido. Un `size` en 0, ausente o
+       negativo no es "liviano", es "no se sabe", y un `-1` colado en
+       `bytes > PRESUPUESTO` entraria como si fuera gratis. Si 7TV
+       dejara de mandar `size`, el set queda vacio: se ve en el log,
+       que pasa a decir "0 emotes". */
+    if (!Number.isFinite(bytes) || bytes <= 0 || bytes > PRESUPUESTO) continue;
     /* host.url viene sin esquema ("//cdn.7tv.app/emote/<id>") */
     const base = host.url.startsWith('//') ? 'https:' + host.url : host.url;
-    return { id: String(emote.id ?? ''), url: `${base}/${nombre}` };
+    const url = urlSegura(`${base}/${nombre}`);
+    if (url) return { id: String(emote?.id ?? '').slice(0, TOPE_ID), url };
   }
   return null;
+}
+
+/* Cuanto puede medir el id y la URL de un emote. Son de un tercero y
+   viajan en cada mensaje a cada pestaña abierta. */
+const TOPE_ID = 64;
+const TOPE_URL = 300;
+
+/**
+ * La URL tal como se la va a mandar al navegador, o '' si no se la
+ * puede mandar.
+ *
+ * Esto termina en el `src` de un `<img>` en la pantalla de cada
+ * espectador, y lo arma un servicio de terceros. No es un XSS —un
+ * `javascript:` en un `src` de imagen no se ejecuta—, pero el estandar
+ * de la casa es no confiar: es el mismo motivo por el que
+ * `colorSeguro()` valida el color del chat en el servidor ademas de en
+ * la pagina. Verificado que sin esto pasan `javascript:`, `data:` y
+ * `http:`.
+ *
+ * Se ancla al dominio de 7TV y no al host exacto (`cdn.7tv.app`) para
+ * que un cambio de subdominio de ellos no apague los emotes, pero un
+ * `//evil.com/` en la respuesta no llegue a ningun lado.
+ */
+function urlSegura(candidata) {
+  let u;
+  try { u = new URL(candidata); } catch { return ''; }
+  if (u.protocol !== 'https:') return '';
+  if (u.hostname !== '7tv.app' && !u.hostname.endsWith('.7tv.app')) return '';
+  return u.href.length <= TOPE_URL ? u.href : '';
 }
 
 /** La tabla nombre -> imagen de un set ya bajado. */
@@ -298,11 +382,19 @@ async function bajarSet(slug, red) {
 
   const usuario = await pedirJson(`${API}/users/${red}/${encodeURIComponent(id)}`);
 
-  /* El set puede venir de tres lados y no siempre estan los tres. En
-     Kick la conexion suele quedar sin set asignado y lo que vale es el
-     primero del usuario, que es lo que muestra la extension. Esta
-     cascada esta copiada del repo hermano, donde ya lleva meses en
-     produccion. */
+  /* LA CASCADA DEL SET, y lo que se sabe de ella.
+
+     Medido el 2026-09-22 contra el servicio real, con el canal de Kick
+     del dueño (66 emotes) y con un canal de Twitch: en los dos casos
+     el set viene INCRUSTADO en `emote_set` y ninguno de los respaldos
+     llega a usarse.
+
+     Los respaldos se dejan igual porque estan copiados del repo
+     hermano, donde llevan meses en produccion, y porque una respuesta
+     sin `emote_set` es exactamente el caso en que quedarse sin emotes
+     seria silencioso. (El comentario que habia antes aca decia lo
+     contrario —que en Kick la conexion "suele" quedar sin set—, y eso
+     no es lo que se observo.) */
   const conexion = (usuario.user?.connections ?? [])
     .find(c => c?.platform === red.toUpperCase())?.emote_set;
   let set = usuario.emote_set ?? conexion;
@@ -320,13 +412,37 @@ async function bajarSet(slug, red) {
    Van incluidos porque es lo que ve en su chat cualquiera que tenga la
    extension puesta, en cualquier canal, tenga o no el streamer cuenta
    de 7TV. Dejarlos afuera haria que el multichat muestre MENOS de lo
-   que la gente ya ve. Son 45 emotes y pesan poco: mediana 4,5 KB en
-   2x, 852 KB el set entero (medido). */
+   que la gente ya ve.
+
+   Y pesan poco: 45 emotes, mediana 4,5 KB en 2x y 852 KB el set
+   entero. Medido el 2026-09-22 contra `7tv.io/v3/emote-sets/global`;
+   esta tambien en el README, al lado de los numeros del set del
+   canal. */
 async function bajarGlobales() {
   return tablaDelSet(await pedirJson(`${API}/emote-sets/global`));
 }
 
 /* ------------------------------------------------------------ bajada */
+
+/**
+ * La promesa, pero con fecha de vencimiento.
+ *
+ * Existe por lo que dice el comentario de `PLAZO`: hay eslabones de la
+ * bajada que no tienen timeout propio y pueden quedarse colgados para
+ * siempre. Una promesa colgada se lleva puesto un lugar del tope de
+ * concurrencia, y seis se llevan puesto el modulo entero.
+ */
+function conPlazo(promesa, ms) {
+  let reloj;
+  const vencimiento = new Promise((_, mal) => {
+    reloj = setTimeout(() => mal(new Error(`tardo mas de ${ms} ms`)), ms);
+    /* Sin unref, un plazo pendiente no deja cerrar el proceso. */
+    reloj.unref?.();
+  });
+  return Promise.race([promesa, vencimiento]).finally(() => clearTimeout(reloj));
+}
+
+let ultimoAvisoTope = 0;
 
 function avisar(c, nuevo, texto) {
   if (c.avisado === nuevo) return;
@@ -344,10 +460,25 @@ function agendar(k, como, etiqueta) {
   /* La misma promesa para todos: dos mensajes en el mismo tick no son
      dos pedidos. */
   if (c.bajando) return;
-  if (enVuelo >= EN_VUELO_MAX) return;   // se reintenta con el proximo mensaje
+  if (enVuelo >= EN_VUELO_MAX) {
+    /* No se encola: se reintenta con el proximo mensaje. Pero se avisa,
+       porque si el tope se queda lleno 7TV esta apagado para todos y
+       sin esta linea no se notaria. */
+    const ahora = Date.now();
+    if (ahora - ultimoAvisoTope > AVISO_TOPE) {
+      ultimoAvisoTope = ahora;
+      console.warn(`[7tv] ${enVuelo} bajadas en vuelo y no entran mas; ${etiqueta} espera al proximo mensaje`);
+    }
+    return;
+  }
 
   enVuelo++;
-  c.bajando = como()
+  /* `Promise.resolve().then(como)` y no `como()`: asi una excepcion
+     sincrona tambien cae en el `.catch` de abajo. Sin esto, el dia que
+     `como` tire sincronico, el contador se fuga Y la excepcion sale por
+     `resolver()` hasta el webhook.
+     `conPlazo` es lo que garantiza que el `.finally` SIEMPRE corra. */
+  c.bajando = conPlazo(Promise.resolve().then(como), PLAZO)
     .then(t => {
       c.tabla = t;
       c.vence = Date.now() + CADUCA;
@@ -439,8 +570,33 @@ const esBlanco = c => c === ' ' || BLANCO.test(c);
  * @param {string} slug     de que sala es
  */
 export function resolver(mensaje, slug) {
+  /* ESTO NO PUEDE TIRAR NUNCA. Decora un mensaje; no es el mensaje.
+     `recibirDeKick` corre adentro de `procesarEvento`, DESPUES de que
+     el evento quedo marcado como visto y sin try alrededor: una
+     excepcion aca no seria un emote que falta, seria el mensaje
+     perdido y un 500 en el webhook de Kick. El catch avisa como mucho
+     una vez por minuto, porque si algo lo dispara lo va a disparar en
+     todos los mensajes. */
+  try {
+    return conEmotes(mensaje, slug);
+  } catch (e) {
+    const ahora = Date.now();
+    if (ahora - ultimoAvisoFalla > AVISO_TOPE) {
+      ultimoAvisoFalla = ahora;
+      console.warn('[7tv] no se pudo resolver un mensaje:', e?.message ?? e?.name ?? 'Error');
+    }
+    return mensaje;
+  }
+}
+
+let ultimoAvisoFalla = 0;
+
+function conEmotes(mensaje, slug) {
   if (!ACTIVO || !mensaje || mensaje.tipo !== 'chat') return mensaje;
-  const texto = mensaje.texto ?? '';
+  /* String() y no `?? ''`: el texto de los tres traductores siempre es
+     string, pero `resolver` es una entrada exportada y `[...]` sobre
+     algo que no lo sea revienta. */
+  const texto = String(mensaje.texto ?? '');
   if (!texto) return mensaje;
 
   const delCanal = tabla(slug, mensaje.red);
@@ -448,11 +604,16 @@ export function resolver(mensaje, slug) {
   if (!delCanal.size && !comunes.size) return mensaje;
 
   const nativos = Array.isArray(mensaje.emotes) ? mensaje.emotes : [];
-  /* Copia ordenada: los tres traductores ya los entregan en orden,
-     pero esto se recorre con un puntero que asume que lo estan y no
-     vale la pena que dependa de eso. */
+  /* Copia ordenada y SANEADA: se recorre con un puntero que va para
+     adelante, y basta un rango con NaN para que el puntero se clave y
+     deje pasar por encima de todos los nativos que vengan despues. Un
+     rango de largo cero es peor todavia: el `<=` de abajo lo da por
+     superado y se dibujarian dos <img> en el mismo lugar.
+     Los tres traductores entregan rangos sanos y ordenados; esto es
+     para que la propiedad no dependa de eso. */
   const ocupados = nativos
-    .map(e => [Number(e.inicio), Number(e.fin)])
+    .map(e => [Number(e?.inicio), Number(e?.fin)])
+    .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
     .sort((a, b) => a[0] - b[0]);
 
   const puntos = [...texto];
@@ -480,6 +641,10 @@ export function resolver(mensaje, slug) {
   }
 
   if (!hallados.length) return mensaje;
-  mensaje.emotes = [...nativos, ...hallados].sort((a, b) => a.inicio - b.inicio);
+  /* El `?? 0` no es cosmetico: si `nativos` trae basura, el que tira al
+     comparar es ESTE sort, y seria `resolver` el que rompe el mensaje.
+     Lo que venga mal sigue viniendo mal, pero no por culpa nuestra. */
+  mensaje.emotes = [...nativos, ...hallados]
+    .sort((a, b) => (Number(a?.inicio) || 0) - (Number(b?.inicio) || 0));
   return mensaje;
 }

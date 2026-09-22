@@ -42,6 +42,23 @@
    guarda la ultima llegada de cada red y el estado de vivo.
 
    ---------------------------------------------------------------
+   POR QUE LOS EMOTES DE 7TV SE RESUELVEN ACA
+
+   `emotes.resolver()` se llama en los DOS embudos de este archivo
+   —`recibirDeKick` y `recibirDeTwitch`— y en ningun otro lado.
+
+   No va en `mensajes.js` porque los traductores de alla son puros:
+   traducen un payload y no conocen ni el slug de la sala ni una
+   cache. No va en `canales.recordar()` porque el bus reparte, no
+   enriquece, y ahi tambien pasan eventos que no son mensajes.
+
+   Que sean dos y no tres importa: el plan B de IRC NO es un tercer
+   embudo, desemboca en `recibirDeTwitch`. Si algun dia aparece una via
+   nueva, tiene que terminar en uno de estos dos o los emotes de 7TV se
+   van a ver por un camino y no por el otro, que es justo el tipo de
+   bug que `pruebas/mensajes-forma.test.js` existe para atajar.
+
+   ---------------------------------------------------------------
    EL DEDUPE ENTRE EVENTSUB E IRC
 
    Cuando se prende el plan B, EventSub sigue reintentando: durante
@@ -70,6 +87,7 @@
    ============================================================ */
 
 import * as canales from './canales.js';
+import * as emotes from './emotes.js';
 import * as kick from './kick.js';
 import * as mensajes from './mensajes.js';
 import * as twitch from './twitch.js';
@@ -366,6 +384,7 @@ export function recibirDeKick(slug, evento, cuerpo) {
     const mensaje = mensajes.deKick(cuerpo, { hora: evento.cuando });
     if (!mensaje) return { hecho: 'payload raro' };
     c.kick.ultima = new Date();
+    emotes.resolver(mensaje, c.slug);
     canales.recordar(c.slug, mensaje);
     return { hecho: 'chat', mensaje };
   }
@@ -485,6 +504,7 @@ export function recibirDeTwitch(slug, mensaje) {
     }
   }
   c.twitch.ultima = new Date();
+  emotes.resolver(mensaje, c.slug);
   canales.recordar(c.slug, mensaje);
   return true;
 }

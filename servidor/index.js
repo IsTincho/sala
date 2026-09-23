@@ -2034,6 +2034,12 @@ async function apiEstado(url, req, res) {
     hora: Date.now(),
     almacen: almacen.dondeGuarda(),
     canales: canales.resumen(),
+    /* Los dominios desde los que este sitio se sirve, y que por lo
+       tanto puede usar como redirect de OAuth. No son secretos: son
+       justo las URL que hay que registrar en Kick y en Twitch. Estan
+       aca porque cuando el login vuelve al dominio equivocado, lo
+       primero que hay que saber es si el servidor aprendio el otro. */
+    origenes: origenes.permitidos(),
     /* Que falta para que esto funcione de verdad. Sin este bloque, el
        dia que el login no anda hay que adivinar cual de las siete
        variables es la que falta. No dice NUNCA el valor de ninguna. */

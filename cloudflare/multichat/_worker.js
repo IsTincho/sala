@@ -28,6 +28,10 @@ export default {
 
     const cabeceras = new Headers(pedido.headers);
     for (const c of SIN_REENVIAR) cabeceras.delete(c);
+    /* Railway reescribe `X-Forwarded-Host` con su propio dominio, asi
+       que el servidor nunca veria el nuestro. Por eso ademas va en una
+       cabecera propia, que nadie en el camino toca. */
+    cabeceras.set('x-origen-proxy', url.origin);
     cabeceras.set('x-forwarded-host', url.host);
     cabeceras.set('x-forwarded-proto', 'https');
     const ip = pedido.headers.get('cf-connecting-ip');

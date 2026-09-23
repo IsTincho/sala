@@ -86,6 +86,17 @@ export const esNuestro = origen => Boolean(normalizar(origen)) && LISTA.includes
  * que no esta en la lista devuelve '' y quien llama usa `URL_BASE`.
  */
 export function delPedido(req) {
+  /* Primero la cabecera propia del proxy de Cloudflare.
+     `X-Forwarded-Host` no sirve para esto: Railway la reescribe con SU
+     dominio antes de que el pedido llegue a este proceso, asi que por
+     ese camino el dominio del proxy no llega nunca y el login
+     terminaba siempre en Railway.
+     Que cualquiera pueda mandarla no agrega riesgo: el valor se compara
+     contra LISTA igual que todo lo demas, y lo unico que se puede
+     elegir mintiendo es otro dominio NUESTRO. */
+  const propio = normalizar(String(req?.headers?.['x-origen-proxy'] ?? '').split(',')[0].trim());
+  if (propio && LISTA.includes(propio)) return propio;
+
   const host = req?.headers?.['x-forwarded-host'] ?? req?.headers?.host ?? '';
   if (!host) return '';
   /* Con varios saltos la cabecera puede venir como "a, b": el primero

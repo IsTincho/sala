@@ -441,6 +441,124 @@ a.boton-chip{
   cursor: default;
 }
 
+/* ---------- selector de emotes ----------
+
+   Se abre HACIA ARRIBA, encima de la caja y dentro de ella: en un
+   celular el teclado ocupa la mitad de abajo, asi que un panel que
+   cayera para abajo naceria tapado. Tiene alto maximo propio y
+   scrollea adentro; la lista de mensajes de atras no se mueve. */
+
+.panel-emotes{
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-2);
+  /* 40svh y no vh: con el teclado del celular abierto, vh sigue
+     midiendo la pantalla entera y el panel taparia la caja. El vh de
+     arriba es el respaldo para el navegador que no entienda svh: da
+     un panel un poco mas alto, no uno roto. */
+  max-height: 40vh;
+  max-height: 40svh;
+  padding: var(--espacio-2);
+  margin-bottom: var(--espacio-1);
+  background: var(--fondo);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+}
+
+.fila-buscar-emotes{
+  flex: none;
+  display: flex;
+  gap: var(--espacio-2);
+  align-items: center;
+}
+
+.buscar-emote{
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0.4rem 0.6rem;
+}
+
+.rejilla-emotes{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* el dedo puede arrastrar el panel sin llevarse la pagina de atras */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.grupo-emotes + .grupo-emotes{ margin-top: var(--espacio-3); }
+
+.titulo-grupo-emotes{
+  margin: 0 0 var(--espacio-1);
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--texto-tenue);
+}
+
+.opciones-emotes{
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--espacio-1);
+}
+
+.opcion-emote{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 2.75rem = 44px: el minimo que se puede tocar con el dedo sin
+     errarle. La pagina se instala como app y se usa en el celular. */
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0.2rem;
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  cursor: pointer;
+}
+
+.opcion-emote:hover{ border-color: var(--acento); }
+
+/* El que se esta recorriendo con las flechas. Se marca con el mismo
+   borde que el foco por si el navegador no lo dibuja solo. */
+.opcion-emote-activa{
+  border-color: var(--acento);
+  background: var(--chat-fila-hover);
+}
+
+/* Sirve en alguna de las redes elegidas pero no en todas. El borde
+   punteado NO es el unico aviso: el aria-label y el title lo dicen
+   con palabras, y si se usa sale el cartel de abajo. */
+.opcion-emote-parcial{ border-style: dashed; }
+
+.opcion-emote .emote{
+  height: 1.75rem;
+  max-width: 3.5rem;
+  object-fit: contain;
+}
+
+.nota-emotes{
+  flex: none;
+  margin: 0;
+  font-size: 0.75em;
+}
+
+.boton-emotes{ flex: none; }
+
+/* "este emote no existe en la red a la que estas mandando" */
+.aviso-emotes{
+  margin: 0;
+  font-size: 0.8em;
+  color: var(--regular);
+}
+
 /* ---------- foco visible en todo control interactivo ---------- */
 
 button:focus-visible,

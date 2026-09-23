@@ -109,6 +109,14 @@
   const contadorCaracteres = document.getElementById('contador-caracteres');
   const botonEnviar       = document.getElementById('boton-enviar');
 
+  const botonEmotes    = document.getElementById('boton-emotes');
+  const panelEmotes    = document.getElementById('panel-emotes');
+  const buscarEmote    = document.getElementById('buscar-emote');
+  const cerrarEmotes   = document.getElementById('cerrar-emotes');
+  const rejillaEmotes  = document.getElementById('rejilla-emotes');
+  const notaEmotes     = document.getElementById('nota-emotes');
+  const avisoEmotes    = document.getElementById('aviso-emotes');
+
   const tituloChat      = document.getElementById('titulo-chat');
   const barraSalud      = document.getElementById('barra-salud');
   const cajaEscritura   = document.getElementById('caja-escritura');
@@ -166,6 +174,11 @@
     // y no en el botón: /chat clona el <li> para la columna de su red y
     // un clon no se lleva las escuchas.
     ul.addEventListener('click', alClickEnLista);
+
+    // Y por el MISMO motivo, el respaldo a texto de una insignia que no
+    // carga también se escucha acá: con un `onerror` por imagen, el
+    // clon de la columna se quedaba con el ícono de imagen rota.
+    window.SalaMensajes.vigilarInsignias(ul);
 
     return info;
   }
@@ -492,6 +505,11 @@
 
   selectDestino.addEventListener('change', () => {
     try { localStorage.setItem(claveDelSelector(), selectDestino.value); } catch { /* nada, no es critico */ }
+    /* Cambiar de red cambia que emotes sirven y si hay que avisar algo
+       de lo que ya esta escrito: un emote de Kick puesto con "Kick"
+       elegido pasa a ser un problema en cuanto se elige "las dos". */
+    if (emotesAbiertos) pintarEmotes();
+    revisarAvisoEmotes();
   });
 
   function ajustarAlturaCampo() {
@@ -508,6 +526,7 @@
   campoTexto.addEventListener('input', () => {
     ajustarAlturaCampo();
     actualizarContadorCaracteres();
+    revisarAvisoEmotes();
   });
 
   campoTexto.addEventListener('keydown', ev => {
@@ -632,6 +651,7 @@
           campoTexto.value = '';
           ajustarAlturaCampo();
           actualizarContadorCaracteres();
+          revisarAvisoEmotes();
           const mensajeParcial = armarMensajeDeResultado(datos || {});
           if (mensajeParcial) mostrarAviso(mensajeParcial, { autoOcultar: true });
           else ocultarAviso();
@@ -669,7 +689,308 @@
     campoTexto.disabled = true;
     selectDestino.disabled = true;
     botonEnviar.disabled = true;
+    botonEmotes.disabled = true;
+    cerrarPanelEmotes({ devolverFoco: false });
   }
+
+  /* ---------- selector de emotes (solo /chat/<slug>) ----------
+
+     PARA QUE: mandar un emote sin acordarse del nombre exacto.
+
+     LO QUE ESTA PAGINA **NO** HACE: armar el markup de ninguna
+     plataforma. El mismo emote se escribe distinto segun la red
+     —`[emote:5747892:MEGALUL]` en Kick, el nombre pelado en Twitch y
+     en 7TV— y con "las dos" el mensaje sale a las dos a la vez. Si la
+     pagina eligiera, siempre le erraria a una. Asi que el servidor
+     manda cada emote con su `marca` ya lista, la caja guarda ESA y la
+     traduccion final por red la hace `servidor/envio.js`, que es el
+     unico lugar que sabe a quien le esta hablando.
+
+     De lo unico que se ocupa esto es de que la persona vea, ANTES de
+     mandar, que un emote de Kick no existe en Twitch. */
+
+  const NOMBRE_FUENTE = { kick: 'Kick', '7tv': '7TV', twitch: 'Twitch' };
+  /* En que orden se muestran los grupos. Kick primero porque son los
+     que no se pueden buscar en ningun otro lado. */
+  const ORDEN_FUENTES = ['kick', '7tv'];
+  const TITULO_GRUPO = {
+    kick: 'De Kick · los que pasaron por este chat',
+    '7tv': 'De 7TV · del canal y los globales',
+  };
+  /* Lo que la pagina admite no tener. Se dice en el panel y no en un
+     comentario: un selector que aparenta ser el catalogo completo
+     manda a buscar un emote que no va a estar. */
+  const NOTA_EMOTES = 'De Kick aparecen sólo los que ya pasaron por este chat: '
+    + 'Kick no ofrece forma de pedirle la lista de emotes de un canal. '
+    + 'Los nativos de Twitch todavía no están.';
+  /* No se vuelve a pedir la lista mas seguido que esto aunque se abra
+     y cierre el panel. Los de Kick crecen en vivo, asi que refrescar
+     al abrir tiene sentido; hacerlo en cada toque, no. */
+  const CADA_RECARGA_EMOTES = 30000;
+
+  let catalogoEmotes = [];
+  let cuandoSeCargaronEmotes = 0;
+  let emotesAbiertos = false;
+  /* Los botones pintados, EN EL ORDEN EN QUE SE VEN: es lo que
+     recorren las flechas del teclado. */
+  let opcionesEmotes = [];
+  let indiceActivo = -1;
+
+  const nombreDeRed = red => NOMBRE_RED[red] ?? red;
+
+  /* A que redes va a ir lo que se escriba ahora. El valor del selector
+     es 'ambas' en /chat/<slug> y 'ambos' en /chat: se aceptan los dos
+     para que esto no dependa de cual de las dos cajas lo llame. */
+  function redesDelEnvio() {
+    const v = selectDestino.value;
+    if (v === 'ambas' || v === 'ambos') return REDES.slice();
+    return REDES.includes(v) ? [v] : REDES.slice();
+  }
+
+  /* Lo que llega del servidor se revisa igual antes de meterlo en un
+     `src`. El servidor ya lo valido (`urlSegura` en emotes.js); esto
+     es el mismo criterio de la casa: la pagina tampoco confia. */
+  const emoteUsable = e =>
+    Boolean(e) && typeof e.nombre === 'string' && e.nombre
+    && typeof e.marca === 'string' && e.marca
+    && typeof e.url === 'string' && e.url.startsWith('https://')
+    && Array.isArray(e.redes) && e.redes.length > 0;
+
+  function consultarEmotes({ forzar = false } = {}) {
+    if (!modoPublico) return Promise.resolve();
+    if (!forzar && cuandoSeCargaronEmotes && Date.now() - cuandoSeCargaronEmotes < CADA_RECARGA_EMOTES) {
+      return Promise.resolve();
+    }
+    return fetch(`/api/chat/${encodeURIComponent(slugPublico)}/emotes`, { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(datos => {
+        if (!datos) return;
+        catalogoEmotes = (Array.isArray(datos.emotes) ? datos.emotes : []).filter(emoteUsable);
+        cuandoSeCargaronEmotes = Date.now();
+        if (emotesAbiertos) pintarEmotes();
+      })
+      /* Sin lista, el panel dice que no hay y la caja sigue andando
+         igual: esto es un atajo, no el chat. */
+      .catch(() => { /* nada */ });
+  }
+
+  function crearOpcionEmote(emote, redes) {
+    const salen = redes.filter(r => emote.redes.includes(r));
+    const faltan = redes.filter(r => !emote.redes.includes(r));
+
+    const boton = document.createElement('button');
+    boton.type = 'button';
+    /* La marca viaja en el dataset y el click se escucha en la
+       rejilla, no en cada boton: es el mismo patron que el de
+       bloquear, y asi repintar la lista no deja escuchas colgadas. */
+    boton.dataset.marca = emote.marca;
+    boton.dataset.nombre = emote.nombre;
+    boton.className = 'opcion-emote' + (faltan.length ? ' opcion-emote-parcial' : '');
+
+    /* De que fuente es y en que red sale, en palabras: el color de un
+       borde no puede ser el unico canal de informacion. */
+    const donde = faltan.length
+      ? `sale en ${salen.map(nombreDeRed).join(' y ')}; en ${faltan.map(nombreDeRed).join(' y ')} se lee como texto`
+      : `sale en ${emote.redes.map(nombreDeRed).join(' y ')}`;
+    const etiqueta = `${emote.nombre} · ${NOMBRE_FUENTE[emote.fuente] ?? emote.fuente} · ${donde}`;
+    boton.setAttribute('aria-label', etiqueta);
+    boton.title = etiqueta;
+
+    const img = document.createElement('img');
+    img.className = 'emote';
+    img.src = emote.url;
+    img.alt = emote.nombre;
+    img.loading = 'lazy';
+    boton.appendChild(img);
+
+    opcionesEmotes.push(boton);
+    return boton;
+  }
+
+  function pintarEmotes() {
+    const buscado = String(buscarEmote.value ?? '').trim().toLowerCase();
+    const redes = redesDelEnvio();
+
+    /* Se ofrece lo que sirve en AL MENOS una de las redes elegidas, no
+       solo lo que sirve en todas. Esconder los emotes de Kick apenas
+       alguien elige "las dos" —que es lo que elige casi todo el
+       mundo— seria esconder justo los que no se consiguen en ningun
+       otro lado. Los que no cubren todas quedan marcados y avisados. */
+    const sirven = catalogoEmotes.filter(e =>
+      redes.some(r => e.redes.includes(r))
+      && (!buscado || e.nombre.toLowerCase().includes(buscado)));
+
+    rejillaEmotes.textContent = '';
+    opcionesEmotes = [];
+    indiceActivo = -1;
+
+    for (const fuente of ORDEN_FUENTES) {
+      const delGrupo = sirven.filter(e => e.fuente === fuente);
+      if (!delGrupo.length) continue;
+
+      const grupo = document.createElement('div');
+      grupo.className = 'grupo-emotes';
+
+      const titulo = document.createElement('h3');
+      titulo.className = 'titulo-grupo-emotes';
+      titulo.textContent = TITULO_GRUPO[fuente] ?? NOMBRE_FUENTE[fuente] ?? fuente;
+      grupo.appendChild(titulo);
+
+      const caja = document.createElement('div');
+      caja.className = 'opciones-emotes';
+      for (const e of delGrupo) caja.appendChild(crearOpcionEmote(e, redes));
+      grupo.appendChild(caja);
+
+      rejillaEmotes.appendChild(grupo);
+    }
+
+    if (!opcionesEmotes.length) {
+      const vacio = document.createElement('p');
+      vacio.className = 'texto-tenue';
+      vacio.textContent = catalogoEmotes.length
+        ? 'Ningún emote se llama así.'
+        : 'Todavía no hay emotes para ofrecer en este chat.';
+      rejillaEmotes.appendChild(vacio);
+    }
+
+    notaEmotes.textContent = NOTA_EMOTES;
+  }
+
+  /* DETECCION, NO TRADUCCION. La traduccion la hace el servidor
+     (`envio.comoViajaA`) y es la unica que vale; esto es la copia de
+     la pagina, como la del tope de 500 o la del color del usuario, y
+     sirve para una sola cosa: poder decirlo ANTES de mandar. */
+  const MARCA_KICK_EN_CAJA = /\[emote:\d+:([^\]]*)\]/g;
+
+  function revisarAvisoEmotes() {
+    if (!modoPublico) return;
+    const nombres = [];
+    if (redesDelEnvio().includes('twitch')) {
+      MARCA_KICK_EN_CAJA.lastIndex = 0;
+      let m;
+      while ((m = MARCA_KICK_EN_CAJA.exec(String(campoTexto.value ?? '')))) {
+        if (m[1] && !nombres.includes(m[1])) nombres.push(m[1]);
+      }
+    }
+    if (!nombres.length) {
+      avisoEmotes.hidden = true;
+      avisoEmotes.textContent = '';
+      return;
+    }
+    const lista = nombres.slice(0, 3).join(', ') + (nombres.length > 3 ? '…' : '');
+    avisoEmotes.textContent = nombres.length === 1
+      ? `${lista} es un emote de Kick: en Twitch va a salir como texto.`
+      : `${lista} son emotes de Kick: en Twitch van a salir como texto.`;
+    avisoEmotes.hidden = false;
+  }
+
+  function insertarMarca(marca) {
+    const valor = String(campoTexto.value ?? '');
+    /* Sin seleccion conocida (no todos los entornos la exponen) se
+       agrega al final, que es donde esta escribiendo alguien que no
+       movio el cursor. */
+    const desde = Number.isInteger(campoTexto.selectionStart) ? campoTexto.selectionStart : valor.length;
+    const hasta = Number.isInteger(campoTexto.selectionEnd) ? campoTexto.selectionEnd : desde;
+    const antes = valor.slice(0, desde);
+    const despues = valor.slice(hasta);
+
+    /* LOS ESPACIOS NO SON COSMETICOS: los emotes se resuelven por
+       PALABRA ENTERA, asi que un `CHAD` pegado a otra letra deja de
+       ser un emote y pasa a ser una palabra rara. */
+    const izquierda = antes && !/\s$/.test(antes) ? ' ' : '';
+    const derecha = /^\s/.test(despues) ? '' : ' ';
+    const trozo = izquierda + marca + derecha;
+
+    campoTexto.value = antes + trozo + despues;
+    const cursor = desde + trozo.length;
+    try { campoTexto.setSelectionRange?.(cursor, cursor); } catch { /* no es critico */ }
+
+    ajustarAlturaCampo();
+    actualizarContadorCaracteres();
+    revisarAvisoEmotes();
+  }
+
+  function elegirOpcion(boton) {
+    if (!boton?.dataset?.marca) return;
+    insertarMarca(boton.dataset.marca);
+    /* El panel NO se cierra: poner tres emotes seguidos es lo normal.
+       Se cierra con Escape, con la × o tocando "Emotes" de nuevo. El
+       buscador se vacia para poder escribir el siguiente nombre. */
+    buscarEmote.value = '';
+    pintarEmotes();
+    buscarEmote.focus();
+  }
+
+  function marcarActivo(i) {
+    opcionesEmotes.forEach((b, n) => b.classList.toggle('opcion-emote-activa', n === i));
+    indiceActivo = i;
+    opcionesEmotes[i]?.focus();
+  }
+
+  function moverActivo(paso) {
+    if (!opcionesEmotes.length) return;
+    const largo = opcionesEmotes.length;
+    const siguiente = indiceActivo < 0
+      ? (paso > 0 ? 0 : largo - 1)
+      : ((indiceActivo + paso) % largo + largo) % largo;
+    marcarActivo(siguiente);
+  }
+
+  function abrirPanelEmotes() {
+    emotesAbiertos = true;
+    panelEmotes.hidden = false;
+    botonEmotes.setAttribute('aria-expanded', 'true');
+    pintarEmotes();
+    consultarEmotes();
+    buscarEmote.focus();
+  }
+
+  function cerrarPanelEmotes({ devolverFoco = true } = {}) {
+    if (!emotesAbiertos) return;
+    emotesAbiertos = false;
+    panelEmotes.hidden = true;
+    botonEmotes.setAttribute('aria-expanded', 'false');
+    indiceActivo = -1;
+    /* Cerrar con el teclado tiene que devolver el foco a la caja: si
+       no, Escape deja a quien no usa mouse parado en la nada. */
+    if (devolverFoco) campoTexto.focus();
+  }
+
+  botonEmotes.addEventListener('click', () => {
+    if (emotesAbiertos) cerrarPanelEmotes();
+    else abrirPanelEmotes();
+  });
+
+  cerrarEmotes.addEventListener('click', () => cerrarPanelEmotes());
+
+  buscarEmote.addEventListener('input', () => pintarEmotes());
+
+  buscarEmote.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); cerrarPanelEmotes(); return; }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); moverActivo(1); return; }
+    if (ev.key === 'ArrowUp') { ev.preventDefault(); moverActivo(-1); return; }
+    if (ev.key === 'Enter') {
+      /* Enter en el buscador manda el primero de la lista: es lo que
+         hace cualquier selector y ahorra bajar con las flechas. */
+      ev.preventDefault();
+      elegirOpcion(opcionesEmotes[indiceActivo >= 0 ? indiceActivo : 0]);
+    }
+  });
+
+  /* Click y teclado se escuchan en la rejilla y no en cada boton: la
+     lista se repinta con cada letra que se busca, y una escucha por
+     boton seria armarlas y tirarlas cincuenta veces por busqueda. */
+  rejillaEmotes.addEventListener('click', ev => {
+    const boton = ev?.target?.closest?.('.opcion-emote');
+    if (boton) elegirOpcion(boton);
+  });
+
+  rejillaEmotes.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); cerrarPanelEmotes(); return; }
+    const paso = (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') ? 1
+      : (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') ? -1 : 0;
+    if (paso) { ev.preventDefault(); moverActivo(paso); }
+  });
 
   // ---------- service worker (instalable como PWA) ----------
   // en file:// y en http sin localhost no existe navigator.serviceWorker:
@@ -769,6 +1090,15 @@
     if (puede.length) {
       armarSelector(puede);
       cajaEscritura.hidden = false;
+      /* El selector de emotes aparece con la caja y no antes: es un
+         atajo para escribir, y sin cuenta no hay nada que escribir.
+         La LISTA, en cambio, no pide sesion (ver la ruta): leer el
+         chat nunca pidio login y esto es parte de leerlo. */
+      botonEmotes.hidden = false;
+      /* Que redes puede usar acaba de cambiar: un emote que servia
+         puede haber dejado de servir. */
+      if (emotesAbiertos) pintarEmotes();
+      revisarAvisoEmotes();
       const como = REDES.filter(r => conectadas[r] && !bloqueado.includes(r))
         .map(r => `${conectadas[r].nombre || ''} en ${NOMBRE_RED[r]}`.trim());
       textoConectar.textContent = 'Escribís como ' + como.join(' y ')
@@ -777,6 +1107,8 @@
         + (bloqueado.length ? ` · el creador te bloqueó en ${nombresBloqueadas}` : '');
     } else {
       cajaEscritura.hidden = true;
+      botonEmotes.hidden = true;
+      cerrarPanelEmotes({ devolverFoco: false });
       // El bloqueo va primero: esconderle la caja y decirle "conectá
       // una red" a alguien que ya la conectó sería mentirle.
       if (bloqueado.length) {
@@ -872,6 +1204,11 @@
       // pero dejar la caja puesta sería ofrecer algo que no anda.
       barraConectar.hidden = true;
       cajaEscritura.hidden = true;
+      botonEmotes.hidden = true;
+      /* Y el panel se cierra: un chat cerrado no ofrece sus emotes,
+         igual que no ofrece la caja ni cuenta que redes eligio el
+         creador. */
+      cerrarPanelEmotes({ devolverFoco: false });
       programarConsultaAbierto();
       return;
     }

@@ -111,9 +111,34 @@
   <!-- en /chat es la ventana del creador; en /chat/<slug> aparece
        cuando la persona conectó alguna red que el creador abrió -->
   <footer class="caja-escritura" id="caja-escritura">
+
+    <!-- Sólo en /chat/<slug>: el selector de emotes. Se abre con el
+         botón "Emotes" y se llena con /api/chat/<slug>/emotes la
+         primera vez que alguien lo abre: quien no lo use no gasta un
+         pedido. Lo que inserta en la caja es la `marca` que dice el
+         servidor; la página nunca arma markup de ninguna plataforma. -->
+    <!-- `group` y no `dialog`: es un panel que cuelga del botón, no
+         una ventana modal. Decir `dialog` prometería atrapar el Tab,
+         y no lo hace: se cierra con Escape y devuelve el foco. -->
+    <div id="panel-emotes" class="panel-emotes" hidden role="group" aria-label="Elegir un emote">
+      <div class="fila-buscar-emotes">
+        <input type="search" id="buscar-emote" class="buscar-emote" autocomplete="off"
+          placeholder="Buscar por nombre…" aria-label="Buscar emote por nombre">
+        <button type="button" id="cerrar-emotes" class="boton-chip" aria-label="Cerrar los emotes">×</button>
+      </div>
+      <div id="rejilla-emotes" class="rejilla-emotes"></div>
+      <p id="nota-emotes" class="nota-emotes texto-tenue"></p>
+    </div>
+
+    <!-- "este emote no existe en la red a la que estás mandando".
+         Se dice ANTES de mandar, mientras se escribe. -->
+    <p id="aviso-emotes" class="aviso-emotes" role="status" aria-live="polite" hidden></p>
+
     <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
       placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
     <div class="fila-controles-envio">
+      <button type="button" id="boton-emotes" class="boton-chip boton-emotes"
+        aria-expanded="false" aria-controls="panel-emotes" hidden>Emotes</button>
       <select id="select-destino" class="select-destino" aria-label="Enviar a">
         <option value="kick">Kick</option>
         <option value="twitch">Twitch</option>

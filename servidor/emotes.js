@@ -223,6 +223,92 @@ export const TOPE_POR_MENSAJE = Math.max(1, Number(process.env.EMOTES_POR_MENSAJ
 /* El nombre de la fuente que viaja en cada emote. */
 export const FUENTE = '7tv';
 
+/* ============================================================
+   LA MARCA DE UN EMOTE DE KICK EN EL TEXTO QUE SALE
+
+   Esto es la mitad de ida de lo que `mensajes.js` hace de vuelta, y
+   esta aca —y no alla— a proposito: `partirTextoDeKick()` traduce lo
+   que ENTRA (el markup de Kick a texto + posiciones para pintar), y
+   estas dos funciones traducen lo que SALE (lo que el selector puso
+   en la caja, a lo que cada red tiene que recibir). Son dos caminos
+   distintos con dos duenos distintos, y juntarlos ataria el render
+   del chat al envio.
+
+   El formato es el de Kick y no uno inventado nuestro:
+   `[emote:5747892:collectiblesMEGALUL]` es literalmente lo que
+   kick.com mete en el `content` cuando alguien elige un emote de su
+   selector, y es lo que hay que mandarle a `POST /public/v1/chat`
+   para que salga dibujado.
+
+   POR QUE LA CAJA GUARDA EL FORMATO DE KICK Y NO UNA MARCA INVENTADA
+
+   Porque el servidor tiene que saber sacarlo IGUAL. Hoy, sin nada de
+   esto, cualquiera puede escribir `[emote:1:X]` a mano en la caja y
+   con "las dos" eso llega a Twitch como esos corchetes, tal cual. O
+   sea que `sinMarcasDeKick()` hay que escribirla de todos modos. Una
+   vez que existe, que el selector inserte el formato de Kick no
+   agrega ni una linea de servidor; una marca propia —`:nombre:`, o
+   lo que fuera— agregaria una tabla de nombre -> id que consultar al
+   enviar, con su carrera entre lo que se mide y lo que se manda, y
+   con dos emotes distintos que se llamen igual resolviendo al que no
+   era. La marca lleva todo lo que hace falta para traducirla y por
+   eso la traduccion es una funcion pura.
+
+   Los emotes de 7TV y los nativos de Twitch NO llevan marca: en las
+   dos redes viajan como su nombre pelado, que es exactamente lo que
+   ya hacen hoy. Solo los de Kick necesitan traduccion. */
+
+/* El mismo patron que `MARCA_EMOTE_KICK` de `mensajes.js`. El nombre
+   puede traer cualquier cosa menos un `]`. */
+const MARCA_KICK = /\[emote:(\d+):([^\]]*)\]/g;
+
+/** El markup con el que un emote nativo de Kick viaja hacia Kick. */
+export const marcaDeKick = (id, nombre) =>
+  `[emote:${String(id).replace(/\D/g, '')}:${String(nombre ?? '').replace(/[[\]]/g, '')}]`;
+
+/**
+ * El mismo texto pero sin markup de Kick: cada `[emote:id:nombre]`
+ * queda como `nombre` pelado.
+ *
+ * Es lo que se le manda a Twitch. Un emote de Kick no existe en
+ * Twitch —menos todavia un coleccionable—, asi que lo mejor que se
+ * puede hacer es que se lea la palabra. Mandar los corchetes seria
+ * escupirle a la otra comunidad un `[emote:5747892:...]` literal.
+ *
+ * Un emote sin nombre (`[emote:123:]`) desaparece entero: no hay
+ * palabra que dejar. El texto puede quedar vacio y eso NO se arregla
+ * aca; lo ataja `envio.porQueNoSePuedeMandar`, que es quien sabe que
+ * un mensaje vacio no se manda.
+ *
+ * ---------------------------------------------------------------
+ * POR QUE ES UN BUCLE Y NO UN `replace` SOLO
+ *
+ * Porque `String.replace` NO vuelve a mirar lo que acaba de escribir,
+ * y una pasada sola deja pasar justo lo que esto viene a impedir.
+ * Con `[emote:1:[emote:2:AB]]` escrito a mano, el nombre del primero
+ * es `[emote:2:AB` (el patron acepta cualquier cosa menos `]`), asi
+ * que la unica pasada devuelve `[emote:2:AB]`: markup de Kick VALIDO,
+ * camino a Twitch. Verificado, no imaginado.
+ *
+ * Cerrar el patron para que el nombre tampoco acepte `[` no alcanza:
+ * ahi el de adentro es el que matchea y queda `[emote:1:AB]`, que es
+ * lo mismo pero al reves.
+ *
+ * El bucle TERMINA SIEMPRE y no hace falta ponerle un tope arbitrario:
+ * cada reemplazo borra por lo menos los 10 caracteres de `[emote:N:]`,
+ * asi que cada vuelta que cambia algo acorta el texto de verdad. Con
+ * el mensaje topeado en 2000, el peor caso son 200 vueltas sobre un
+ * texto que se achica; en la practica es una.
+ */
+export function sinMarcasDeKick(texto) {
+  let antes = String(texto ?? '');
+  for (;;) {
+    const despues = antes.replace(MARCA_KICK, (_, __, nombre) => nombre);
+    if (despues === antes) return despues;
+    antes = despues;
+  }
+}
+
 /* ------------------------------------------------------------ cache
 
    clave -> { tabla, vence, bajando, avisado }
@@ -257,6 +343,7 @@ let enVuelo = 0;
 /** Borra todo lo cacheado. Para las pruebas y para un apagon de 7TV. */
 export function olvidarTodo() {
   cache.clear();
+  vistos.clear();
   enVuelo = 0;
 }
 
@@ -618,6 +705,261 @@ function tablaConRespaldo(slug, red) {
   return tabla(slug, redOpuesta(red));
 }
 
+/* ============================================================
+   LOS EMOTES DE KICK QUE ESTE CHAT VIO PASAR
+
+   PARA QUE: el selector de la caja de escribir tiene que ofrecer
+   emotes de Kick, y no hay de donde sacar la lista.
+
+   VERIFICADO EL 2026-09-23, y no es una suposicion: la doc entera de
+   Kick (`docs.kick.com/llms-full.txt`) no tiene UN endpoint de
+   emotes; la palabra aparece solo adentro del payload de ejemplo de
+   `chat.message.sent`. Hay un pedido formal de la comunidad abierto y
+   sin contestar desde diciembre de 2025 (KickDevDocs#323). Los
+   coleccionables no se listan por ningun lado. Y el unico que
+   enumera los emotes de un canal, `kick.com/emotes/<slug>`, no esta
+   documentado: los terminos de dev.kick.com dicen que uno "will only
+   access Program Materials documented on the Kick Developer Site", o
+   sea que usarlo nos pone del lado equivocado del acuerdo del dueño.
+
+   ASI QUE LA LISTA SE ARMA SOLA, con lo que pasa por el chat. Cada
+   mensaje de Kick ya trae sus emotes resueltos (id, nombre y url,
+   sacados del `[emote:id:nombre]` del `content`), asi que anotarlos
+   no le cuesta un pedido a nadie. Es una lista VIVA: crece con lo que
+   la comunidad usa, incluye coleccionables —que no se pueden listar
+   de ninguna otra forma— y arranca vacia.
+
+   LO QUE ESTO NO ES: no es el set del canal. Un emote que nadie uso
+   desde que arranco el proceso no esta. Es una limitacion honesta y
+   la pagina la dice con todas las letras, en vez de aparentar un
+   catalogo completo.
+
+   ---------------------------------------------------------------
+   POR QUE CADUCA A LAS 12 HORAS, Y NO ES UN NUMERO AL AZAR
+
+   Los terminos de dev.kick.com permiten guardar su contenido
+   "for only a twenty-four hour time period without further sharing
+   it with third parties". Doce horas entra con margen, no depende de
+   que el proceso se reinicie seguido para cumplir, y es mas o menos
+   un ciclo de stream: lo que se uso anoche sigue a mano hoy.
+
+   Nada de esto se persiste: vive en memoria y muere con el proceso.
+   Un JSON de emotes de Kick versionado en el repo seria una copia
+   permanente Y una redistribucion, y los terminos prohiben las dos
+   cosas ("Re-syndication and re-distribution of Program Materials or
+   data as available from a Kick API is prohibited").
+
+   ---------------------------------------------------------------
+   LO QUE OCUPA, con la cuenta hecha
+
+   Cada emote son ~150 bytes (id, nombre, url y una fecha). Con 100
+   por sala y 300 salas a la vez, el techo es ~4,5 MB, y para llegar
+   ahi hacen falta 300 chats vivos con 100 emotes distintos cada uno.
+   Las salas se desalojan por la MAS VIEJA (la que hace mas que no ve
+   un emote), asi que lo que se tira es siempre un chat dormido. */
+
+export const TOPE_EMOTES_VISTOS = 100;
+export const TOPE_SALAS_VISTAS = 300;
+export const CADUCA_VISTOS = 12 * 60 * 60 * 1000;
+
+/* slug -> Map(clave -> { id, nombre, url, visto }).
+   La clave es `id|nombre` y no el id solo: un coleccionable cambia de
+   nombre entre temporadas y las dos formas son mandables. */
+const vistos = new Map();
+
+const claveEmote = (id, nombre) => `${id}|${nombre}`;
+
+/* Cuanto puede medir el nombre de un emote de Kick que se guarda.
+   Sale del `[emote:id:nombre]` de un mensaje, o sea de texto que
+   escribio cualquiera: sin tope, un solo mensaje podria guardar 2000
+   caracteres de nombre y mandarselos al selector de todo el mundo. */
+const TOPE_NOMBRE = 80;
+
+/**
+ * La url de un emote de Kick tal como se la va a guardar, o '' si no
+ * se la puede guardar.
+ *
+ * Mismo criterio que `urlSegura` con 7TV: esto termina en el `src` de
+ * un `<img>` en la pantalla de cada espectador. Hoy la arma
+ * `mensajes.js` a partir de un id de solo digitos, asi que no puede
+ * venir mal; pero `resolver()` es una entrada EXPORTADA y lo que se
+ * guarda aca se le sirve a todo el mundo por una ruta publica. No se
+ * confia, y listo.
+ */
+function urlDeKickSegura(candidata) {
+  let u;
+  try { u = new URL(String(candidata ?? '')); } catch { return ''; }
+  if (u.protocol !== 'https:') return '';
+  if (u.hostname !== 'kick.com' && !u.hostname.endsWith('.kick.com')) return '';
+  return u.href.length <= TOPE_URL ? u.href : '';
+}
+
+/**
+ * Anota los emotes NATIVOS DE KICK de un mensaje que acaba de pasar.
+ *
+ * Lo llama `resolver()`, que ya corre en todos los mensajes de las
+ * dos redes: asi esto no agrega un solo punto de llamada nuevo ni
+ * obliga a tocar `chat.js`.
+ *
+ * El nombre sale del texto, no del emote: `partirTextoDeKick()` ya
+ * reemplazo el `[emote:id:nombre]` por el nombre pelado, asi que el
+ * tramo `[inicio, fin)` ES el nombre. Se corta por PUNTOS DE CODIGO
+ * por el mismo motivo que todo lo demas.
+ */
+function anotarVistos(mensaje, slug) {
+  if (!mensaje || mensaje.tipo !== 'chat' || mensaje.red !== 'kick') return;
+  const nativos = (Array.isArray(mensaje.emotes) ? mensaje.emotes : [])
+    .filter(e => e?.fuente === 'kick' && e?.id && e?.url);
+  if (!nativos.length) return;
+
+  const sala = String(slug ?? '').toLowerCase();
+  if (!sala) return;
+
+  const puntos = [...String(mensaje.texto ?? '')];
+  const ahora = Date.now();
+
+  let m = vistos.get(sala);
+  /* delete + set aunque ya exista: en un Map el orden es el de
+     insercion, asi que reponerla la manda al final y el desalojo de
+     abajo saca siempre la sala que hace mas que no se usa. */
+  if (m) vistos.delete(sala); else m = new Map();
+  vistos.set(sala, m);
+
+  for (const e of nativos) {
+    const inicio = Number(e.inicio);
+    const fin = Number(e.fin);
+    /* Un rango con NaN o dado vuelta no es un emote: `slice` con eso
+       devuelve cualquier cosa, y "cualquier cosa" seria el nombre que
+       despues se le ofrece a todo el mundo. */
+    if (!Number.isFinite(inicio) || !Number.isFinite(fin) || fin <= inicio) continue;
+
+    const url = urlDeKickSegura(e.url);
+    if (!url) continue;
+
+    /* El id entra en un `[emote:<id>:` , asi que tiene que ser lo que
+       Kick pone ahi: digitos y nada mas. */
+    const id = String(e.id).replace(/\D/g, '');
+    if (!id) continue;
+
+    const nombre = puntos.slice(inicio, fin).join('').slice(0, TOPE_NOMBRE);
+    /* Sin nombre no hay que mostrar ni que buscar; con corchetes, la
+       marca que se arme despues no se podria volver a leer. */
+    if (!nombre || nombre.includes('[') || nombre.includes(']')) continue;
+
+    const k = claveEmote(id, nombre);
+    m.delete(k);
+    m.set(k, { id, nombre, url, visto: ahora });
+    if (m.size > TOPE_EMOTES_VISTOS) m.delete(m.keys().next().value);
+  }
+
+  while (vistos.size > TOPE_SALAS_VISTAS) vistos.delete(vistos.keys().next().value);
+}
+
+/**
+ * Los emotes de Kick que esta sala vio pasar, del mas reciente al mas
+ * viejo y sin los que ya caducaron.
+ */
+export function emotesDeKickVistos(slug) {
+  const m = vistos.get(String(slug ?? '').toLowerCase());
+  if (!m) return [];
+  const corte = Date.now() - CADUCA_VISTOS;
+  const salida = [];
+  for (const [k, e] of m) {
+    /* Se borra al leer: sin esto un chat que se apago deja su lista
+       ocupando lugar hasta que alguien vuelva a escribir ahi. */
+    if (e.visto <= corte) { m.delete(k); continue; }
+    salida.push(e);
+  }
+  return salida.reverse();
+}
+
+/* ------------------------------------------------------- catalogo
+
+   Lo que el selector de la caja de escribir ofrece, ya mezclado y ya
+   sabiendo a que red puede ir cada cosa.
+
+   CADA EMOTE DICE SU `marca`: lo que hay que poner en la caja. La
+   pagina no arma markup de Kick por su cuenta —el formato vive en un
+   solo lado, arriba en este archivo— y asi el dia que cambie, cambia
+   aca y nada mas.
+
+   Y CADA EMOTE DICE EN QUE REDES SALE:
+     - 7TV viaja como su nombre pelado, igual en las dos redes.
+     - un nativo de Kick solo existe en Kick: en Twitch, lo mejor que
+       se puede hacer es que se lea la palabra (ver `sinMarcasDeKick`).
+
+   LOS NATIVOS DE TWITCH TODAVIA NO ESTAN, y es a proposito, no un
+   olvido. `GET helix/chat/emotes` y `/emotes/global` los dan con un
+   app access token y SIN NINGUN SCOPE (verificado el 2026-09-23 en
+   dev.twitch.tv/docs/api/reference): o sea que se pueden sumar sin
+   pedirle un permiso nuevo a nadie. Lo que falta es de donde sacar
+   el app token, y eso esta escribiendose en `twitch.js` en este mismo
+   momento por otro camino (las insignias). Sumarlo ahora seria
+   escribir dos veces la misma credencial. Queda anotado en el README
+   con la forma exacta que tiene que tener. */
+
+/**
+ * El catalogo de emotes de una sala para las redes que se pidan.
+ *
+ * Sincrono, como `tabla()` y por el mismo motivo: devuelve lo que hay
+ * AHORA y deja agendada cualquier bajada que falte. La primera vez
+ * puede venir corto; la siguiente ya no.
+ *
+ * @param {string} slug
+ * @param {string[]} redes  a que redes va a poder mandar quien pregunta
+ */
+export function catalogo(slug, redes) {
+  const pedidas = ['kick', 'twitch'].filter(r => redes?.includes?.(r));
+  if (!slug || !pedidas.length) return [];
+
+  const salida = [];
+  const puestos = new Set();
+
+  /* Los nativos de Kick van PRIMERO: son los que no se pueden buscar
+     en ningun otro lado, y con dos emotes del mismo nombre el de la
+     casa le gana al de 7TV (el mismo criterio que usa `conEmotes`
+     para pintar). */
+  if (pedidas.includes('kick')) {
+    for (const e of emotesDeKickVistos(slug)) {
+      if (puestos.has(e.nombre)) continue;
+      puestos.add(e.nombre);
+      salida.push({
+        nombre: e.nombre,
+        url: e.url,
+        fuente: 'kick',
+        marca: marcaDeKick(e.id, e.nombre),
+        redes: ['kick'],
+      });
+    }
+  }
+
+  /* 7TV: el set del canal de cada red pedida y despues los globales.
+     Se piden las tablas de TODAS las redes pedidas porque un creador
+     puede tener set en una sola; `tablaConRespaldo` ya sabe cubrir a
+     la que no tiene. */
+  const de7TV = new Map();
+  for (const red of pedidas) {
+    for (const [nombre, img] of tablaConRespaldo(slug, red)) {
+      if (!de7TV.has(nombre)) de7TV.set(nombre, img);
+    }
+  }
+  for (const [nombre, img] of globales()) {
+    if (!de7TV.has(nombre)) de7TV.set(nombre, img);
+  }
+
+  for (const [nombre, img] of de7TV) {
+    if (puestos.has(nombre)) continue;
+    puestos.add(nombre);
+    /* Un emote de 7TV es su nombre pelado, asi que sale en las dos
+       redes: en la nuestra lo resuelve `conEmotes`, y en kick.com o
+       twitch.tv lo ve quien tenga la extension puesta. Exactamente
+       lo que pasa hoy cuando alguien lo escribe a mano. */
+    salida.push({ nombre, url: img.url, fuente: FUENTE, marca: nombre, redes: ['kick', 'twitch'] });
+  }
+
+  return salida;
+}
+
 /* -------------------------------------------------------- resolucion
 
    7TV resuelve POR PALABRA ENTERA. "CHAD" es el emote; "CHAD!" y
@@ -665,19 +1007,38 @@ export function resolver(mensaje, slug) {
      perdido y un 500 en el webhook de Kick. El catch avisa como mucho
      una vez por minuto, porque si algo lo dispara lo va a disparar en
      todos los mensajes. */
+  /* DOS INTENTOS SEPARADOS Y NO UNO. Anotar los emotes de Kick que
+     pasaron (para el selector) y pintar los de 7TV son dos trabajos
+     distintos: que se rompa el primero no puede dejar al mensaje sin
+     los emotes que si sabe resolver, y al reves tampoco.
+
+     El primero va FUERA del `if (!ACTIVO)` de `conEmotes` a
+     proposito: los nativos de Kick no tienen nada que ver con 7TV, y
+     apagar 7TV no tiene por que apagar el selector. */
+  try {
+    anotarVistos(mensaje, slug);
+  } catch (e) {
+    avisarFalla('no se pudo anotar un emote de Kick', e);
+  }
+
   try {
     return conEmotes(mensaje, slug);
   } catch (e) {
-    const ahora = Date.now();
-    if (ahora - ultimoAvisoFalla > AVISO_TOPE) {
-      ultimoAvisoFalla = ahora;
-      console.warn('[7tv] no se pudo resolver un mensaje:', e?.message ?? e?.name ?? 'Error');
-    }
+    avisarFalla('no se pudo resolver un mensaje', e);
     return mensaje;
   }
 }
 
 let ultimoAvisoFalla = 0;
+
+/* Como mucho un aviso por minuto: si algo dispara esto, lo va a
+   disparar en TODOS los mensajes. */
+function avisarFalla(que, e) {
+  const ahora = Date.now();
+  if (ahora - ultimoAvisoFalla <= AVISO_TOPE) return;
+  ultimoAvisoFalla = ahora;
+  console.warn(`[emotes] ${que}:`, e?.message ?? e?.name ?? 'Error');
+}
 
 function conEmotes(mensaje, slug) {
   if (!ACTIVO || !mensaje || mensaje.tipo !== 'chat') return mensaje;

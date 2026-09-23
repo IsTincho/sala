@@ -23,6 +23,7 @@
      /sala/:slug              la Sala: camara, peli y chat
      /api/chat/*              salud, envio y resuscripcion del chat
      /api/chat/:slug/abierto  si el chat de esa sala esta abierto
+     /api/chat/:slug/emotes   los emotes que ofrece el selector de la caja
      /api/chat/:slug/yo       que redes conecto quien pregunta
      /api/chat/:slug/enviar   el mensaje de un espectador a Kick y/o Twitch
      /api/espectador/salir    borra los tokens de las dos redes
@@ -72,6 +73,7 @@ import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
 import * as cobro from './cobro.js';
 import * as creadores from './creadores.js';
+import * as emotes from './emotes.js';
 import * as envio from './envio.js';
 import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
@@ -2493,6 +2495,41 @@ async function apiChatAbierto(url, req, res, p) {
   return json(res, 200, { abierto: c.activo, redes: c.activo ? [...c.redes] : [] });
 }
 
+/**
+ * Los emotes que el selector de la caja de escribir puede ofrecer en
+ * esta sala: `{ abierto, redes, emotes: [{ nombre, url, fuente,
+ * marca, redes }] }`.
+ *
+ * PUBLICA Y SIN SESION, igual que `/abierto`. Leer el chat no pide
+ * login y esto es parte de leerlo: son los emotes del canal y los que
+ * pasaron por su chat publico, nada de nadie. Escribir sigue pidiendo
+ * cuenta, y de eso se encarga `/enviar` como siempre.
+ *
+ * CERRADA NO CUENTA NADA, mismo criterio que `/abierto` y que `/yo`:
+ * de un chat cerrado no se dice ni que redes eligio el creador, asi
+ * que menos todavia su set de emotes.
+ *
+ * `?red=` acota a que red va a ir el mensaje, para no ofrecer un
+ * emote que ahi no sirve. Lo que no se entienda se trata como "las
+ * que el creador abrio": pide menos, nunca mas.
+ */
+async function apiChatEmotes(url, req, res, p) {
+  const slug = creadores.normalizar(p.slug);
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+
+  const c = await creadores.chatAbierto(slug);
+  if (!c.activo) return json(res, 200, { abierto: false, redes: [], emotes: [] });
+
+  const abiertas = [...c.redes];
+  /* El cruce, y en este orden: lo que se pide se recorta contra lo
+     que el creador abrio. Un `?red=twitch` en una sala que solo abrio
+     Kick no puede destapar nada. */
+  const pedidas = envio.redesDelPedido(url.searchParams.get('red')) ?? abiertas;
+  const redes = abiertas.filter(r => pedidas.includes(r));
+
+  return json(res, 200, { abierto: true, redes, emotes: emotes.catalogo(slug, redes) });
+}
+
 /* --------------------------------- el espectador del chat abierto
 
    Las tres rutas de las Fases 5.2 y 5.3. La cuenta del espectador es
@@ -2810,6 +2847,7 @@ const RUTAS = [
   ['POST',   '/api/panel/chat',        apiPanelChat],
   ['POST',   '/api/panel/sala',        apiPanelSala],
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
+  ['GET',    '/api/chat/:slug/emotes',  apiChatEmotes],
   ['GET',    '/api/chat/:slug/yo',      apiChatYo],
   ['POST',   '/api/chat/:slug/enviar',  apiChatEnviarEspectador],
   ['POST',   '/api/espectador/salir',   apiEspectadorSalir],

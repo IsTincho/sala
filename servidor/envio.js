@@ -35,6 +35,15 @@
    que hay que hacer al respecto.
 
    ---------------------------------------------------------------
+   Y ES EL UNICO QUE SABE A QUE RED LE HABLA
+
+   Por eso la traduccion de los emotes vive aca (`comoViajaA`). El
+   mismo emote no se escribe igual en las dos redes, y con
+   `red: "ambas"` el mensaje sale a las dos a la vez: si la pagina
+   armara el markup, tendria que elegir uno y el otro lado veria la
+   eleccion equivocada. Ver el comentario largo de `comoViajaA`.
+
+   ---------------------------------------------------------------
    UN 403 NO ES UN PERMISO VENCIDO
 
    Las dos plataformas contestan 401 cuando el token no sirve y 403
@@ -56,6 +65,7 @@
    ============================================================ */
 
 import * as creadores from './creadores.js';
+import * as emotes from './emotes.js';
 import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
 import * as metricas from './metricas.js';
@@ -102,6 +112,48 @@ export async function bloqueadasPara(slug, v, redes) {
 export const comoViaja = texto => String(texto ?? '').trim();
 
 /**
+ * El texto tal como lo va a recibir ESA red.
+ *
+ * ---------------------------------------------------------------
+ * EL MISMO EMOTE NO SE ESCRIBE IGUAL EN LAS DOS REDES
+ *
+ * Un emote nativo de Kick viaja como `[emote:5747892:MEGALUL]`: eso
+ * es lo que kick.com pone en el `content` y lo que hay que mandarle a
+ * su API para que salga dibujado. En Twitch ese markup no significa
+ * nada: sale en pantalla como esos corchetes, literales, delante de
+ * toda la comunidad del otro lado.
+ *
+ * Por eso la traduccion la hace ESTE modulo y no la pagina: aca es el
+ * unico lugar del proyecto por el que pasan los dos envios, y es el
+ * unico que sabe a que red le esta hablando. La caja de escribir
+ * guarda UNA sola forma del mensaje y nunca decide markup.
+ *
+ * NO ES SOLO PARA EL SELECTOR. Cualquiera puede escribir
+ * `[emote:1:X]` a mano en la caja, y hasta hoy eso llegaba a Twitch
+ * tal cual. O sea que esto arregla algo que ya estaba mal, ademas de
+ * habilitar el selector.
+ *
+ * El precio, dicho sin adornos: quien quiera escribir esos corchetes
+ * literalmente en Twitch no va a poder. Es un texto que nadie escribe
+ * y el cambio se lleva puesto un bug real.
+ *
+ * ES UNA FUNCION PURA, y eso es lo que sostiene la garantia de abajo:
+ * no mira ninguna tabla, ninguna cache y ningun reloj. La misma
+ * entrada da siempre la misma salida, asi que medir y mandar por
+ * separado no puede dar distinto.
+ */
+export function comoViajaA(texto, red) {
+  const cuerpo = comoViaja(texto);
+  /* Kick recibe el markup tal cual: es el suyo. */
+  if (red !== 'twitch') return cuerpo;
+  /* Twitch recibe la palabra: un emote de Kick no existe ahi, y que
+     se lea el nombre es lo mejor que se puede hacer. Se vuelve a
+     recortar porque un emote sin nombre desaparece entero y puede
+     dejar espacios sueltos en las puntas. */
+  return emotes.sinMarcasDeKick(cuerpo).trim();
+}
+
+/**
  * Por que este texto no se puede mandar a estas redes, o ''.
  *
  * Los dos topes dicen "500" y no son el mismo numero: Kick cuenta
@@ -110,16 +162,43 @@ export const comoViaja = texto => String(texto ?? '').trim();
  * de TODAS las redes a las que va antes de mandarle nada a ninguna:
  * si no, con "las dos" el mensaje sale en Kick y Twitch lo rechaza, y
  * ahi ya no se puede deshacer.
+ *
+ * ---------------------------------------------------------------
+ * CONTRA QUE SE MIDE CADA TOPE: CONTRA LO QUE ESA RED VA A RECIBIR
+ *
+ * Desde que hay emotes, el mensaje YA NO ES EL MISMO string en las
+ * dos redes: `[emote:5747892:collectiblesMEGALUL]` son 36 caracteres
+ * para Kick y `collectiblesMEGALUL` son 19 para Twitch. Medir los dos
+ * topes contra un unico texto tendria que elegir cual de los dos
+ * mentir, y las dos mentiras son caras: medir el largo de Kick contra
+ * el de Twitch deja pasar mensajes que Kick rechaza, y al reves frena
+ * mensajes que Twitch aceptaba perfecto.
+ *
+ * Asi que cada red se mide contra SU texto. El tope existe para
+ * adivinar si esa plataforma lo va a aceptar, y la plataforma cuenta
+ * lo que le llega.
+ *
+ * LA INVARIANTE QUE SE CONSERVA —la que tenia `comoViaja` y por la
+ * que hubo un bug— no era "el mismo string a las dos redes": era LO
+ * QUE SE MIDE ES LO QUE SE MANDA. Eso sigue en pie y ahora por red:
+ * `aUnaRed` manda exactamente `comoViajaA(texto, red)`, que es lo
+ * mismo que se midio aca. Y se sostiene sin acordarse de nada, porque
+ * `comoViajaA` es pura: no hay estado que pueda cambiar entre la
+ * medicion y el envio.
  */
 export function porQueNoSePuedeMandar(texto, redes) {
-  const cuerpo = comoViaja(texto);
-  if (!cuerpo) return 'el mensaje esta vacio';
+  if (!comoViaja(texto)) return 'el mensaje esta vacio';
 
   if (redes.includes('kick')) {
-    const problema = kick.porQueNoSePuedeMandar(cuerpo);
+    const problema = kick.porQueNoSePuedeMandar(comoViajaA(texto, 'kick'));
     if (problema) return problema;
   }
   if (redes.includes('twitch')) {
+    const cuerpo = comoViajaA(texto, 'twitch');
+    /* Un mensaje que era SOLO un emote de Kick sin nombre no deja
+       nada para Twitch. Se dice por que, en vez del "el mensaje esta
+       vacio" de arriba, que mirando la caja llena seria un misterio. */
+    if (!cuerpo) return 'en Twitch no queda nada que leer: ese mensaje es solo un emote de Kick';
     const puntos = [...cuerpo].length;
     if (puntos > 500) return `el mensaje tiene ${puntos} caracteres y el tope de Twitch es 500`;
   }
@@ -154,8 +233,10 @@ const mal = (motivo, estado = 502, caduco = false) => ({ ok: false, motivo, esta
 export async function aUnaRed(slug, espId, red, texto) {
   if (!REDES.includes(red)) return mal(`red desconocida: ${red}`, 400);
   /* Acá y no en cada ruta: lo que viaja es lo que se midio, venga de
-     donde venga. */
-  const cuerpo = comoViaja(texto);
+     donde venga. La MISMA funcion pura que uso
+     `porQueNoSePuedeMandar`, con el mismo texto y la misma red, asi
+     que no hay forma de que le salga distinto. */
+  const cuerpo = comoViajaA(texto, red);
   return red === 'twitch'
     ? aTwitch(slug, espId, cuerpo)
     : aKick(slug, espId, cuerpo);

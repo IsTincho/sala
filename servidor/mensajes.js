@@ -162,7 +162,16 @@ const largoEnPuntos = s => {
    forma de que el dia que alguien la lea se le rompa justo con los
    mensajes de una red. Es aditivo: un cliente viejo las ignora. */
 
-const NOMBRES_TWITCH = {
+/* Sin prototipo, y no es purismo: `NOMBRES_TWITCH['constructor']`
+   devolvia la funcion `Object`, y el `?? tipo` de abajo no la ataja
+   porque no es null. Un `set_id` llamado `constructor`, `toString` o
+   `hasOwnProperty` —que lo pone Twitch, no una persona, pero un
+   traductor no tiene por que confiar en eso— salia en pantalla como el
+   codigo fuente de una funcion, con el tope de 40 caracteres como unico
+   freno. Con el prototipo nulo, cualquier nombre que no este en la
+   tabla cae en el `?? tipo`, que es lo que hace desde siempre con un
+   set_id que no conocemos. */
+const NOMBRES_TWITCH = Object.assign(Object.create(null), {
   broadcaster: 'Streamer',
   moderator: 'Mod',
   subscriber: 'Sub',
@@ -185,7 +194,7 @@ const NOMBRES_TWITCH = {
   'no_audio': 'Sin audio',
   'no_video': 'Sin video',
   'glhf-pledge': 'GLHF',
-};
+});
 
 const TOPE_INSIGNIAS = 12;
 

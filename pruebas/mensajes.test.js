@@ -261,6 +261,30 @@ test('Twitch: las insignias se traducen y el subscriber muestra los meses', () =
   ]);
 });
 
+test('Twitch: un set_id que se llama como un miembro del prototipo no se cuela', () => {
+  /* `NOMBRES_TWITCH['constructor']` devolvia la funcion `Object`, y el
+     `?? tipo` no lo ataja porque no es null: el chat mostraba el codigo
+     fuente de una funcion como nombre de insignia. Con la tabla sin
+     prototipo, cae en el `?? tipo` como cualquier set desconocido. */
+  const m = mensajes.deTwitch(eventoTwitch({
+    badges: [
+      { set_id: 'constructor', id: '1', info: '' },
+      { set_id: 'toString', id: '1', info: '' },
+      { set_id: 'hasOwnProperty', id: '1', info: '' },
+    ],
+  }));
+
+  assert.deepEqual(m.insignias.map(i => i.texto), ['constructor', 'toString', 'hasOwnProperty']);
+  for (const i of m.insignias) assert.equal(typeof i.texto, 'string');
+});
+
+test('IRC: un badge que se llama como un miembro del prototipo tampoco', () => {
+  const m = mensajes.deIrc(
+    new Map([['badges', 'constructor/1'], ['display-name', 'Fulana'], ['user-id', '9']]),
+    'fulana', 'hola');
+  assert.deepEqual(m.insignias.map(i => i.texto), ['constructor']);
+});
+
 test('Twitch: la respuesta usa los nombres de campo de EventSub', () => {
   const m = mensajes.deTwitch(eventoTwitch({
     reply: {

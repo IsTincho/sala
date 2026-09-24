@@ -66,8 +66,17 @@ Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pu
 | `EMOTES_KB` | Cuánto puede pesar **un** emote de 7TV | 128 KB |
 | `EMOTES_POR_MENSAJE` | Cuántos emotes de 7TV puede meter un solo mensaje | 30 |
 | `EMOTES_PLAZO_MS` | Cuánto puede durar **una bajada entera** de 7TV antes de darla por perdida | 20 s |
+| `EMOTES_TWITCH` | Poner `0` apaga los emotes **nativos de Twitch** del selector, sin tocar 7TV ni las insignias | Prendido |
 | `INSIGNIAS_TWITCH` | Poner `0` apaga las imágenes de las insignias de Twitch: quedan las etiquetas de texto de siempre | Prendido |
 | `INSIGNIAS_PLAZO_MS` | Lo mismo que `EMOTES_PLAZO_MS`, para las insignias | 20 s |
+
+### Las numéricas son números, y un typo se avisa
+
+Todas las de arriba que llevan un número pasan por `servidor/entorno.js`. **El valor es un número pelado**: `EMOTES_PLAZO_MS=20s` no es un número, así que se usa el defecto y sale una línea en el log con el nombre de la variable (nunca con su valor: el dueño trabaja con la pantalla al aire).
+
+No es ceremonia, era un bug real: `Number('20s')` da `NaN`, y `setTimeout(fn, NaN)` **no espera para siempre, dispara a un milisegundo**. O sea que ese typo no alargaba el plazo, hacía vencer todas las bajadas y **apagaba los emotes de 7TV para siempre**, dejando como único rastro un log que decía *"tardó más de NaN ms"*. Un tope en `NaN` es peor todavía: `cuenta >= NaN` es `false` siempre, así que un tope con typo no es un tope más grande, es ninguno.
+
+Y **el cero se respeta**, que es lo que hace que esto no sea un `Number(x) || defecto`: `TOPE_TWITCH=0` ("no abras ninguna conexión de EventSub"), `GB_AMIGO=0` ("este plan no sube videos") y `PADDLE_TOLERANCIA_S=0` ("sin tolerancia de reloj") quieren decir algo, y con `||` se convertían callados en 50, en 2 y en 60.
 
 > **El token de R2 pasó a ser una variable de Railway, y hasta la Fase 2 no lo era.**
 > Hasta acá el único que subía era el dueño, con su script y su token en `herramientas/.env`. Desde que sube cualquier creador, no se le puede dar el token del bucket: con él leería, pisaría y borraría los videos de todos. La forma de dar permiso acotado es una **URL prefirmada**, y firmar es, por definición, tener el secreto. Lo que **no** cambia es que el video no pasa por Railway: el servidor firma una URL de unos cientos de bytes y los gigas van del creador a R2 y de R2 al espectador, directo.
@@ -136,8 +145,10 @@ servidor/
   twitch.js     OAuth, Helix, y el cliente EventSub por WebSocket
   irc.js        IRC anónimo de Twitch: el plan B cuando EventSub se cae
   mensajes.js   traduce Kick y Twitch al formato único de mensaje
-  emotes.js     los emotes de 7TV de cada creador, cacheados por (slug, red)
+  emotes.js     los emotes del selector: los de 7TV por (slug, red), los nativos de
+                Twitch por creador y los de Kick que cada chat vio pasar
   insignias.js  la imagen de cada insignia de Twitch, cacheada por creador
+  entorno.js    los numeros que salen de process.env, leidos una sola vez bien
   chat.js       junta las dos redes, la salud y el envío
   webhook.js    verificación RSA de los webhooks de Kick y deduplicación
   videos.js     el catálogo de películas y la clave de subida (hasheada)
@@ -199,7 +210,8 @@ Reglas que no se negocian:
 | `/kick/webhook` | Eventos de Kick. 401 si la firma no da. **Se rutea a la sala del `broadcaster_user_id`** (y en su defecto del `channel_slug`); lo que no se pueda atribuir a una sala que existe se descarta |
 | `/cobro/webhook` | Los avisos del proveedor de cobro, con la firma verificada. Es lo único que pone los planes "pago" y "vencido" |
 | `/api/chat/salud` | Cómo está cada red **de la sala de quien pregunta**. Pide cookie de creador |
-| `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos, con la cuenta de quien pide. Pide cookie de creador |
+| `/api/chat/enviar` | `POST { destino: "kick" \| "twitch" \| "ambos", texto }` con la cuenta de quien pide. Pide cookie de creador. **El texto se traduce por red** con la misma `envio.comoViajaA` que la puerta del espectador, y el tope de cada red se mide contra el texto que esa red va a recibir |
+| `/api/chat/emotes` | `GET` con cookie de creador: los emotes que puede ofrecer el selector de **su** ventana, con la misma forma que la ruta pública. El slug sale de la sesión y **no mira el interruptor del chat abierto**: el creador escribe en su propio chat con el chat cerrado |
 | `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick de su sala. Pide cookie de creador |
 | `/api/chat/:slug/abierto` | `GET` público: `{ abierto, redes }`. Cerrado contesta `redes: []`: de un chat cerrado no se cuenta nada. 404 si la sala no existe. Contesta de la misma memoria que usa el filtro del bus |
 | `/api/chat/:slug/emotes` | `GET` público: los emotes que puede ofrecer el selector de la caja de escribir, cada uno con la `marca` que hay que poner en la caja y en qué `redes` sirve. **Sin sesión**, igual que `/abierto`: leer el chat nunca pidió login y esto es parte de leerlo. Con el chat cerrado contesta `emotes: []`. `?red=` acota a qué red va a ir el mensaje y **pide menos, nunca más**: se cruza contra las redes que el creador abrió. 404 si la sala no existe |
@@ -212,7 +224,7 @@ Reglas que no se negocian:
 | `/api/videos/:id` | `DELETE` borra la ficha (misma cabecera). Un 404 no es error para el script. **404 con la Sala apagada** |
 | `/api/sala/:slug/reloj` | Play, pausa, reanudar, saltar y detener. Cookie del dueño **de esa sala**, y **402 si su plan no reproduce** |
 | `/api/sala/:slug/chat` | El mensaje de un espectador, que sale en kick.com con SU cuenta, **en el canal de esa sala**. Cookie de espectador **y `Origin` propio**. **403 si el creador lo bloqueó**: es la misma lista que `/api/chat/:slug/enviar`, porque son dos puertas al mismo canal. 503 sólo si esa sala todavía no vinculó Kick |
-| `/api/sala/:slug/yo` | Si esta persona entró y si puede escribir. Nunca la lista de quién está en la sala |
+| `/api/sala/:slug/yo` | Si esta persona entró, si puede escribir y **si el creador la bloqueó** (`bloqueado`, igual que su hermana de `/api/chat/`: el corte ya existía en el envío y la pantalla no se enteraba). Nunca la lista de quién está en la sala |
 | `/api/sala/:slug/salir` | `POST` con `Origin` propio: cierra la sesión del espectador y **olvida sus tokens**. El refresh token es de esa persona, no del dueño |
 
 | `/api/panel` | Todo lo que muestra `/panel` en un pedido: plan, salud, reloj, videos, métricas, clave, uso de R2 y el chat abierto (`chatAbierto: { activo, redes }`). Trae también `salaAbierta`, para que el panel no pinte los controles de una película que el servidor va a rechazar. **Esta ruta no se apaga**: el creador tiene que poder ver su panel igual. El link del chat abierto no viaja: lo arma la página con el origen desde el que se la mira. Cookie de creador |
@@ -407,7 +419,9 @@ El gancho ya está: `emotes.vencer(slug, red)` marca una tabla como vencida. El 
 
 ### El selector de emotes de la caja
 
-En `/chat/<slug>` hay un botón **Emotes** al lado de la caja: se abre un panel con buscador, se elige uno y se inserta en el mensaje. Existe para mandar un emote sin acordarse del nombre exacto.
+Al lado de la caja hay un botón **Emotes**: se abre un panel con buscador, se elige uno y se inserta en el mensaje. Existe para mandar un emote sin acordarse del nombre exacto.
+
+Está en **las dos cajas**: en `/chat/<slug>`, la del espectador, y en `/chat`, la ventana del creador. La única diferencia es de dónde sale la lista: `GET /api/chat/<slug>/emotes` (pública) o `GET /api/chat/emotes` (con el slug de la sesión del creador). Ver [*La otra caja*](#la-otra-caja-chat-la-ventana-del-creador) más abajo.
 
 #### El problema de fondo: el mismo emote no se escribe igual en las dos redes
 
@@ -419,7 +433,7 @@ En `/chat/<slug>` hay un botón **Emotes** al lado de la caja: se abre un panel 
 
 Y con `red: "ambas"` el mensaje sale **a las dos a la vez**. Si la página armara el markup tendría que elegir uno, y el otro lado vería un `[emote:5747892:…]` literal en pantalla.
 
-Por eso **la caja guarda una sola forma del mensaje y la traducción la hace el servidor**, en `servidor/envio.js` (`comoViajaA`), que es el único lugar del proyecto por el que pasan los dos envíos y el único que sabe a qué red le está hablando. A Kick le va el markup tal cual; a Twitch se le reemplaza cada `[emote:id:nombre]` por `nombre`, que es lo mejor que se puede hacer con un emote que ahí no existe: que se lea la palabra.
+Por eso **la caja guarda una sola forma del mensaje y la traducción la hace el servidor**, en `servidor/envio.js` (`comoViajaA`), que es el único lugar del proyecto que sabe a qué red le está hablando. **Las dos puertas de envío pasan por ahí**: la del espectador (`POST /api/chat/:slug/enviar`) y la del creador (`POST /api/chat/enviar` → `chat.enviar`, que también importa esa misma función en vez de tener su propia copia). A Kick le va el markup tal cual; a Twitch se le reemplaza cada `[emote:id:nombre]` por `nombre`, que es lo mejor que se puede hacer con un emote que ahí no existe: que se lea la palabra.
 
 **Esto no es sólo para el selector.** Cualquiera podía escribir `[emote:1:X]` a mano en la caja, y hasta ahora eso llegaba a Twitch con los corchetes puestos. El arreglo es el mismo y vale para los dos casos. El precio, dicho sin adornos: quien quiera escribir esos corchetes *literalmente* en Twitch no va a poder. Es un texto que nadie escribe.
 
@@ -437,7 +451,7 @@ El contador de la página cuenta el texto crudo, que es exactamente lo que recib
 
 - **7TV**: ya estaban resueltos por `(slug, red)` con su caché, su respaldo entre redes y sus globales. El selector los lee de la **misma tabla** que usan los mensajes, así que abrir el panel no cuesta un pedido extra y un creador sin 7TV no genera ninguno.
 - **Nativos de Kick**: **los que ese chat vio pasar**. No hay de dónde pedir la lista (abajo el porqué). Cada mensaje de Kick ya llega con sus emotes resueltos —id, nombre y url, sacados del `[emote:id:nombre]` del `content`—, así que anotarlos no le cuesta un pedido a nadie. Es una lista **viva**: crece con lo que la comunidad usa e incluye **coleccionables**, que no se pueden listar de ninguna otra forma. Arranca vacía, y el panel lo dice con todas las letras en vez de aparentar un catálogo completo.
-- **Nativos de Twitch**: **todavía no**. Ver más abajo.
+- **Nativos de Twitch**: los del canal (`helix/chat/emotes`) y los globales (`/emotes/global`), con el **token de app** que ya usan las insignias. Ver abajo.
 
 Se anotan en memoria, hasta 100 por sala y 300 salas (techo ~4,5 MB, y para llegar ahí hacen falta 300 chats vivos con 100 emotes distintos cada uno). Las salas se desalojan por la que hace más que no ve un emote, así que lo que se tira es siempre un chat dormido.
 
@@ -454,23 +468,29 @@ Porque no existe, y está verificado el **2026-09-23**, no supuesto:
 
 Dato al pasar que confirma la decisión de `mensajes.js`: el array `emotes` del webhook **viene `null` en la práctica** pese a que la doc lo muestra lleno ([KickDevDocs#210](https://github.com/KickEngineering/KickDevDocs/issues/210), cerrada como resuelta). El markup del `content` no es sólo la fuente preferible: es la única que llega.
 
-#### Los nativos de Twitch: anotados, no hechos
+#### Los nativos de Twitch
 
-`GET helix/chat/emotes?broadcaster_id=` (los del canal) y `GET helix/chat/emotes/global` los dan con **un app access token y sin ningún scope** — verificado el 2026-09-23 en `dev.twitch.tv/docs/api/reference`, donde los tres endpoints de emotes dicen literalmente *"Requires an app access token or user access token"* (el único que pide scope es `/emotes/user`, con `user:read:emotes`). O sea que **no hace falta pedirle un permiso nuevo a nadie**: alcanza con lo que ya hay.
+`GET helix/chat/emotes?broadcaster_id=` (los del canal: suscriptor, seguidor y tramos de bits) y `GET helix/chat/emotes/global` (Kappa, LUL…) los dan con **un app access token y sin ningún scope** — verificado el 2026-09-23 en `dev.twitch.tv/docs/api/reference`, donde los tres endpoints de emotes dicen literalmente *"Requires an app access token or user access token"* (el único que pide scope es `/emotes/user`, con `user:read:emotes`). **No hace falta pedirle un permiso nuevo a nadie** ni que el creador vuelva a vincular: es el mismo `tokenDeApp()` de `servidor/twitch.js` que trajeron las insignias.
 
-Lo que falta es de dónde sacar el app token, y eso está llegando por otro camino (las insignias de Twitch, `servidor/twitch.js`). Sumarlo ahora sería escribir dos veces la misma credencial. Cuando ese `tokenDeApp()` esté, son dos funciones en `twitch.js` y un grupo más en `emotes.catalogo()`.
+**La caché y los tres vencimientos son los de 7TV, literalmente los mismos**: casillero por creador, una sola bajada en vuelo por casillero, el tope global de seis simultáneas, el plazo sobre la bajada **completa** y el log cuando cambia el estado. El casillero es otro (`<slug>/twitch-nativos`, más `/globales-twitch` para los compartidos), así que un Helix caído no toca las tablas de 7TV ni al revés. Una respuesta **200 con la lista vacía** —un canal que no tiene emotes propios, que es el caso de la mayoría— cuenta como *"no tiene"* y vence **a la hora**, no como un éxito a los diez minutos: con 900 creadores, confundirlas es pasar de 3.600 pedidos por día a 130.000.
 
-Tres trampas para cuando se haga, que la doc no pone de frente:
+**Se piden cuando alguien abre el selector**, no cuando llega un mensaje. Un emote nativo de Twitch ya viene resuelto en el mensaje de EventSub, así que esta tabla no pinta nada: existe sólo para ofrecerlos, y un chat donde nadie abre el panel no le cuesta un pedido a Twitch.
 
-- La URL de la imagen sale de un campo **`template`** que viene **al lado de `data`, una sola vez por respuesta**, no dentro de cada emote: `https://static-cdn.jtvnw.net/emoticons/v2/{{id}}/{{format}}/{{theme_mode}}/{{scale}}`.
-- El orden de los placeholders es **id / format / theme_mode / scale**. La prosa de la doc los enumera en otro orden ("id, format, scale, and theme_mode"), que no es el de la URL.
-- El valor `default` para `format` funciona pero **no está documentado**; los documentados son `static` y `animated`. Lo mismo la escala `4.0`.
+**La URL la arma `mensajes.URL_EMOTE_TWITCH`, y el campo `template` de Helix se ignora a propósito.** Helix manda, al lado de `data`, un `https://static-cdn.jtvnw.net/emoticons/v2/{{id}}/{{format}}/{{theme_mode}}/{{scale}}`; la URL de un emote de Twitch ya la arma `mensajes.js` desde la Fase 1, es la que el chat pinta en cada mensaje y viene funcionando contra el CDN de verdad. Con dos formas de armar la misma URL, el panel mostraría una imagen y el mensaje otra, y una plantilla interpolada a mano es justo donde se cuela el orden equivocado de los placeholders (la doc los enumera "id, format, scale, and theme_mode", que **no** es el orden de la URL). De paso, el navegador se baja una sola imagen: la que ya tiene del chat.
+
+**Los del canal se ofrecen aunque no todos puedan usarlos, y el panel lo dice.** Un emote de suscriptor lo dibuja Twitch sólo para quien está suscripto; a los demás les sale la palabra. Saber quién tiene cuál es `helix/chat/emotes/user`, que pide el scope `user:read:emotes` **a cada espectador**: un permiso nuevo por persona para un adorno no se paga. Así que se ofrecen igual, la nota del panel lo aclara, y lo peor que pasa es que salga la palabra — que es exactamente lo que pasa hoy si alguien la escribe a mano. En la ventana del creador el problema no existe: el streamer tiene todos los suyos desbloqueados.
+
+**Un nombre que es nativo en las dos redes sale en las dos.** Si el chat vio pasar un `[emote:5747892:KEKW]` de Kick y Twitch también tiene un `KEKW`, se ofrece **uno solo**, con la marca de Kick y `redes: ["kick","twitch"]`: a Kick le va el markup, que es lo único que Kick dibuja, y a Twitch le llega la palabra pelada, que allá es su propio emote. Marcarlo como *"en Twitch se lee como texto"* sería mentirle a quien lo elige. Las tres fuentes se deduplican por nombre con el orden Kick → Twitch → 7TV, que es la misma regla que usa `conEmotes` para pintar: ganan los nativos.
+
+**El tope (`TOPE_NATIVOS_TWITCH`, 300 por tabla) es un freno, no una medida.** No se probó contra el Helix de verdad cuántos emotes tiene un canal grande; cada entrada son ~150 bytes.
 
 #### Lo que muestra el panel
 
-Cada emote dice **de qué fuente es** (agrupados: "De Kick · los que pasaron por este chat", "De 7TV · del canal y los globales") y **en qué red va a salir**, en palabras y no sólo con un borde: el color no puede ser el único canal de información. Un emote que no sirve en todas las redes elegidas se ofrece igual pero marcado —esconder los de Kick apenas alguien elige "las dos", que es lo que elige casi todo el mundo, sería esconder justo los que no se consiguen en ningún otro lado— y al usarlo aparece el aviso: *"collectiblesMEGALUL es un emote de Kick: en Twitch va a salir como texto"*. **Se dice antes de mandar, no después**, y también cuando el cambio es del selector de red y no de lo que se escribió, que es el caso fácil de olvidar.
+Cada emote dice **de qué fuente es** (agrupados, en este orden: "De Kick · los que pasaron por este chat", "De Twitch · del canal y los globales", "De 7TV · del canal y los globales" — Kick primero porque son los que no se pueden buscar en ningún otro lado) y **en qué red va a salir**, en palabras y no sólo con un borde: el color no puede ser el único canal de información. Un emote que no sirve en todas las redes elegidas se ofrece igual pero marcado —esconder los de Kick apenas alguien elige "las dos", que es lo que elige casi todo el mundo, sería esconder justo los que no se consiguen en ningún otro lado— y al usarlo aparece el aviso: *"collectiblesMEGALUL es un emote de Kick: en Twitch va a salir como texto"*. **Se dice antes de mandar, no después**, y también cuando el cambio es del selector de red y no de lo que se escribió, que es el caso fácil de olvidar.
 
-Con **Twitch sola** elegida, los nativos de Kick directamente no se ofrecen: ahí no sirven para nada.
+Con **Twitch sola** elegida, los nativos de Kick directamente no se ofrecen: ahí no sirven para nada. Y con **Kick sola**, los nativos de Twitch tampoco.
+
+La nota del panel dice las dos cosas que la lista **no** puede saber: que de Kick sólo están los que pasaron por ese chat, y que los de Twitch que son del canal salen dibujados sólo para quien los tenga desbloqueados.
 
 El emote se inserta **separado con espacios**, y eso no es cosmético: los emotes se resuelven por palabra entera, así que pegado a una letra dejaría de ser un emote. El panel **no se cierra al elegir** (poner tres seguidos es lo normal) y se maneja con teclado: flechas para recorrer, Enter para poner el marcado —o el primero de la lista si no se bajó—, Escape para cerrar devolviendo el foco a la caja.
 
@@ -478,10 +498,18 @@ El emote se inserta **separado con espacios**, y eso no es cosmético: los emote
 
 El botón aparece **con la caja de escribir**, o sea sólo cuando la persona puede escribir. La *lista*, en cambio, no pide sesión: leer el chat nunca pidió login y esto es parte de leerlo.
 
-#### Lo que todavía no está
+#### La otra caja: `/chat`, la ventana del creador
 
-- **El selector no está en `/chat`**, la ventana del creador. Esa caja manda por otra puerta (`/api/chat/enviar` → `chat.enviar`) que **todavía no traduce por red**: ofrecerlo ahí mandaría markup de Kick a Twitch, justo lo que esto viene a evitar. El día que esa puerta pase por `envio.comoViajaA`, es sacarle el `hidden` al botón.
-- **Los nativos de Twitch**, por lo de arriba.
+El selector estuvo escondido ahí hasta el 2026-09-23, y el motivo era real: esa caja manda por `POST /api/chat/enviar` → `chat.enviar`, que mandaba **el mismo string a las dos redes**. Ofrecer el selector ahí habría mandado markup de Kick a Twitch, justo lo que todo esto viene a evitar.
+
+Ahora `chat.enviar` **importa `envio.comoViajaA`** —la misma función, no una copia— y mide el tope de cada red contra el texto que esa red va a recibir. Con eso, el botón deja de tener motivo para esconderse.
+
+La lista sale de `GET /api/chat/emotes`, que es la hermana de la pública con dos diferencias que no son de estilo:
+
+1. **El slug sale de la sesión**, como en todas las de `/api/chat/` sin slug en el camino.
+2. **No mira el interruptor del chat abierto.** Ese interruptor es *"mi comunidad puede escribir desde mi página"*; el creador escribe en su propio chat desde su propia ventana con el chat cerrado, y el selector tiene que seguir andando ahí. La hermana pública, en cambio, con el chat cerrado no cuenta ni un emote: de un chat cerrado no se cuenta nada.
+
+El vocabulario de cada caja se mantiene: la del creador manda `destino: "kick" | "twitch" | "ambos"` (elige entre **sus** canales) y la del espectador `red: "kick" | "twitch" | "ambas"` (elige entre **sus** cuentas). Son dos cosas distintas y por eso son dos palabras distintas.
 
 ### Las insignias
 
@@ -498,6 +526,12 @@ Se resuelven **en el servidor** (`servidor/insignias.js`), igual que los emotes 
 El `broadcaster_id` sale de `vinculos.identidad()`, sin tocar tokens. **Un creador que no vinculó Twitch no genera un solo pedido**, y tampoco lo genera un mensaje de Kick.
 
 El casamiento es exacto: el mensaje trae `{ set_id, id, info }` y ese `id` es el mismo que `versions[].id`. **El canal le gana a los globales set por set**, no en bloque: un canal que personalizó `subscriber` sigue usando el `moderator` global. Y si el canal tiene ese set pero no esa versión, **no** se cae a la global: se muestra la etiqueta, porque mostrar el escudo genérico de Twitch como si fuera el del canal es peor que no mostrar ninguno.
+
+**Y mientras no se sabe qué tiene el canal, tampoco.** Con la tabla del canal vacía —porque todavía no se bajó, o porque la bajada falló— no hay con qué distinguir *"este canal no personalizó `subscriber`"* de *"no sabemos todavía"*, y hasta el 2026-09-23 el suscriptor salía con el escudo genérico de Twitch como si fuera el de esta comunidad. Estaba anotado como decisión consciente, con este argumento: exigir el casillero confirmado para **todo** haría perder también las globales bien resueltas (mod, VIP, Prime) en esa misma ventana.
+
+Se reevaluó, y el argumento era correcto pero la conclusión no: **no hay que elegir entre las dos cosas**. La tercera opción es preguntar **por set**, que es como funciona el resto de esta función: `helix/chat/badges` sólo devuelve `subscriber` y `bits` (la doc: *"the broadcaster's list of custom chat badges"*, y manda a leer sobre badges de suscriptor y de bits), así que son los únicos dos sets donde la tabla del canal puede cambiar la respuesta. Mientras no se sepa, esos dos se quedan con la etiqueta de texto y **todos los demás se resuelven con la global**, que en ellos es la verdad en cualquier canal.
+
+"No se sabe" sale del estado del casillero —el mismo truco que usa `tablaConRespaldo` en `emotes.js` para no adivinar—, así que un canal que **confirmó** que no tiene sub propio sí usa el genérico: ahí el genérico es lo que se ve en twitch.tv. Y la lista de dos no necesita estar completa para ser correcta: si Twitch agrega una tercera familia personalizable, esa familia se comporta como se comportaba todo antes, así que equivocarse en la lista no empeora nada.
 
 Se pide **`image_url_2x`** (36 px) porque el CSS la muestra a 1,1em, o sea unos 18 px. No hay presupuesto en bytes como el de los emotes y no hace falta: medido el 2026-09-23 contra `static-cdn.jtvnw.net`, las globales pesan entre **320 B y 1.250 B**, y Twitch fija las tres medidas (18, 36 y 72 px, comprobado leyendo el IHDR del PNG) y no acepta animadas. No hay cola cara que cortar.
 
@@ -682,7 +716,7 @@ El creador toca **bloquear** en un mensaje, en su Chat Global (`/chat`), y esa p
 - **Es por sala.** Que Ana bloquee a alguien no lo bloquea en el chat de Beto: cada sala es un inquilino.
 - **Pero vale por las dos puertas de esa sala.** `/api/chat/:slug/enviar` y `/api/sala/:slug/chat` caen en el mismo canal de Kick, así que las dos miran la misma lista (`envio.bloqueadasPara`). Hasta el 2026-09-22 sólo la miraba la primera, y al bloqueado le alcanzaba con abrir `/sala/<slug>` para seguir escribiendo con su nombre.
 - **El interruptor del chat abierto no calla la Sala.** Son dos productos: `chatAbierto.activo` decide si se ofrece la página pública del Chat Global, y la Sala la abre `salaAbierta`. Atarlos sería además un apagón silencioso, porque el chat abierto **nace cerrado**: toda Sala prendida se quedaría sin caja de escribir sin que su dueño tocara nada.
-- **Al bloqueado se le dice.** `GET /api/chat/:slug/yo` devuelve en qué redes está bloqueado, así la página lo explica en vez de esconderle la caja sin motivo.
+- **Al bloqueado se le dice, por las dos puertas.** `GET /api/chat/:slug/yo` devuelve en qué redes está bloqueado y `GET /api/sala/:slug/yo` devuelve `bloqueado`, así cada página lo explica en vez de esconderle la caja sin motivo. La de la Sala no lo decía hasta el 2026-09-23 y no era una decisión: el corte ya existía en el envío, y el motivo aparecía recién al mandar un mensaje que no iba a salir. Las dos leen `envio.bloqueadasPara`, la misma que usa el envío, para que la pantalla no pueda decir una cosa y la puerta hacer otra.
 - **Quién está bloqueado no sale por ninguna ruta pública**: es del creador.
 
 La escucha del botón vive en la **lista** y no en el botón, porque `/chat` clona el `<li>` para ponerlo en la columna de su red y un clon no se lleva las escuchas: el botón de la columna no haría nada y nadie se enteraría hasta tocarlo.

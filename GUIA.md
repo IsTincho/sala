@@ -63,6 +63,8 @@ Si Twitch te figura sin vincular, se vincula desde el mismo panel.
 5. Bloqueá a esa cuenta desde su mensaje y comprobá que ya no puede escribir.
 6. Escribí el nombre exacto de un emote de tu 7TV (respeta mayúsculas, y tiene que ir
    como palabra suelta): tiene que verse la imagen, no la palabra.
+7. Tocá **Emotes** al lado de la caja, elegí uno y mandalo. El botón está en tu ventana
+   (`/chat`) y en la de tu comunidad (`/chat/<slug>`).
 
 **Los emotes de 7TV ya se ven**, los tuyos y los globales, en Kick y en Twitch. Si sólo tenés
 7TV activado en una de las dos redes, tus emotes también aparecen en los mensajes de la otra:
@@ -70,6 +72,19 @@ no hace falta tener cuenta de 7TV en las dos. Los que pesen
 más de 128 KB hasta en su tamaño más chico no salen a propósito: se los bajaría el navegador de
 cada persona que esté mirando. Si te hacés una cuenta de 7TV recién ahora, puede tardar hasta
 una hora en aparecer; un deploy lo resuelve en el acto.
+
+**El botón Emotes** (2026-09-23) ofrece tres cosas: los emotes de tu 7TV, **los nativos de tu
+Twitch** (los de suscriptor y los globales tipo Kappa) y **los de Kick que ya pasaron por ese
+chat** — de Kick no hay forma de pedirle la lista, así que la lista crece con lo que la
+comunidad usa y arranca vacía. El panel lo dice con todas las letras.
+
+Dos cosas que conviene saber antes de que alguien pregunte:
+
+- Un emote de Kick mandado **a las dos redes** sale dibujado en Kick y como palabra en Twitch.
+  El panel avisa antes de mandar. Al revés es igual: un emote de tu Twitch, en Kick se lee.
+- Tus emotes de suscriptor de Twitch los ve dibujados **quien esté suscripto**; al resto les
+  llega la palabra. Eso lo decide Twitch y no se puede saber de antemano sin pedirle un permiso
+  nuevo a cada espectador.
 
 ---
 

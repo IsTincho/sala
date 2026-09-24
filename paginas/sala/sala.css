@@ -258,6 +258,24 @@
   color: var(--texto-tenue);
 }
 
+/* La insignia con imagen. HOY ESTO NO PINTA NADA ACA, y esta igual: la
+   Sala pide sólo Kick (`Sala.conectar(slug, fn, { redes: ['kick'] })`)
+   y las de Kick no tienen imagen. Pero el render es el MISMO
+   `comun/mensajes.js` que usa /chat, asi que el dia que la Sala muestre
+   Twitch —o que Kick publique sus imagenes— sin esta regla saldria un
+   PNG de 36 px a tamaño natural rompiendo el alto de linea, en la
+   pagina que nadie esta mirando. Son cinco lineas.
+
+   1,1em para no cambiar el alto de linea, y `middle` porque esta fila
+   no es flex: alinea por baseline de linea, y el baseline de una
+   imagen es su borde de abajo. */
+.insignia{
+  height: 1.1em;
+  width: auto;
+  vertical-align: middle;
+  margin-right: 0.25em;
+}
+
 .usuario{ font-weight: 700; }
 .usuario::after{ content: ':'; color: var(--texto-tenue); }
 .texto-mensaje{ min-width: 0; }

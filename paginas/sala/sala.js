@@ -556,6 +556,14 @@
   let pausadoElScroll = false;
   let nuevosSinVer = 0;
 
+  /* El respaldo a texto de una insignia que no carga. La Sala hoy sólo
+     recibe Kick, y las de Kick no tienen imagen, así que esto no pinta
+     nada todavía; va igual porque el render es el MISMO de /chat y el
+     día que la Sala muestre Twitch, sin esta línea una imagen caída
+     dejaría el ícono de imagen rota en la única página donde nadie
+     estaría mirando. */
+  window.SalaMensajes.vigilarInsignias(listaChat);
+
   listaChat.addEventListener('scroll', () => {
     const pegado = listaChat.scrollHeight - listaChat.scrollTop - listaChat.clientHeight < DISTANCIA_PEGADO;
     if (!pegado && !pausadoElScroll) {

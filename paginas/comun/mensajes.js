@@ -12,8 +12,15 @@
    TIRAR innerHTML a proposito, asi que si alguien lo vuelve a usar
    aca, los tests explotan en vez de pasar.
 
+   TAMPOCO SE LE PREGUNTA NADA A NADIE. Esta pagina no habla con APIs
+   externas: la URL de cada emote y la de cada insignia ya vienen
+   resueltas en el mensaje, desde el servidor. Aca solo se decide como
+   se dibujan y que pasa si la imagen no carga (se ve el texto, nunca
+   un hueco).
+
    Expone `window.SalaMensajes`:
      crear(datos, opciones)       -> un <li> listo
+     vigilarInsignias(lista)      -> el respaldo a texto de las insignias
      colorDeUsuario(datos)        -> el color ya validado y aclarado
      recortarTexto(texto, limite)
 
@@ -100,6 +107,94 @@
     }
   }
 
+  // la etiqueta de texto de toda la vida: el nombre de la insignia en
+  // un chip. Es lo que se ve cuando no hay imagen, y lo que se ve si
+  // la imagen falla. Nunca un hueco.
+  function chipDeTexto(texto) {
+    const chip = document.createElement('span');
+    chip.className = 'chip-insignia';
+    chip.textContent = texto;
+    return chip;
+  }
+
+  // Una insignia: la imagen si el servidor pudo resolverla, y si no el
+  // chip de texto.
+  //
+  // La URL la resuelve el SERVIDOR (servidor/insignias.js): esta
+  // pagina no habla con APIs de nadie. Hoy solo la traen las de
+  // Twitch; las de Kick vienen con `url` vacia —Kick no las publica
+  // por ninguna API documentada— y caen por el camino del chip. Aca no
+  // se distinguen las redes a proposito: la pagina pregunta "¿hay
+  // imagen?" y no "¿de que red es esto?", asi que el dia que Kick las
+  // publique, esto no se toca.
+  //
+  // `alt` y `title` llevan SIEMPRE el nombre de la insignia. El alt no
+  // es decorativo: una insignia dice quien es esa persona en ese chat,
+  // y un lector de pantalla tiene que poder decirlo. El title es para
+  // el que pasa el mouse y no sabe que es ese dibujito.
+  //
+  // Si la imagen no carga —un 404, un bloqueador, el CDN caido— se
+  // cambia por el chip de texto. QUIEN LO HACE NO ES ESTA IMAGEN: es
+  // `vigilarInsignias()`, un escucha puesto en la lista. Ver el
+  // comentario de ahi abajo, que explica por que.
+  //
+  // El nombre viaja en `dataset` por el mismo motivo por el que viaja
+  // el del boton de bloquear: /chat CLONA el <li> y un clon se lleva
+  // los data-*, pero no las escuchas.
+  //
+  // Sin `loading="lazy"`, a diferencia de los emotes: una insignia pesa
+  // medio kilobyte y la misma URL se repite en casi todos los mensajes,
+  // asi que el navegador la baja una vez y la reusa. Lo unico que
+  // agregaria lazy es un observador por imagen a cambio de nada.
+  function agregarInsignia(fila, insignia) {
+    const texto = String(insignia.texto || insignia.tipo || '');
+    const url = typeof insignia.url === 'string' ? insignia.url : '';
+    if (!url) {
+      fila.appendChild(chipDeTexto(texto));
+      return;
+    }
+    const img = document.createElement('img');
+    img.className = 'insignia';
+    img.src = url;
+    img.alt = texto;
+    img.title = texto;
+    img.dataset.insigniaTexto = texto;
+    fila.appendChild(img);
+  }
+
+  /**
+   * Deja una lista de mensajes vigilando las insignias que no carguen:
+   * cada una se cambia por su etiqueta de texto, EN SU LUGAR.
+   *
+   * HAY QUE LLAMARLO UNA VEZ POR LISTA. Si no, una imagen que falla
+   * deja el icono de imagen rota del navegador en vez del texto.
+   *
+   * POR QUE UN ESCUCHA EN LA LISTA Y NO UN `onerror` POR IMAGEN:
+   * /chat clona el <li> para ponerlo tambien en la columna de su red,
+   * y `img.onerror = fn` es una propiedad, no un atributo, asi que el
+   * CLON NO SE LA LLEVA. Con un handler por imagen, el respaldo andaba
+   * en la vista mezclada y en la de columnas se veia el icono roto: el
+   * mismo motivo por el que el boton de bloquear tampoco lleva su
+   * propia escucha.
+   *
+   * Y va en fase de CAPTURA (el `true` del final) porque el evento
+   * `error` de una imagen NO BURBUJEA: un escucha normal en la lista
+   * no se enteraria nunca.
+   */
+  function vigilarInsignias(lista) {
+    if (!lista || lista.dataset.insigniasVigiladas) return;
+    lista.dataset.insigniasVigiladas = '1';
+    lista.addEventListener('error', ev => {
+      const img = ev.target;
+      if (!img || img.tagName !== 'IMG') return;
+      if (!img.classList.contains('insignia')) return;
+      const padre = img.parentElement;
+      // ya lo cambio otro, o el mensaje ya salio de la lista
+      if (!padre) return;
+      padre.replaceChild(chipDeTexto(img.dataset.insigniaTexto || img.alt || ''), img);
+    }, true);
+  }
+
   /**
    * Un <li> de mensaje.
    *
@@ -140,17 +235,9 @@
     filaPrincipal.appendChild(chipRed);
 
     const insignias = datos.insignias || [];
-    insignias.slice(0, 4).forEach(insignia => {
-      const chip = document.createElement('span');
-      chip.className = 'chip-insignia';
-      chip.textContent = insignia.texto;
-      filaPrincipal.appendChild(chip);
-    });
+    insignias.slice(0, 4).forEach(insignia => agregarInsignia(filaPrincipal, insignia));
     if (insignias.length > 4) {
-      const chipMas = document.createElement('span');
-      chipMas.className = 'chip-insignia';
-      chipMas.textContent = '+' + (insignias.length - 4);
-      filaPrincipal.appendChild(chipMas);
+      filaPrincipal.appendChild(chipDeTexto('+' + (insignias.length - 4)));
     }
 
     const usuarioEl = document.createElement('span');
@@ -184,5 +271,5 @@
     return li;
   }
 
-  window.SalaMensajes = { crear, colorDeUsuario, recortarTexto };
+  window.SalaMensajes = { crear, vigilarInsignias, colorDeUsuario, recortarTexto };
 })();

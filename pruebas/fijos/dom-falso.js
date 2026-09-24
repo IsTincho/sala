@@ -147,6 +147,20 @@ class Elemento {
     return nodo;
   }
 
+  /* Cambiar un hijo POR OTRO EN SU LUGAR. Lo usa el respaldo de las
+     insignias: cuando la imagen no carga, el chip de texto tiene que
+     quedar donde estaba la imagen y no al final de la fila, que es lo
+     unico que se puede hacer con removeChild + appendChild. */
+  replaceChild(nuevo, viejo) {
+    const i = this.hijos.indexOf(viejo);
+    if (i < 0) throw new Error('replaceChild: el nodo viejo no es hijo de este');
+    if (nuevo.padre) nuevo.padre.removeChild(nuevo);
+    this.hijos[i] = nuevo;
+    nuevo.padre = this;
+    viejo.padre = null;
+    return viejo;
+  }
+
   get textContent() {
     return this.hijos.map(h => h.textContent).join('');
   }
@@ -173,6 +187,17 @@ class Elemento {
     const c = new Elemento(this.tagName);
     c.atributos = new Map(this.atributos);
     c.dataset = { ...this.dataset };
+    /* Las propiedades que una pagina escribe como propiedad y no como
+       atributo. En el navegador `img.src = x` SI se clona (es un
+       atributo reflejado); acá se escriben como propiedad suelta, asi
+       que sin esto el clon sale sin imagen y ninguna prueba puede
+       mirar la columna de /chat, que es justo donde se escondia el
+       bug del respaldo de las insignias.
+       Las escuchas NO se copian, igual que en el navegador: de eso se
+       trata el escucha delegado. */
+    for (const p of ['src', 'alt', 'title', 'value', 'loading']) {
+      if (this[p] !== undefined) c[p] = this[p];
+    }
     c.style = new Estilo(this.style.props);
     c.hidden = this.hidden;
     c.raiz = this.raiz;
@@ -189,9 +214,24 @@ class Elemento {
     return Promise.resolve();
   }
 
-  addEventListener(tipo, fn) {
+  /* `opciones` solo mira la fase de CAPTURA, que es lo unico que hace
+     falta: el respaldo de las insignias escucha `error` en la lista, y
+     `error` no burbujea, asi que un escucha delegado tiene que ser de
+     captura o no se entera nunca. Todo lo que ya existia se registra
+     sin opciones, o sea en fase de target, y sigue comportandose
+     igual: aca NO hay burbujeo, a proposito, para no cambiarle el
+     comportamiento a ninguna pagina que ya estaba probada. */
+  addEventListener(tipo, fn, opciones) {
     if (!this.escuchas.has(tipo)) this.escuchas.set(tipo, []);
-    this.escuchas.get(tipo).push(fn);
+    const captura = opciones === true || opciones?.capture === true;
+    this.escuchas.get(tipo).push({ fn, captura });
+  }
+
+  /** Los escuchas de una fase, en orden de registro. */
+  correrEscuchas(tipo, ev, captura) {
+    for (const e of this.escuchas.get(tipo) ?? []) {
+      if (e.captura === captura) e.fn(ev);
+    }
   }
 
   /* Mover el foco es lo que hace una pagina cuando frena una accion y
@@ -209,10 +249,22 @@ class Elemento {
     this.enfocado = false;
   }
 
-  /** Lo que usa el test para simular a la persona. */
+  /**
+   * Lo que usa el test para simular a la persona.
+   *
+   * Primero la fase de CAPTURA, desde el antepasado mas lejano hasta
+   * este nodo, y despues los escuchas de target. Sin burbujeo: lo que
+   * hacia falta es la captura (ver `addEventListener`), y agregar
+   * burbujeo cambiaria el comportamiento de paginas que ya estaban
+   * probadas sin el.
+   */
   disparar(tipo, evento = {}) {
     const ev = { type: tipo, preventDefault() {}, target: this, ...evento };
-    for (const fn of this.escuchas.get(tipo) ?? []) fn(ev);
+    const antepasados = [];
+    for (let n = this.padre; n; n = n.padre) antepasados.push(n);
+    for (const n of antepasados.reverse()) n.correrEscuchas(tipo, ev, true);
+    this.correrEscuchas(tipo, ev, true);
+    this.correrEscuchas(tipo, ev, false);
     return ev;
   }
 }

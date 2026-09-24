@@ -276,6 +276,205 @@ test('las insignias se cortan en cuatro y el resto se cuenta', async () => {
   p.cerrar();
 });
 
+/* ------------------------------------------------- insignias con imagen
+
+   La URL la resuelve el SERVIDOR (`servidor/insignias.js`) y llega en
+   el mensaje. Lo que se prueba aca es lo unico que decide la pagina:
+   cuando se dibuja la imagen, cuando la etiqueta, y que nunca quede un
+   hueco. */
+
+/** Las insignias de un mensaje ya pintado, en orden y con su forma. */
+function insigniasDe(pagina) {
+  const fila = pagina.el('lista-mezclada').children[0].children[0];
+  return fila.children
+    .filter(c => c.tagName === 'IMG' || c.classList.contains('chip-insignia'))
+    .map(c => (c.tagName === 'IMG'
+      ? { como: 'imagen', src: c.src, alt: c.alt, title: c.title, el: c }
+      : { como: 'texto', texto: c.textContent, el: c }));
+}
+
+test('tres insignias seguidas se dibujan como tres imagenes, en orden y antes del nombre', async () => {
+  const p = abrir();
+  await asentarse();
+  /* Es el caso de la captura del dueño: el streamer hablando en su
+     propio chat, con tres insignias pegadas. */
+  p.llega(mensaje({
+    id: 'i', red: 'twitch', usuario: 'ElkaChonda',
+    insignias: [
+      { tipo: 'broadcaster', version: '1', texto: 'Streamer', url: 'https://static-cdn.jtvnw.net/badges/v1/strm/2' },
+      { tipo: 'moderator', version: '1', texto: 'Mod', url: 'https://static-cdn.jtvnw.net/badges/v1/mod/2' },
+      { tipo: 'subscriber', version: '12', texto: 'Sub (16)', url: 'https://static-cdn.jtvnw.net/badges/v1/sub12/2' },
+    ],
+  }));
+
+  const puestas = insigniasDe(p);
+  assert.deepEqual(puestas.map(i => i.como), ['imagen', 'imagen', 'imagen']);
+  assert.deepEqual(puestas.map(i => i.src), [
+    'https://static-cdn.jtvnw.net/badges/v1/strm/2',
+    'https://static-cdn.jtvnw.net/badges/v1/mod/2',
+    'https://static-cdn.jtvnw.net/badges/v1/sub12/2',
+  ]);
+
+  /* SIEMPRE con texto alternativo. Una insignia dice quien es esa
+     persona en ese chat: un lector de pantalla tiene que poder
+     decirlo, y el que pasa el mouse tiene que poder averiguarlo. */
+  assert.deepEqual(puestas.map(i => i.alt), ['Streamer', 'Mod', 'Sub (16)']);
+  assert.deepEqual(puestas.map(i => i.title), ['Streamer', 'Mod', 'Sub (16)']);
+
+  /* Y siguen siendo la antesala del nombre, no algo que lo empuje
+     abajo ni que se cuele en el medio. */
+  const fila = p.el('lista-mezclada').children[0].children[0];
+  const clases = fila.children.map(c => c.tagName === 'IMG' ? 'img' : c.className.split(' ')[0]);
+  assert.deepEqual(clases, ['chip-red', 'img', 'img', 'img', 'usuario', 'boton-bloquear']);
+
+  p.cerrar();
+});
+
+test('una insignia sin imagen sigue siendo la etiqueta de texto de siempre', async () => {
+  const p = abrir();
+  await asentarse();
+  /* Es el caso de TODAS las de Kick (no hay imagen oficial) y el de
+     cualquier insignia de Twitch que el servidor no pudo resolver. */
+  p.llega(mensaje({
+    id: 'i',
+    insignias: [
+      { tipo: 'broadcaster', version: '', texto: 'Broadcaster', url: '' },
+      { tipo: 'moderator', version: '', texto: 'Moderator', url: '' },
+      { tipo: 'verified', version: '', texto: 'Verified channel', url: '' },
+    ],
+  }));
+
+  const puestas = insigniasDe(p);
+  assert.deepEqual(puestas.map(i => i.como), ['texto', 'texto', 'texto']);
+  assert.deepEqual(puestas.map(i => i.texto), ['Broadcaster', 'Moderator', 'Verified channel']);
+
+  p.cerrar();
+});
+
+test('imagen y texto conviven en la misma fila, cada una en su lugar', async () => {
+  const p = abrir();
+  await asentarse();
+  p.llega(mensaje({
+    id: 'i', red: 'twitch',
+    insignias: [
+      { tipo: 'moderator', version: '1', texto: 'Mod', url: 'https://static-cdn.jtvnw.net/badges/v1/mod/2' },
+      { tipo: 'insignia-nueva', version: '1', texto: 'insignia-nueva', url: '' },
+      { tipo: 'vip', version: '1', texto: 'VIP', url: 'https://static-cdn.jtvnw.net/badges/v1/vip/2' },
+    ],
+  }));
+
+  const puestas = insigniasDe(p);
+  /* La del medio no se resolvio y NO puede correr de lugar a las
+     otras dos: la pagina las recorre en orden. */
+  assert.deepEqual(puestas.map(i => i.como), ['imagen', 'texto', 'imagen']);
+  assert.equal(puestas[1].texto, 'insignia-nueva');
+
+  p.cerrar();
+});
+
+/** Las insignias de la COLUMNA de una red, que es un clon del <li>. */
+function insigniasDeColumna(pagina, lista) {
+  const fila = pagina.el(lista).children[0].children[0];
+  return fila.children
+    .filter(c => c.tagName === 'IMG' || c.classList.contains('chip-insignia'))
+    .map(c => (c.tagName === 'IMG'
+      ? { como: 'imagen', src: c.src, alt: c.alt, el: c }
+      : { como: 'texto', texto: c.textContent, el: c }));
+}
+
+const CON_DOS = {
+  id: 'i', red: 'twitch',
+  insignias: [
+    { tipo: 'moderator', version: '1', texto: 'Mod', url: 'https://static-cdn.jtvnw.net/badges/v1/mod/2' },
+    { tipo: 'vip', version: '1', texto: 'VIP', url: 'https://static-cdn.jtvnw.net/badges/v1/vip/2' },
+  ],
+};
+
+test('si la imagen no carga aparece la etiqueta EN SU LUGAR, no un hueco', async () => {
+  const p = abrir();
+  await asentarse();
+  p.llega(mensaje(CON_DOS));
+
+  /* Un 404 del CDN, un bloqueador, el CDN caido: el navegador dispara
+     `error` sobre esa imagen. NO burbujea, asi que el escucha de la
+     lista tiene que ser de captura o no se entera. */
+  insigniasDe(p)[0].el.disparar('error');
+
+  const despues = insigniasDe(p);
+  assert.deepEqual(despues.map(i => i.como), ['texto', 'imagen'],
+    'la que fallo tiene que volver a ser texto y la otra quedarse como estaba');
+  assert.equal(despues[0].texto, 'Mod');
+  /* En SU lugar: si se hiciera con remove + append, la etiqueta
+     terminaria despues del nombre de usuario. */
+  const fila = p.el('lista-mezclada').children[0].children[0];
+  const clases = fila.children.map(c => c.tagName === 'IMG' ? 'img' : c.className.split(' ')[0]);
+  assert.deepEqual(clases, ['chip-red', 'chip-insignia', 'img', 'usuario', 'boton-bloquear']);
+
+  p.cerrar();
+});
+
+test('el respaldo a texto tambien anda en la COLUMNA, que es un clon', async () => {
+  /* EL BUG QUE ESTO ATAJA: /chat clona el <li> para la columna de su
+     red, y `img.onerror = fn` es una propiedad, no un atributo, asi
+     que el clon NO se la lleva. Con un handler por imagen, la vista
+     mezclada mostraba el texto y la de columnas el icono de imagen
+     rota. Por eso el escucha va en la lista y en fase de captura. */
+  const p = abrir();
+  await asentarse();
+  p.llega(mensaje(CON_DOS));
+
+  const enColumna = insigniasDeColumna(p, 'lista-twitch');
+  assert.deepEqual(enColumna.map(i => i.como), ['imagen', 'imagen'],
+    'el clon tiene que salir con las dos imagenes puestas');
+
+  enColumna[0].el.disparar('error');
+
+  const despues = insigniasDeColumna(p, 'lista-twitch');
+  assert.deepEqual(despues.map(i => i.como), ['texto', 'imagen']);
+  assert.equal(despues[0].texto, 'Mod');
+
+  /* Y la mezclada no se tiene que haber tocado: son dos nodos
+     distintos y falló uno solo. */
+  assert.deepEqual(insigniasDe(p).map(i => i.como), ['imagen', 'imagen']);
+
+  p.cerrar();
+});
+
+test('un emote que no carga no se lleva puesta ninguna insignia', async () => {
+  /* El escucha esta en la LISTA y atrapa el `error` de cualquier
+     imagen: tiene que mirar que sea una insignia antes de tocar nada.
+     Sin ese filtro, un emote caido se convertiria en un chip con el
+     texto de la insignia de al lado. */
+  const p = abrir();
+  await asentarse();
+  p.llega(mensaje({
+    ...CON_DOS,
+    texto: 'hola CHAD',
+    emotes: [{ id: '1', inicio: 5, fin: 9, url: 'https://cdn.7tv.app/emote/1/2x.webp', fuente: '7tv' }],
+  }));
+
+  const li = p.el('lista-mezclada').children[0];
+  const emote = buscarPorClase(li, 'emote');
+  assert.ok(emote, 'el mensaje tenia que traer un emote');
+  emote.disparar('error');
+
+  assert.deepEqual(insigniasDe(p).map(i => i.como), ['imagen', 'imagen'],
+    'el emote caido no puede convertir las insignias en texto');
+  assert.equal(emote.padre?.tagName, 'SPAN', 'y el emote tiene que seguir donde estaba');
+
+  p.cerrar();
+});
+
+/** El primer descendiente con esa clase. */
+function buscarPorClase(nodo, clase) {
+  for (const h of nodo.children ?? []) {
+    if (h.classList.contains(clase)) return h;
+    const dentro = buscarPorClase(h, clase);
+    if (dentro) return dentro;
+  }
+  return null;
+}
+
 /* ---------------------------------------------------------- la salud */
 
 test('la salud pintada en pantalla sale de /api/chat/salud', async () => {

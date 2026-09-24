@@ -280,6 +280,25 @@ html, body{
   color: var(--texto-tenue);
 }
 
+/* La insignia con imagen. Hoy solo las de Twitch, que salen de su CDN;
+   las de Kick no tienen imagen oficial y siguen siendo `.chip-insignia`
+   de arriba.
+
+   1,1em y no mas: la fila del nombre ya mide 1em, asi que a este alto
+   la insignia NO cambia el alto de linea del chat aunque haya tres
+   seguidas. Twitch las sirve en 18, 36 y 72 px y se pide la de 36,
+   que a este tamaño cubre pantallas de doble densidad.
+
+   `align-self: center` porque la fila alinea por baseline, y el
+   baseline de una imagen es su borde de abajo: sin esto la insignia
+   queda colgada sobre el texto en vez de centrada con el. */
+.insignia{
+  flex: none;
+  align-self: center;
+  height: 1.1em;
+  width: auto;
+}
+
 .texto-mensaje{
   display: block;
   white-space: pre-wrap;

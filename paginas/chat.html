@@ -112,8 +112,9 @@
        cuando la persona conectó alguna red que el creador abrió -->
   <footer class="caja-escritura" id="caja-escritura">
 
-    <!-- Sólo en /chat/<slug>: el selector de emotes. Se abre con el
-         botón "Emotes" y se llena con /api/chat/<slug>/emotes la
+    <!-- El selector de emotes, en las dos cajas: en /chat/<slug> se
+         llena con /api/chat/<slug>/emotes y en /chat con
+         /api/chat/emotes. Se abre con el botón "Emotes" y se llena la
          primera vez que alguien lo abre: quien no lo use no gasta un
          pedido. Lo que inserta en la caja es la `marca` que dice el
          servidor; la página nunca arma markup de ninguna plataforma. -->
@@ -137,6 +138,9 @@
     <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
       placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
     <div class="fila-controles-envio">
+      <!-- `hidden` de entrada y lo prende el JS: en /chat con la página
+           y en /chat/<slug> cuando el servidor dice que esa persona
+           puede escribir. Sin JS no hay panel que abrir. -->
       <button type="button" id="boton-emotes" class="boton-chip boton-emotes"
         aria-expanded="false" aria-controls="panel-emotes" hidden>Emotes</button>
       <select id="select-destino" class="select-destino" aria-label="Enviar a">

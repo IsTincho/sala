@@ -985,6 +985,35 @@ async function apiChatEnviar(url, req, res) {
   });
 }
 
+/**
+ * Los emotes que el selector de la VENTANA DEL CREADOR puede ofrecer:
+ * `{ redes, emotes: [{ nombre, url, fuente, marca, redes }] }`.
+ *
+ * Es la hermana de `/api/chat/:slug/emotes` y no la misma ruta, por
+ * dos motivos que no son de estilo:
+ *
+ *   1. EL SLUG SALE DE LA SESION, como en todas las de `/api/chat/` sin
+ *      slug en el camino. La ventana del creador es la suya.
+ *   2. NO MIRA EL CHAT ABIERTO. Ese interruptor es "mi comunidad puede
+ *      escribir desde mi pagina", y no tiene nada que ver con que el
+ *      creador escriba en su propio chat desde su propia ventana: eso
+ *      anda con el chat cerrado y tiene que seguir andando. La hermana
+ *      publica devuelve `emotes: []` con el chat cerrado justamente
+ *      porque de un chat cerrado no se cuenta nada; aca no hay a quien
+ *      no contarle.
+ *
+ * Las DOS redes siempre, sin `?red=`: el creador manda a la que quiera
+ * en cualquier momento y la pagina ya filtra por el destino elegido.
+ * Un parametro aca no protegeria nada (son sus propios emotes) y
+ * costaria un pedido mas cada vez que mueve el selector.
+ */
+async function apiChatEmotesDelCreador(url, req, res) {
+  return conCreador(req, res, (slug) => {
+    const redes = [...envio.REDES];
+    return json(res, 200, { redes, emotes: emotes.catalogo(slug, redes) });
+  });
+}
+
 /** Vuelve a crear las suscripciones de Kick de esta sala, a mano. */
 async function apiChatResuscribir(url, req, res) {
   return conCreador(req, res, async (slug) => {
@@ -2841,6 +2870,7 @@ const RUTAS = [
   ['GET',    '/api/estado',            apiEstado],
   ['GET',    '/api/hora',              apiHora],
   ['GET',    '/api/chat/salud',        apiChatSalud],
+  ['GET',    '/api/chat/emotes',       apiChatEmotesDelCreador],
   ['POST',   '/api/chat/enviar',       apiChatEnviar],
   ['POST',   '/api/chat/resuscribir',  apiChatResuscribir],
   ['GET',    '/api/panel',             apiPanel],

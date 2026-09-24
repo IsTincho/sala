@@ -92,8 +92,9 @@
    ============================================================ */
 
 import * as canales from './canales.js';
-import { numeroDeEntorno } from './entorno.js';
 import * as emotes from './emotes.js';
+import { numeroDeEntorno } from './entorno.js';
+import * as envio from './envio.js';
 import * as insignias from './insignias.js';
 import * as kick from './kick.js';
 import * as mensajes from './mensajes.js';
@@ -610,6 +611,18 @@ function apagarPlanB(c) {
 
 /* --------------------------------------------------------- enviar */
 
+/* `destino` (el vocabulario de la ventana del creador: elige entre SUS
+   canales) a las redes de verdad. El de la otra puerta dice "ambas" y
+   habla de las cuentas de quien mira; son dos cosas distintas y por eso
+   son dos palabras distintas.
+
+   Objeto no, `if` si: con un objeto, `destino = "constructor"` devuelve
+   un miembro del prototipo y eso no es una red. */
+function redesDelDestino(destino) {
+  if (destino === 'ambos') return ['kick', 'twitch'];
+  return destino === 'kick' || destino === 'twitch' ? [destino] : null;
+}
+
 /**
  * Manda un mensaje a una red o a las dos, con la cuenta del creador de
  * esta sala.
@@ -618,43 +631,49 @@ function apagarPlanB(c) {
  * rechace no tiene por que borrar el hecho de que en Kick salio, y
  * la pagina tiene que poder decir exactamente eso.
  *
+ * ---------------------------------------------------------------
+ * EL TEXTO SE TRADUCE POR RED, Y LA TRADUCCION ES LA DE `envio.js`
+ *
+ * Esta puerta mandaba el MISMO string a las dos redes, y eso estaba
+ * mal desde que existen los emotes: un `[emote:5747892:MEGALUL]` es un
+ * dibujo en Kick y son esos corchetes literales en Twitch, delante de
+ * toda la comunidad del otro lado. Con destino "ambos" no hay un texto
+ * que sirva para las dos.
+ *
+ * No se escribe una traduccion nueva aca: se usa la MISMA
+ * (`envio.comoViajaA`) que ya usa `/api/chat/:slug/enviar`. Es una
+ * funcion pura, y es lo que sostiene la invariante que ya habia costado
+ * un bug: LO QUE SE MIDE ES LO QUE SE MANDA. `porQueNoSePuedeMandar`
+ * mide el texto de cada red y abajo se manda exactamente ese.
+ *
+ * (Si, este modulo importa uno de mas arriba. La alternativa era
+ * copiar la traduccion, que es justo lo que este arreglo vino a
+ * borrar: el formato de Kick tiene que vivir en un solo lado.)
+ *
  * @param {string} slug
  * @param {{texto:string, destino:'kick'|'twitch'|'ambos', respondeA?:string}} pedido
  */
 export async function enviar(slug, { texto, destino = 'kick', respondeA } = {}) {
   const s = exigirSlug(slug);
-  const cuerpo = String(texto ?? '').trim();
-  if (!cuerpo) return { error: 'el mensaje esta vacio' };
+  const redes = redesDelDestino(destino);
+  if (!redes) return { error: `destino desconocido: ${destino}` };
 
-  /* Se valida el tope de CADA red a la que va el mensaje, antes de
-     mandarle nada a ninguna.
-
-     Los dos topes dicen "500" y no son el mismo numero: Kick cuenta
-     grapheme clusters (una familia de emojis es un caracter) y Twitch
-     cuenta puntos de codigo (esa misma familia son cinco). O sea que
-     hay mensajes que Kick acepta y Twitch rechaza.
-
-     Antes el tope de Twitch se miraba solo con destino "twitch", asi
-     que con "ambos" el mensaje salia en Kick y Twitch lo rechazaba
-     con un 400: el error llegaba tarde y ya no se podia deshacer. */
-  if (destino === 'kick' || destino === 'ambos') {
-    const problema = kick.porQueNoSePuedeMandar(cuerpo);
-    if (problema) return { error: problema };
-  }
-  if (destino === 'twitch' || destino === 'ambos') {
-    const puntos = [...cuerpo].length;
-    if (puntos > 500) {
-      return { error: `el mensaje tiene ${puntos} caracteres y el tope de Twitch es 500` };
-    }
-  }
+  /* El tope de CADA red, medido contra SU texto y antes de mandarle
+     nada a ninguna: los dos dicen "500" y no son el mismo numero (Kick
+     cuenta grapheme clusters, Twitch cuenta puntos de codigo), asi que
+     hay mensajes que Kick acepta y Twitch rechaza. Si esto se mirara
+     despues, con "ambos" el mensaje ya estaria en kick.com cuando
+     Twitch lo rechaza y no habria forma de deshacerlo. */
+  const problema = envio.porQueNoSePuedeMandar(texto, redes);
+  if (problema) return { error: problema };
 
   const salida = {};
-  const tareas = [];
-  if (destino === 'kick' || destino === 'ambos') tareas.push(enviarAKick(s, cuerpo, respondeA, salida));
-  if (destino === 'twitch' || destino === 'ambos') tareas.push(enviarATwitch(s, cuerpo, respondeA, salida));
-  if (!tareas.length) return { error: `destino desconocido: ${destino}` };
-
-  await Promise.all(tareas);
+  await Promise.all(redes.map((red) => {
+    const cuerpo = envio.comoViajaA(texto, red);
+    return red === 'kick'
+      ? enviarAKick(s, cuerpo, respondeA, salida)
+      : enviarATwitch(s, cuerpo, respondeA, salida);
+  }));
   return salida;
 }
 

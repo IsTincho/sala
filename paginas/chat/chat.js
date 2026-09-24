@@ -693,9 +693,17 @@
     cerrarPanelEmotes({ devolverFoco: false });
   }
 
-  /* ---------- selector de emotes (solo /chat/<slug>) ----------
+  /* ---------- selector de emotes ----------
 
      PARA QUE: mandar un emote sin acordarse del nombre exacto.
+
+     ESTA EN LAS DOS CAJAS: en /chat/<slug> (el espectador, con su
+     cuenta) y en /chat (el creador, con la suya). Estuvo solo en la
+     primera mientras `/api/chat/enviar` mandaba el mismo string a las
+     dos redes; desde que esa puerta tambien traduce con
+     `envio.comoViajaA`, ofrecerlo aca ya no puede mandar markup de
+     Kick a Twitch. Lo unico distinto entre las dos es DE DONDE sale la
+     lista (la ruta de abajo).
 
      LO QUE ESTA PAGINA **NO** HACE: armar el markup de ninguna
      plataforma. El mismo emote se escribe distinto segun la red
@@ -756,12 +764,19 @@
     && typeof e.url === 'string' && e.url.startsWith('https://')
     && Array.isArray(e.redes) && e.redes.length > 0;
 
+  /* De donde sale la lista. En /chat/<slug> es la de esa sala y es
+     publica (leer el chat nunca pidio login); en /chat sale de la
+     sesion del creador y no mira el interruptor del chat abierto,
+     porque el creador escribe en su propio chat igual. */
+  const rutaDeEmotes = () => (modoPublico
+    ? `/api/chat/${encodeURIComponent(slugPublico)}/emotes`
+    : '/api/chat/emotes');
+
   function consultarEmotes({ forzar = false } = {}) {
-    if (!modoPublico) return Promise.resolve();
     if (!forzar && cuandoSeCargaronEmotes && Date.now() - cuandoSeCargaronEmotes < CADA_RECARGA_EMOTES) {
       return Promise.resolve();
     }
-    return fetch(`/api/chat/${encodeURIComponent(slugPublico)}/emotes`, { credentials: 'same-origin' })
+    return fetch(rutaDeEmotes(), { credentials: 'same-origin' })
       .then(r => (r.ok ? r.json() : null))
       .then(datos => {
         if (!datos) return;
@@ -863,7 +878,6 @@
   const MARCA_KICK_EN_CAJA = /\[emote:\d+:([^\]]*)\]/g;
 
   function revisarAvisoEmotes() {
-    if (!modoPublico) return;
     const nombres = [];
     if (redesDelEnvio().includes('twitch')) {
       MARCA_KICK_EN_CAJA.lastIndex = 0;
@@ -1298,6 +1312,11 @@
     // /chat y el chat de una sala, en /chat/<slug>. Quien instale el
     // chat de su streamer tiene que abrir ahí y no en el de otro.
     if (modoPublico) prepararModoPublico();
+    /* En /chat la caja de escribir esta siempre (es la ventana del
+       creador, y su sesion la comprueba el servidor), asi que el boton
+       de emotes aparece con la pagina. En /chat/<slug> lo prende
+       `aplicarYo` cuando se sabe que la persona puede escribir. */
+    if (!modoPublico) botonEmotes.hidden = false;
     registrarServiceWorker(modoPublico ? '/chat/' + slugPublico : '/chat');
 
     if (modoDemo) {

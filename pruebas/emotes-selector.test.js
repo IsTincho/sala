@@ -55,6 +55,7 @@ process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 const { crearServidor } = await import('../servidor/index.js');
 const almacen = await import('../servidor/almacen.js');
 const canales = await import('../servidor/canales.js');
+const chat = await import('../servidor/chat.js');
 const creadores = await import('../servidor/creadores.js');
 const emotes = await import('../servidor/emotes.js');
 const envio = await import('../servidor/envio.js');
@@ -145,6 +146,7 @@ function darle7TV(slug, red, id, lista) {
 let servidor;
 let raiz;
 let conLasDos = '';
+let comoAna = '';
 const ID_LAS_DOS = 'esp_lasdos';
 
 async function pedir(ruta, { metodo = 'GET', cookie = '', cuerpo, origen = NUESTRO } = {}) {
@@ -165,6 +167,12 @@ async function pedir(ruta, { metodo = 'GET', cookie = '', cuerpo, origen = NUEST
 
 const enviar = (cuerpo) =>
   pedir(`/api/chat/${ANA}/enviar`, { metodo: 'POST', cookie: conLasDos, cuerpo });
+
+/* La OTRA puerta: la ventana del creador. Mismo servidor, misma
+   traduccion, y la cuenta con la que sale el mensaje es la de ANA y no
+   la de quien mira. */
+const enviarComoCreador = (cuerpo) =>
+  pedir('/api/chat/enviar', { metodo: 'POST', cookie: comoAna, cuerpo });
 
 /** Lo que le llego al chat de Kick en el ultimo envio. */
 const textoQueRecibioKick = () => JSON.parse(pedidosKick.at(-1).cuerpo).content;
@@ -222,6 +230,9 @@ test.before(async () => {
   });
   conLasDos = `${sesion.COOKIES.espectador}=` +
     await sesion.crear({ tipo: 'espectador', usuario: ID_LAS_DOS, nombre: 'esp' });
+
+  comoAna = `${sesion.COOKIES.dueno}=` +
+    await sesion.crear({ tipo: 'dueno', usuario: '4242', nombre: 'Ana', slug: ANA });
 
   servidor = crearServidor();
   await new Promise(ok => servidor.listen(0, '127.0.0.1', ok));
@@ -610,4 +621,123 @@ test('con el chat cerrado no se cuenta ni un emote', async () => {
 test('una sala que no existe da 404, igual que sus hermanas', async () => {
   const r = await pedir('/api/chat/no-existe-esta-sala/emotes');
   assert.equal(r.estado, 404);
+});
+
+/* ============== la otra puerta: la ventana del creador
+
+   `POST /api/chat/enviar` mandaba el MISMO string a las dos redes, asi
+   que el selector estaba escondido en `/chat`: ofrecerlo ahi habria
+   mandado markup de Kick a Twitch, que es justo lo que este trabajo
+   vino a evitar. Ahora esa puerta traduce con la MISMA
+   `envio.comoViajaA` que la del espectador, y lo que se prueba aca es
+   eso: que sea la misma y no una copia parecida. */
+
+test('el creador con destino "ambos": cada red recibe lo suyo', async () => {
+  const r = await enviarComoCreador({ destino: 'ambos', texto: `mira ${MARCA}` });
+
+  assert.equal(r.estado, 200);
+  assert.equal(r.datos.kick.ok, true);
+  assert.equal(r.datos.twitch.ok, true);
+
+  assert.equal(textoQueRecibioKick(), `mira ${MARCA}`);
+  assert.equal(textoQueRecibioTwitch(), 'mira collectiblesMEGALUL');
+  assert.doesNotMatch(textoQueRecibioTwitch(), /\[emote:/);
+});
+
+test('y el mensaje sale con la cuenta del CREADOR, no con la de quien mira', async () => {
+  await enviarComoCreador({ destino: 'kick', texto: 'hola' });
+  /* El token del vinculo de ANA, no el del espectador. Si esto se
+     mezclara, el creador escribiria con el nombre de otro. */
+  assert.match(pedidosKick.at(-1).url, /api\.kick\.com/);
+  assert.equal(JSON.parse(pedidosKick.at(-1).cuerpo).broadcaster_user_id, 4242);
+});
+
+test('una marca adentro de otra tampoco sale viva por esta puerta', async () => {
+  await enviarComoCreador({ destino: 'twitch', texto: '[emote:1:[emote:2:AB]]' });
+  assert.equal(textoQueRecibioTwitch(), 'AB');
+});
+
+test('el tope de cada red se mide traducido, tambien en la puerta del creador', async () => {
+  const aTwitch = await enviarComoCreador({ destino: 'twitch', texto: CASI_LARGO });
+  assert.equal(aTwitch.estado, 200, 'para Twitch el texto traducido entra');
+
+  pedidosKick = [];
+  pedidosTwitch = [];
+  const aLasDos = await enviarComoCreador({ destino: 'ambos', texto: CASI_LARGO });
+  assert.equal(aLasDos.estado, 400);
+  assert.match(aLasDos.datos.error, /tope es 500/);
+  assert.equal(pedidosKick.length, 0);
+  assert.equal(pedidosTwitch.length, 0, 'ni siquiera a la red donde entraba');
+});
+
+test('un mensaje que en Twitch queda vacio rebota antes de tocar Kick', async () => {
+  const r = await enviarComoCreador({ destino: 'ambos', texto: '[emote:123:]' });
+  assert.equal(r.estado, 400);
+  assert.match(r.datos.error, /solo un emote de Kick/);
+  assert.equal(pedidosKick.length, 0);
+});
+
+test('un destino desconocido no manda nada a ningun lado', async () => {
+  /* La ruta ya lo normaliza a "kick", asi que se mira el modulo, que es
+     donde vive la regla. */
+  const r = await chat.enviar(ANA, { texto: 'hola', destino: 'discord' });
+  assert.match(r.error, /destino desconocido/);
+  assert.equal(pedidosKick.length, 0);
+  assert.equal(pedidosTwitch.length, 0);
+});
+
+/* ------------------------------- su lista de emotes (sin slug) */
+
+test('la lista del creador sale de su sesion y sin slug en el camino', async () => {
+  darle7TV(ANA, 'kick', '4242', ['CHAD']);
+  emotes.resolver(deKick(MARCA), ANA);
+  await emotes.reposo();
+
+  const r = await pedir('/api/chat/emotes', { cookie: comoAna });
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.datos.redes, ['kick', 'twitch'], 'el creador manda a la que quiera');
+
+  const nombres = r.datos.emotes.map(e => e.nombre);
+  assert.ok(nombres.includes('CHAD'));
+  assert.ok(nombres.includes('collectiblesMEGALUL'));
+  assert.equal(r.datos.emotes.find(e => e.nombre === 'collectiblesMEGALUL').marca, MARCA);
+});
+
+test('la lista del creador NO mira el interruptor del chat abierto', async () => {
+  /* ES EL MOTIVO POR EL QUE ES UNA RUTA APARTE. "Chat abierto" es "mi
+     comunidad puede escribir desde mi pagina"; el creador escribe en su
+     propio chat desde su propia ventana con el chat cerrado, y el
+     selector tiene que seguir andando ahi. */
+  darle7TV(ANA, 'kick', '4242', ['CHAD']);
+  await creadores.ponerChatAbierto(ANA, { activo: false });
+
+  const r = await pedir('/api/chat/emotes', { cookie: comoAna });
+  await emotes.reposo();
+  const otra = await pedir('/api/chat/emotes', { cookie: comoAna });
+
+  assert.equal(r.estado, 200);
+  assert.ok(otra.datos.emotes.some(e => e.nombre === 'CHAD'),
+    'con el chat cerrado la hermana publica no dice nada; esta si');
+});
+
+test('sin sesion de creador, la lista no se da', async () => {
+  const sinNada = await pedir('/api/chat/emotes');
+  assert.equal(sinNada.estado, 401);
+
+  /* Y con la cookie de un espectador tampoco: es otra sesion. */
+  const comoEspectador = await pedir('/api/chat/emotes', { cookie: conLasDos });
+  assert.equal(comoEspectador.estado, 401);
+});
+
+test('la lista de un creador no es la de otro', async () => {
+  /* La misma garantia que la ruta publica, ahora con el slug saliendo
+     de la cookie: con el slug mal resuelto, BETO veria los emotes de
+     ANA. */
+  emotes.resolver(deKick(MARCA), ANA);
+  const comoBeto = `${sesion.COOKIES.dueno}=` +
+    await sesion.crear({ tipo: 'dueno', usuario: '4343', nombre: 'Beto', slug: BETO });
+
+  const r = await pedir('/api/chat/emotes', { cookie: comoBeto });
+  assert.equal(r.estado, 200);
+  assert.equal(r.datos.emotes.some(e => e.fuente === 'kick'), false);
 });

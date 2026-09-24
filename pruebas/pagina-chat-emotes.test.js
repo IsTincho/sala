@@ -596,21 +596,140 @@ test('un emote con una url que no es https no se pinta', async () => {
   p.cerrar();
 });
 
-test('en /chat (la ventana del creador) el selector no aparece', async () => {
-  /* Esta fase es la de `/chat/<slug>`. La ventana del creador manda
-     por otra puerta (`/api/chat/enviar`), que todavía no traduce por
-     red: ofrecerle el selector ahí sería mandar markup de Kick a
-     Twitch, justo lo que esto vino a evitar. */
+/* ===================== /chat: la ventana del creador
+
+   La misma caja y el mismo panel, con dos diferencias que son las
+   unicas que el codigo distingue: la lista sale de `/api/chat/emotes`
+   (sin slug: el creador es el de la sesion) y el selector de destino
+   dice "ambos" en vez de "ambas".
+
+   Estuvo escondido mientras `/api/chat/enviar` mandaba el mismo string
+   a las dos redes. Ahora esa puerta traduce con la MISMA
+   `envio.comoViajaA`, asi que la pagina puede guardar la marca de Kick
+   sin que Twitch vea corchetes. */
+
+/** `/chat`, la ventana del creador, con su `/emotes` de mentira. */
+function abrirCreador({ emotes = EMOTES } = {}) {
+  const pedidos = [];
+  let listaEmotes = emotes;
+
+  const responder = async (url, opciones = {}) => {
+    const r = String(url);
+    pedidos.push({ url: r, opciones });
+    if (r === '/api/estado') return { ok: true, status: 200, json: async () => ({ slug: 'istincho' }) };
+    if (r === '/api/chat/emotes') {
+      return { ok: true, status: 200, json: async () => ({ redes: ['kick', 'twitch'], emotes: listaEmotes }) };
+    }
+    if (r === '/api/chat/enviar') {
+      return { ok: true, status: 200, json: async () => ({ kick: { ok: true }, twitch: { ok: true } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
   const pagina = abrirPagina({
     ruta: '/chat',
     antes: ['comun/mensajes.js'],
-    fetch: async url => (String(url) === '/api/estado'
-      ? { ok: true, status: 200, json: async () => ({ slug: 'istincho' }) }
-      : { ok: true, status: 200, json: async () => ({}) }),
+    fetch: responder,
     Sala: { conectar: () => ({ cerrar() {} }) },
   });
+
+  return {
+    ...pagina,
+    pedidos,
+    consultasEmotes: () => pedidos.filter(x => /\/emotes$/.test(x.url)).length,
+    ultimoEnvio() {
+      const p = pedidos.filter(x => x.url === '/api/chat/enviar').at(-1);
+      return p ? JSON.parse(p.opciones.body) : null;
+    },
+    async abrirEmotes() {
+      this.el('boton-emotes').disparar('click');
+      await asentarse();
+    },
+    elegir(nombre) {
+      const boton = opciones(this).find(b => b.dataset.nombre === nombre);
+      if (!boton) throw new Error(`no hay ningún emote "${nombre}" en el panel`);
+      this.el('rejilla-emotes').disparar('click', { target: boton });
+    },
+  };
+}
+
+test('en /chat el botón está con la página: esa caja siempre puede escribir', async () => {
+  const p = abrirCreador();
   await asentarse();
 
-  assert.equal(pagina.porId.get('boton-emotes').hidden, true);
-  pagina.cerrar();
+  assert.equal(p.el('boton-emotes').hidden, false);
+  assert.equal(p.el('panel-emotes').hidden, true);
+  assert.equal(p.consultasEmotes(), 0, 'y la lista sigue costando cero hasta que alguien abra');
+
+  p.cerrar();
+});
+
+test('en /chat la lista sale de /api/chat/emotes, sin slug en el camino', async () => {
+  /* El slug de la ventana del creador sale de su sesión, no de la URL.
+     Pedirla por `/api/chat/<slug>/emotes` sería además pasar por el
+     interruptor del chat abierto, y el creador escribe en su propio
+     chat con el chat cerrado. */
+  const p = abrirCreador();
+  await asentarse();
+  await p.abrirEmotes();
+
+  assert.deepEqual(p.pedidos.filter(x => /emotes/.test(x.url)).map(x => x.url), ['/api/chat/emotes']);
+  assert.deepEqual(nombres(p), ['collectiblesMEGALUL', 'CHAD', 'KEKW']);
+
+  p.cerrar();
+});
+
+test('en /chat la marca viaja tal cual y el servidor la traduce', async () => {
+  const p = abrirCreador();
+  await asentarse();
+  await p.abrirEmotes();
+  p.elegir('collectiblesMEGALUL');
+
+  p.el('boton-enviar').disparar('click');
+  await asentarse();
+
+  const enviado = p.ultimoEnvio();
+  assert.equal(enviado.texto, MARCA_KICK,
+    'la página no arma ni traduce markup: manda la marca que le dio el servidor');
+  /* El vocabulario de esta caja es `destino` y el de la otra es `red`:
+     una habla de los canales del creador y la otra de las cuentas de
+     quien mira. (El VALOR lo pone el navegador a partir del primer
+     <option>, que el DOM de mentira no imita.) */
+  assert.equal('destino' in enviado, true);
+  assert.equal('red' in enviado, false);
+
+  p.cerrar();
+});
+
+test('en /chat el aviso de "en Twitch sale como texto" también aparece', async () => {
+  /* Con "ambos" —la palabra de esta caja— el mensaje sale a las dos
+     redes, así que el aviso vale igual que en la otra. */
+  const p = abrirCreador();
+  await asentarse();
+  p.el('select-destino').value = 'ambos';
+  p.el('select-destino').disparar('change');
+  await p.abrirEmotes();
+
+  p.elegir('collectiblesMEGALUL');
+  assert.equal(p.el('aviso-emotes').hidden, false);
+  assert.match(p.el('aviso-emotes').textContent, /en Twitch va a salir como texto/);
+
+  p.el('select-destino').value = 'kick';
+  p.el('select-destino').disparar('change');
+  assert.equal(p.el('aviso-emotes').hidden, true);
+
+  p.cerrar();
+});
+
+test('en /chat con Twitch sola, los emotes de Kick no se ofrecen', async () => {
+  /* Mismo criterio que en la otra caja: ahí no sirven para nada. */
+  const p = abrirCreador();
+  await asentarse();
+  p.el('select-destino').value = 'twitch';
+  p.el('select-destino').disparar('change');
+  await p.abrirEmotes();
+
+  assert.deepEqual(nombres(p), ['CHAD', 'KEKW']);
+
+  p.cerrar();
 });

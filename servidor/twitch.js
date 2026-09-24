@@ -64,6 +64,8 @@
    mensaje de error, ese mensaje no se loguea entero.
    ============================================================ */
 
+import { numeroDeEntorno } from './entorno.js';
+
 const CLIENT_ID     = process.env.TWITCH_CLIENT_ID ?? '';
 const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET ?? '';
 
@@ -120,7 +122,7 @@ export function urlLogin({ redirect, estado, scopes = SCOPES_DEFECTO }) {
    Sale por variable porque este es el peor modo de falla del modulo y
    una prueba tiene que poder ejercitarlo sin esperar diez segundos.
    Nadie deberia tocarlo en produccion. */
-const ESPERA_TOKEN = Math.max(1000, Number(process.env.TWITCH_ESPERA_TOKEN_MS) || 10_000);
+const ESPERA_TOKEN = numeroDeEntorno('TWITCH_ESPERA_TOKEN_MS', 10_000, { minimo: 1000 });
 
 /* Un pedido de token nunca debe filtrar el body (lleva el secret) ni
    la respuesta cruda (lleva el access/refresh token) en un error. Se

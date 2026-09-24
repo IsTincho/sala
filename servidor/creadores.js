@@ -48,6 +48,7 @@
    ============================================================ */
 
 import * as almacen from './almacen.js';
+import { numeroDeEntorno } from './entorno.js';
 
 /* Los cuatro planes de un creador. El del dueño no esta en la lista a
    proposito: no es un plan que se pueda poner, es una consecuencia de
@@ -83,7 +84,7 @@ export const TERMINOS_VERSION = '1';
 
    Es una variable para que las pruebas puedan bajarlo: no es un
    secreto y no cambia nada si alguien lo mira. */
-export const TOPE_CANALES = Number(process.env.TOPE_CANALES ?? 900);
+export const TOPE_CANALES = numeroDeEntorno('TOPE_CANALES', 900, { minimo: 0 });
 
 /* Cuantos GB puede tener cada plan en R2. El bucket gratis son 10 GB
    EN TOTAL, asi que la suma de lo que se reparte aca es lo que de
@@ -95,8 +96,12 @@ export const TOPE_CANALES = Number(process.env.TOPE_CANALES ?? 900);
    El dueño no tiene tope: su bucket es. */
 export const GB_POR_PLAN = {
   dueno: Infinity,
-  amigo: Number(process.env.GB_AMIGO ?? 2),
-  pago: Number(process.env.GB_PAGO ?? 5),
+  /* El piso es cero y no uno: `GB_AMIGO=0` es "este plan no sube
+     videos", que es algo que alguien puede querer decir de verdad. Lo
+     que no puede pasar es que un typo lo deje en NaN, porque
+     `usado > NaN` es false y ahi el tope no existe. */
+  amigo: numeroDeEntorno('GB_AMIGO', 2, { minimo: 0 }),
+  pago: numeroDeEntorno('GB_PAGO', 5, { minimo: 0 }),
   pendiente: 0,
   vencido: 0,
 };

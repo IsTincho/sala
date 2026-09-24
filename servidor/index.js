@@ -73,6 +73,7 @@ import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
 import * as cobro from './cobro.js';
 import * as creadores from './creadores.js';
+import { numeroDeEntorno } from './entorno.js';
 import * as emotes from './emotes.js';
 import * as envio from './envio.js';
 import * as espectadores from './espectadores.js';
@@ -90,7 +91,10 @@ import * as webhook from './webhook.js';
 const AQUI    = path.dirname(fileURLToPath(import.meta.url));
 const PAGINAS = path.join(AQUI, '..', 'paginas');
 
-const PUERTO = Number(process.env.PORT ?? 8778);
+/* Un PORT con un typo daba NaN, y `listen(NaN)` no falla: escucha en
+   un puerto al azar. El servicio arranca "bien" y no contesta en el
+   puerto que espera el proxy. */
+const PUERTO = numeroDeEntorno('PORT', 8778, { minimo: 0, maximo: 65535 });
 
 /* Por defecto "produccion", no "local", y es a proposito: MODO=local
    habilita un endpoint de prueba que se saltea la verificacion de

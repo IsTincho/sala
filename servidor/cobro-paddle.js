@@ -53,6 +53,8 @@
 
 import crypto from 'node:crypto';
 
+import { numeroDeEntorno } from './entorno.js';
+
 export const nombre = 'paddle';
 
 const leer = n => String(process.env[n] ?? '').trim();
@@ -68,7 +70,12 @@ const API = () =>
 export const entorno = () =>
   (leer('PADDLE_ENTORNO').toLowerCase() === 'produccion' ? 'produccion' : 'sandbox');
 
-export const TOLERANCIA = () => Number(process.env.PADDLE_TOLERANCIA_S ?? 60) * 1000;
+/* El piso es cero: `PADDLE_TOLERANCIA_S=0` es "sin tolerancia de
+   reloj", que es una eleccion y no un error. Lo que NO puede pasar es
+   que un typo lo deje en NaN, porque `Math.abs(dif) > NaN` es false
+   siempre y eso convierte la ventana de tolerancia en INFINITA: un
+   webhook viejo pasaria a valer para siempre. */
+export const TOLERANCIA = () => numeroDeEntorno('PADDLE_TOLERANCIA_S', 60, { minimo: 0 }) * 1000;
 
 export const listo = () => Boolean(leer('PADDLE_API_KEY') && leer('PADDLE_PRECIO_ID'));
 

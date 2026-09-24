@@ -92,6 +92,7 @@
    ============================================================ */
 
 import * as canales from './canales.js';
+import { numeroDeEntorno } from './entorno.js';
 import * as emotes from './emotes.js';
 import * as insignias from './insignias.js';
 import * as kick from './kick.js';
@@ -118,8 +119,14 @@ const TOPE_VISTOS = 500;
 
 /* Cuantas conexiones EventSub sostiene este proceso a la vez. Ver el
    bloque de arriba. Se puede subir por variable cuando se mida cuanto
-   aguanta el contenedor de verdad. */
-export const TOPE_TWITCH = Number(process.env.TOPE_TWITCH ?? 50);
+   aguanta el contenedor de verdad.
+
+   El piso es CERO y no uno: `TOPE_TWITCH=0` es una forma legitima de
+   decir "no abras ninguna conexion a Twitch, dejame el webhook de Kick
+   y nada mas". Con `Number()` pelado, un typo daba NaN y `>= NaN` es
+   false siempre: el tope dejaba de existir justo cuando alguien queria
+   bajarlo. */
+export const TOPE_TWITCH = numeroDeEntorno('TOPE_TWITCH', 50, { minimo: 0 });
 
 /* Mas de tres fallos seguidos de EventSub y se prende el IRC
    anonimo. Tres y no uno: una reconexion suelta es normal (Twitch

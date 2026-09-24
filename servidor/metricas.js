@@ -43,7 +43,9 @@ const CASILLEROS = 24;
    los mas viejos, que es lo correcto para una medida "desde que
    arranco el servidor": el que dejo de hablar hace horas es el que
    menos se va a mirar. */
-const TOPE_CANALES = Number(process.env.TOPE_METRICAS ?? 2000);
+import { numeroDeEntorno } from './entorno.js';
+
+const TOPE_CANALES = numeroDeEntorno('TOPE_METRICAS', 2000, { minimo: 0 });
 
 const porCanal = new Map();   // slug -> medidas
 

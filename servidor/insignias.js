@@ -111,6 +111,7 @@
    densidad. 4x serian 72 px para pintar 18.
    ============================================================ */
 
+import { numeroDeEntorno } from './entorno.js';
 import * as twitch from './twitch.js';
 import * as vinculos from './vinculos.js';
 
@@ -135,13 +136,14 @@ export const EN_VUELO_MAX = 6;
    seis lugares y las insignias quedan apagadas para todos, para
    siempre y sin una linea de log. Es la misma trampa que casi se lleva
    puesto a `emotes.js`; el comentario largo esta alla. */
-/* `|| 20000` y no `?? 20000`: con un valor que no es un numero
-   —`INSIGNIAS_PLAZO_MS=20s`, que es el typo natural— `Number()` da NaN,
-   `Math.max(1000, NaN)` da NaN, y `setTimeout(fn, NaN)` dispara a UN
-   milisegundo. O sea que un typo no deja el plazo largo: apaga las
-   insignias para siempre, y el log dice "tardo mas de NaN ms".
-   `||` manda al defecto cualquier cosa que no sea un numero util. */
-const PLAZO = Math.max(1000, Number(process.env.INSIGNIAS_PLAZO_MS) || 20000);
+/* Se lee con `numeroDeEntorno` y no con `Number()`: con un valor que
+   no es un numero —`INSIGNIAS_PLAZO_MS=20s`, que es el typo natural—
+   `Number()` da NaN, `Math.max(1000, NaN)` da NaN, y
+   `setTimeout(fn, NaN)` dispara a UN milisegundo. O sea que un typo no
+   deja el plazo largo: apaga las insignias para siempre, y el log dice
+   "tardo mas de NaN ms". El razonamiento entero esta en `entorno.js`,
+   que es de donde salen ahora TODOS los numeros del servidor. */
+const PLAZO = numeroDeEntorno('INSIGNIAS_PLAZO_MS', 20000, { minimo: 1000 });
 
 /* Cada cuanto, como mucho, se avisa que el tope esta lleno o que algo
    falla. Sin esto seria una linea por mensaje. */

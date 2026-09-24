@@ -47,6 +47,7 @@
    se cae con un error en vez de regalar el servicio.
    ============================================================ */
 
+import { numeroDeEntorno } from './entorno.js';
 import * as paddle from './cobro-paddle.js';
 
 /* El proveedor "ninguno": lo que corre mientras el dueño no eligio.
@@ -111,7 +112,7 @@ export const porQueNoEstaListo = () => impl().porQueNoEstaListo();
  * escrita aca.
  */
 export const precio = () => ({
-  monto: Number(process.env.PRECIO_MENSUAL ?? 0),
+  monto: numeroDeEntorno('PRECIO_MENSUAL', 0, { minimo: 0 }),
   moneda: String(process.env.MONEDA ?? 'USD').toUpperCase().slice(0, 3),
 });
 

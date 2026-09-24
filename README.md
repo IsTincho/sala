@@ -66,6 +66,8 @@ Y las de la Fase 3, que son las que hacen que un creador que no sea el dueño pu
 | `EMOTES_KB` | Cuánto puede pesar **un** emote de 7TV | 128 KB |
 | `EMOTES_POR_MENSAJE` | Cuántos emotes de 7TV puede meter un solo mensaje | 30 |
 | `EMOTES_PLAZO_MS` | Cuánto puede durar **una bajada entera** de 7TV antes de darla por perdida | 20 s |
+| `INSIGNIAS_TWITCH` | Poner `0` apaga las imágenes de las insignias de Twitch: quedan las etiquetas de texto de siempre | Prendido |
+| `INSIGNIAS_PLAZO_MS` | Lo mismo que `EMOTES_PLAZO_MS`, para las insignias | 20 s |
 
 > **El token de R2 pasó a ser una variable de Railway, y hasta la Fase 2 no lo era.**
 > Hasta acá el único que subía era el dueño, con su script y su token en `herramientas/.env`. Desde que sube cualquier creador, no se le puede dar el token del bucket: con él leería, pisaría y borraría los videos de todos. La forma de dar permiso acotado es una **URL prefirmada**, y firmar es, por definición, tener el secreto. Lo que **no** cambia es que el video no pasa por Railway: el servidor firma una URL de unos cientos de bytes y los gigas van del creador a R2 y de R2 al espectador, directo.
@@ -134,6 +136,8 @@ servidor/
   twitch.js     OAuth, Helix, y el cliente EventSub por WebSocket
   irc.js        IRC anónimo de Twitch: el plan B cuando EventSub se cae
   mensajes.js   traduce Kick y Twitch al formato único de mensaje
+  emotes.js     los emotes de 7TV de cada creador, cacheados por (slug, red)
+  insignias.js  la imagen de cada insignia de Twitch, cacheada por creador
   chat.js       junta las dos redes, la salud y el envío
   webhook.js    verificación RSA de los webhooks de Kick y deduplicación
   videos.js     el catálogo de películas y la clave de subida (hasheada)
@@ -322,7 +326,7 @@ Se filtra **en el servidor y por conexión** (`canales.js`, `leDaEl`), no en el 
 {
   "tipo": "chat", "red": "kick",
   "id": "01JG…", "usuario": "unaespectadora", "usuarioId": "12345", "color": "#ff5733",
-  "insignias": [{ "tipo": "moderator", "texto": "Moderator" }],
+  "insignias": [{ "tipo": "moderator", "version": "1", "texto": "Moderator", "url": "https://static-cdn.jtvnw.net/badges/v1/…/2" }],
   "texto": "que peli mas larga HYPERCLAP",
   "emotes": [{ "id": "4148074", "inicio": 19, "fin": 28, "url": "https://files.kick.com/emotes/4148074/fullsize" }],
   "hora": "2026-01-14T16:08:06.000Z"
@@ -334,6 +338,8 @@ Se filtra **en el servidor y por conexión** (`canales.js`, `leDaEl`), no en el 
 `inicio` y `fin` cuentan **puntos de código Unicode** sobre `texto`, y el emote ocupa `[inicio, fin)`. Se corta con `[...texto]`, nunca con `texto.slice`: un índice de string cuenta unidades UTF-16, y un solo emoji antes de un emote corre de lugar todos los que vengan después.
 
 `fuente` dice de dónde salió cada emote: `kick`, `twitch` o `7tv`. Está en **todos** los emotes y no sólo en los de terceros, porque un array donde algunos elementos tienen una clave y otros no es la forma de que, el día que alguien la lea, se rompa justo con los mensajes de una red. Es aditivo: un cliente viejo lo ignora. Hoy la página no lo mira; está para quien quiera mostrar en pantalla de dónde viene el emote, que es una decisión de diseño todavía sin tomar.
+
+Cada insignia lleva `tipo`, `version`, `texto` y `url`, por el mismo motivo de arriba: las cuatro están en **todas**, aunque a las de Kick `version` y `url` les queden siempre vacías. `url` la completa el servidor (ver "Las insignias") y `version` es lo que hace falta para casarla: Twitch manda `{ set_id: "subscriber", id: "12", info: "16" }`, donde el `12` es **cuál de los dibujos** del set y el `16` son los meses de verdad. Confundirlos le pone a un suscriptor de tres años el ícono del primer mes, sin romper nada y sin avisar.
 
 ### Los emotes de 7TV
 

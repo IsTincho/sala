@@ -486,6 +486,35 @@ test('el catalogo trae los emotes nativos del canal de Twitch', async () => {
   assert.deepEqual(suyo.redes, ['twitch'], 'en Kick no existe: alla se lee la palabra');
   assert.equal(suyo.url, urlDeTwitch('emotesv2_anaLOVE'),
     'la URL es la MISMA que pinta el chat, no la que Helix manda en `images`');
+  assert.equal(emotes.ACTIVO_TWITCH, true, 'y el interruptor viene prendido');
+});
+
+test('con EMOTES_TWITCH=0 no hay nativos de Twitch y no se le pide nada a Helix', async () => {
+  /* Tres terceros, tres interruptores: apagar Twitch no puede apagar
+     7TV ni el selector de Kick, y al reves tampoco. Instancia aparte
+     del modulo porque el interruptor se lee al cargarse. */
+  process.env.EMOTES_TWITCH = '0';
+  const apagados = await import('../servidor/emotes.js?twitch-apagado=1');
+  delete process.env.EMOTES_TWITCH;
+
+  apagados.fijarIdentidad(async (slug, red) => {
+    const i = identidades.get(slug);
+    return i?.[red] ? { red, sala: slug, usuarioId: i[red] } : null;
+  });
+
+  darleNativosDeTwitch(ANA, '5555', ['anaLOVE']);
+  darle7TV(ANA, 'kick', '4242', ['CHAD']);
+
+  apagados.catalogo(ANA, ['kick', 'twitch']);
+  await apagados.reposo();
+  const catalogo = apagados.catalogo(ANA, ['kick', 'twitch']);
+
+  assert.equal(apagados.ACTIVO_TWITCH, false);
+  assert.equal(catalogo.some(e => e.fuente === 'twitch'), false);
+  assert.ok(porNombre(catalogo, 'CHAD'), 'y 7TV sigue andando: es otro tercero');
+  assert.deepEqual(pedidosHelix, [], 'ni el token de app');
+
+  apagados.olvidarTodo();
 });
 
 test('los globales de Twitch entran en cualquier canal', async () => {

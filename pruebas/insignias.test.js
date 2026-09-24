@@ -706,3 +706,52 @@ test('las insignias se resuelven por el camino de Twitch y no rompen el de Kick'
   assert.equal(kickcito.insignias[0].url, '', 'Kick no tiene imagen y no se le inventa una');
   assert.equal(kickcito.insignias[0].texto, 'Moderator');
 });
+
+/* ================================================= el interruptor
+
+   `INSIGNIAS_TWITCH=0` deja el chat exactamente como estaba antes de
+   este modulo: las etiquetas de texto de siempre y ni un pedido a
+   Helix. Es el freno de mano por si Helix empieza a contestar
+   cualquier cosa, y un freno de mano que nadie probo no es un freno.
+
+   Se prueba con las DOS puntas —prendido dibuja, apagado no— porque un
+   test que solo mira el apagado pasa igual si el modulo esta roto. */
+
+test('con el interruptor prendido (el default) la insignia sale dibujada', async () => {
+  arrancarDeCero();
+  darle('istincho', '4242', [juego('subscriber', { 0: 'sub-del-canal' })]);
+
+  const m = await resolverConTabla(
+    deTwitch([{ set_id: 'subscriber', id: '0', info: '' }]), 'istincho');
+
+  assert.equal(insignias.ACTIVO_TWITCH, true);
+  assert.equal(m.insignias[0].url, url2x('sub-del-canal'));
+});
+
+test('con INSIGNIAS_TWITCH=0 no hay imagenes y no se le pide nada a Helix', async () => {
+  /* Instancia aparte del modulo: el interruptor se lee al cargarse. */
+  process.env.INSIGNIAS_TWITCH = '0';
+  const apagadas = await import('../servidor/insignias.js?apagadas=1');
+  delete process.env.INSIGNIAS_TWITCH;
+
+  apagadas.fijarIdentidad(async (slug, red) => {
+    const id = identidades.get(slug);
+    return red === 'twitch' && id ? { red, sala: slug, usuarioId: id } : null;
+  });
+
+  arrancarDeCero();
+  darle('istincho', '4242', [juego('subscriber', { 0: 'sub-del-canal' })]);
+
+  assert.equal(apagadas.ACTIVO_TWITCH, false);
+
+  const m = apagadas.resolver(deTwitch([{ set_id: 'subscriber', id: '0', info: '' }]), 'istincho');
+  await apagadas.reposo();
+  apagadas.resolver(m, 'istincho');
+
+  assert.equal(m.insignias[0].url, '', 'sin imagen, que es lo que la pagina lee como "mostrame el texto"');
+  assert.equal(m.insignias[0].texto, 'Sub', 'y la etiqueta de siempre sigue ahi');
+  assert.deepEqual(pedidos, [], 'ni el token: apagado no toca la red');
+  assert.equal(apagadas.comoEsta('istincho'), null, 'y no se agenda ninguna bajada');
+
+  apagadas.olvidarTodo();
+});

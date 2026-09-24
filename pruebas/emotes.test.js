@@ -1015,3 +1015,59 @@ test('los globales siguen resolviendo por debajo del respaldo', async () => {
   assert.equal(recortar(m.texto, m.emotes[1]), 'SOLO_GLOBAL');
   assert.equal(m.emotes[1].url, url2x('SOLO_GLOBAL'));
 });
+
+/* ================================================= el interruptor
+
+   `EMOTES_7TV=0` deja el chat como estaba antes de este modulo: las
+   palabras como palabras y ni un pedido a 7TV. Es el freno de mano por
+   si 7TV empieza a contestar cualquier cosa, y un freno que nadie probo
+   no es un freno.
+
+   Las dos puntas, porque un test que solo mira el apagado pasa igual
+   con el modulo roto. */
+
+test('con el interruptor prendido (el default) el emote se resuelve', async () => {
+  arrancarDeCero();
+  darle('istincho', 'kick', '4242', [emote('CHAD')]);
+
+  const m = await resolverConTabla(deKick('mira CHAD'), 'istincho');
+
+  assert.equal(emotes.ACTIVO, true);
+  assert.equal(m.emotes.length, 1);
+  assert.equal(m.emotes[0].fuente, '7tv');
+});
+
+test('con EMOTES_7TV=0 no se resuelve nada y no se le pide nada a 7TV', async () => {
+  /* Instancia aparte del modulo: el interruptor se lee al cargarse. */
+  process.env.EMOTES_7TV = '0';
+  const apagados = await import('../servidor/emotes.js?apagado=1');
+  delete process.env.EMOTES_7TV;
+
+  apagados.fijarIdentidad(async (slug, red) => {
+    const i = identidades.get(slug);
+    return i?.[red] ? { red, sala: slug, usuarioId: i[red] } : null;
+  });
+
+  arrancarDeCero();
+  darle('istincho', 'kick', '4242', [emote('CHAD')]);
+
+  assert.equal(apagados.ACTIVO, false);
+
+  const m = apagados.resolver(deKick('mira CHAD'), 'istincho');
+  await apagados.reposo();
+  apagados.resolver(m, 'istincho');
+
+  assert.deepEqual(m.emotes, [], 'la palabra se queda palabra, que es como estaba antes');
+  assert.deepEqual(pedidos, [], 'ni un pedido: apagado no toca la red');
+  assert.equal(apagados.comoEsta('istincho', 'kick'), null, 'y no se agenda ninguna bajada');
+
+  /* Y APAGAR 7TV NO APAGA EL SELECTOR DE EMOTES DE KICK: son dos
+     terceros distintos, y los nativos de Kick no tienen nada que ver
+     con 7TV. Por eso `anotarVistos` vive fuera del `if (!ACTIVO)`. */
+  apagados.resolver(deKick('[emote:5747892:MEGALUL]'), 'istincho');
+  const catalogo = apagados.catalogo('istincho', ['kick']);
+  assert.deepEqual(catalogo.map(e => e.nombre), ['MEGALUL']);
+  assert.equal(catalogo[0].marca, '[emote:5747892:MEGALUL]');
+
+  apagados.olvidarTodo();
+});

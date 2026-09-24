@@ -778,6 +778,9 @@
     : '/api/chat/emotes');
 
   function consultarEmotes({ forzar = false } = {}) {
+    /* `?demo=1` no toca la red, NUNCA: es una pantalla para mirar sin
+       servidor y hay una prueba que lo exige. */
+    if (modoDemo) return Promise.resolve();
     if (!forzar && cuandoSeCargaronEmotes && Date.now() - cuandoSeCargaronEmotes < CADA_RECARGA_EMOTES) {
       return Promise.resolve();
     }
@@ -1320,8 +1323,11 @@
     /* En /chat la caja de escribir esta siempre (es la ventana del
        creador, y su sesion la comprueba el servidor), asi que el boton
        de emotes aparece con la pagina. En /chat/<slug> lo prende
-       `aplicarYo` cuando se sabe que la persona puede escribir. */
-    if (!modoPublico) botonEmotes.hidden = false;
+       `aplicarYo` cuando se sabe que la persona puede escribir.
+
+       En modo demo no: ahi no se manda nada y la lista saldria de un
+       pedido de verdad, que es lo unico que la demo no hace. */
+    if (!modoPublico && !modoDemo) botonEmotes.hidden = false;
     registrarServiceWorker(modoPublico ? '/chat/' + slugPublico : '/chat');
 
     if (modoDemo) {

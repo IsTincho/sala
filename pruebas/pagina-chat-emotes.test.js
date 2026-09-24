@@ -795,3 +795,25 @@ test('un emote de Twitch se inserta como su nombre pelado', async () => {
 
   p.cerrar();
 });
+
+test('en /chat?demo=1 no hay botón de emotes: la demo no toca la red', async () => {
+  /* La demo es una pantalla para mirar sin servidor. Un botón que al
+     tocarlo pide `/api/chat/emotes` de verdad rompe eso, y hay una
+     prueba vieja que exige que ?demo=1 no haga un solo pedido. */
+  const pedidos = [];
+  const pagina = abrirPagina({
+    ruta: '/chat',
+    busqueda: '?demo=1',
+    antes: ['comun/mensajes.js'],
+    fetch: async (url) => {
+      pedidos.push(String(url));
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+    Sala: { conectar: () => ({ cerrar() {} }) },
+  });
+  await asentarse();
+
+  assert.equal(pagina.porId.get('boton-emotes').hidden, true);
+  assert.deepEqual(pedidos, []);
+  pagina.cerrar();
+});

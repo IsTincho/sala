@@ -755,3 +755,109 @@ test('con INSIGNIAS_TWITCH=0 no hay imagenes y no se le pide nada a Helix', asyn
 
   apagadas.olvidarTodo();
 });
+
+/* ============== el escudo generico, y cuando NO se puede usar
+
+   Deuda que estaba anotada: con la tabla del canal vacia —todavia no se
+   bajo, o la bajada fallo— un suscriptor salia con el escudo generico de
+   Twitch como si fuera el de esta comunidad.
+
+   La regla nueva se pregunta POR SET: `moderator` no puede ser propio de
+   nadie, asi que la global es la verdad; `subscriber` si puede, asi que
+   mientras no se sepa se deja la etiqueta. Se conservan las globales Y
+   no se muestra el escudo de otro. */
+
+const SUB = { set_id: 'subscriber', id: '0', info: '' };
+const MOD = { set_id: 'moderator', id: '1', info: '' };
+
+/** Los globales de Twitch con un sub generico y un mod, que es el caso real. */
+function globalesConSubYMod() {
+  globalesDeTwitch = [
+    juego('subscriber', { 0: 'sub-generico-de-twitch' }),
+    juego('moderator', { 1: 'mod-global' }),
+  ];
+}
+
+test('si la bajada del canal fallo, el sub no sale con el escudo generico', async () => {
+  arrancarDeCero();
+  globalesConSubYMod();
+  darle('rotoo', '3333', 'roto');   // Helix contesta 500 para este canal
+
+  const m = await resolverConTabla(deTwitch([SUB, MOD]), 'rotoo');
+
+  assert.equal(m.insignias[0].url, '',
+    'no sabemos si este canal tiene sub propio: el generico de Twitch no es el suyo');
+  assert.equal(m.insignias[0].texto, 'Sub', 'y se ve la etiqueta, que es la verdad');
+  assert.equal(m.insignias[1].url, url2x('mod-global'),
+    'Y LAS GLOBALES SE CONSERVAN: moderator no puede ser propio de nadie');
+});
+
+test('mientras la tabla del canal no llego, tampoco', async () => {
+  /* La otra mitad de la ventana: los primeros mensajes de cada arranque.
+     Los globales ya estan (los comparten todos los creadores y los bajo
+     el primer mensaje del proceso) y la tabla de ESTE canal no. */
+  arrancarDeCero();
+  globalesConSubYMod();
+  darle('primero', '1111', [juego('subscriber', { 0: 'sub-de-primero' })]);
+  await resolverConTabla(deTwitch([MOD]), 'primero');   // calienta los globales
+
+  darle('tarde', '2222', [juego('subscriber', { 0: 'sub-de-tarde' })]);
+  colgar.add('2222');   // su tabla no va a llegar nunca
+
+  const m = insignias.resolver(deTwitch([SUB, MOD]), 'tarde');
+
+  assert.equal(m.insignias[0].url, '');
+  assert.equal(m.insignias[1].url, url2x('mod-global'));
+});
+
+test('un canal que CONFIRMO que no tiene sub propio si usa el generico', async () => {
+  /* Porque ahi el escudo generico de Twitch ES lo que se ve en
+     twitch.tv: el canal no personalizo nada. La regla nueva no puede
+     dejar a medio Twitch sin insignia de suscriptor. */
+  arrancarDeCero();
+  globalesConSubYMod();
+  darle('pelado', '4444', []);   // 200 con data vacio: "no tengo propias"
+
+  const m = await resolverConTabla(deTwitch([SUB, MOD]), 'pelado');
+
+  assert.equal(insignias.comoEsta('pelado').estado, 'sin-propias');
+  assert.equal(m.insignias[0].url, url2x('sub-generico-de-twitch'));
+  assert.equal(m.insignias[1].url, url2x('mod-global'));
+});
+
+test('con una tabla vieja que funciona, se sigue respondiendo con ella', async () => {
+  /* Una tabla no vacia ES una respuesta, aunque el ultimo reintento haya
+     fallado: si dijo que este canal tiene `bits` y no `subscriber`, el
+     sub cae al generico y eso esta bien. */
+  arrancarDeCero();
+  globalesConSubYMod();
+  darle('conbits', '5555', [juego('bits', { 1: 'bits-del-canal' })]);
+
+  const m = await resolverConTabla(deTwitch([SUB, MOD, { set_id: 'bits', id: '1', info: '' }]), 'conbits');
+
+  assert.equal(m.insignias[0].url, url2x('sub-generico-de-twitch'),
+    'la tabla dijo que no tiene sub propio: el generico es la verdad');
+  assert.equal(m.insignias[1].url, url2x('mod-global'));
+  assert.equal(m.insignias[2].url, url2x('bits-del-canal'));
+});
+
+test('un set que el canal NO puede personalizar sale siempre de los globales', async () => {
+  /* Prime, verificado, staff: no hay version propia posible, asi que no
+     hay nada que esperar. Con la regla puesta al reves, medio chat se
+     quedaria sin insignias durante la ventana. */
+  arrancarDeCero();
+  globalesDeTwitch = [
+    juego('premium', { 1: 'prime' }),
+    juego('partner', { 1: 'verificado' }),
+    juego('vip', { 1: 'vip-global' }),
+  ];
+  darle('rotoo', '3333', 'roto');
+
+  const m = await resolverConTabla(deTwitch([
+    { set_id: 'premium', id: '1', info: '' },
+    { set_id: 'partner', id: '1', info: '' },
+    { set_id: 'vip', id: '1', info: '' },
+  ]), 'rotoo');
+
+  assert.deepEqual(urls(m), [url2x('prime'), url2x('verificado'), url2x('vip-global')]);
+});

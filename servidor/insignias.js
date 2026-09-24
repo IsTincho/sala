@@ -387,6 +387,42 @@ export function globales() {
   return casillero(CLAVE_GLOBALES).tabla;
 }
 
+/* ---------------------------------------------- lo que sabe la tabla
+
+   LOS SETS QUE UN CANAL PUEDE TENER PROPIOS.
+
+   `helix/chat/badges` devuelve exactamente estos dos: la doc dice que
+   son "the broadcaster's list of custom chat badges" y manda a leer
+   "subscriber badges and Bits badges". O sea que son los unicos sets en
+   los que la tabla del canal puede cambiar la respuesta; para
+   `moderator`, `vip`, `premium`, `partner` y los demas, la global ES la
+   verdad en todos los canales.
+
+   NO ES UNA LISTA QUE TENGA QUE ESTAR COMPLETA PARA SER CORRECTA, y eso
+   es lo que la hace segura: si Twitch agrega una tercera familia
+   personalizable, esa familia se comporta como se comportaba TODO antes
+   de esta lista (cae a la global mientras no sepamos), o sea que
+   equivocarse aca no empeora nada respecto de no tener la lista. */
+const PERSONALIZABLES = new Set(['subscriber', 'bits']);
+
+/**
+ * Si YA SABEMOS que sets propios tiene este canal.
+ *
+ * La diferencia entre "este canal no personalizo nada" y "todavia no se
+ * bajo" no se ve en la tabla —las dos son un Map vacio— pero si en el
+ * estado del casillero, que es exactamente el mismo truco que usa
+ * `tablaConRespaldo` en `emotes.js` para no adivinar.
+ *
+ * Con la tabla NO vacia alcanza con la tabla: si la ultima bajada buena
+ * dijo que este canal tiene `bits` y no `subscriber`, eso es una
+ * respuesta, no una duda, aunque despues un reintento haya fallado.
+ */
+function sabemosDelCanal(slug, delCanal) {
+  if (delCanal.size > 0) return true;
+  const estado = cache.get(clave(slug))?.avisado ?? '';
+  return estado === 'sin-propias' || estado.startsWith('ok:');
+}
+
 /* -------------------------------------------------------- resolucion */
 
 let ultimoAvisoFalla = 0;
@@ -433,6 +469,9 @@ function conImagenes(mensaje, slug) {
   const delCanal = tabla(slug);
   const comunes = globales();
   if (!delCanal.size && !comunes.size) return mensaje;
+  /* Se pregunta DESPUES de `tabla()`, que es la que agenda la bajada y
+     crea el casillero. */
+  const seSabe = sabemosDelCanal(slug, delCanal);
 
   for (const i of lista) {
     const tipo = String(i?.tipo ?? '');
@@ -443,24 +482,37 @@ function conImagenes(mensaje, slug) {
        global (que es otro dibujo, el generico de Twitch). Si el canal
        tiene ese set pero no esa version, tampoco se cae al global: se
        deja sin imagen y se ve la etiqueta, que es mejor que mostrar la
-       insignia de otro.
-
-       LO QUE ESTA REGLA NO CUBRE, dicho sin adornos: si la tabla del
-       canal esta VACIA porque todavia no se bajo o porque la bajada
-       fallo, no hay con que distinguir "este canal no personalizo
-       `subscriber`" de "no sabemos todavia", y el suscriptor sale con
-       el escudo generico de Twitch en vez del del canal. La ventana es
-       chica —los primeros mensajes de cada arranque y el minuto de
-       reintento de un fallo— y el precio es mostrar la insignia
-       generica de suscriptor de Twitch, que sigue diciendo la verdad
-       sobre quien habla, no la de otra comunidad. Cerrarlo pidiendo
-       que el casillero este confirmado tendria un precio peor: durante
-       esa misma ventana se perderian tambien las globales que si
-       estaban bien resueltas (mod, VIP, Prime), que es mas de lo que
-       se gana. */
+       insignia de otro. */
     const propio = delCanal.get(tipo);
-    const url = propio ? propio.get(version) : comunes.get(tipo)?.get(version);
-    i.url = url ?? '';
+    if (propio) {
+      i.url = propio.get(version) ?? '';
+      continue;
+    }
+
+    /* Y MIENTRAS NO SEPAMOS QUE TIENE ESTE CANAL, un set que el canal
+       PODRIA tener propio no se resuelve con el global.
+
+       Esto era deuda anotada: con la tabla del canal vacia —porque
+       todavia no se bajo, o porque la bajada fallo— un suscriptor
+       salia con el escudo generico de Twitch como si fuera el de esta
+       comunidad. Estaba anotado como decision consciente con este
+       argumento: exigir el casillero confirmado para TODO haria perder
+       tambien las globales bien resueltas (mod, VIP, Prime) en esa
+       misma ventana, que es mas de lo que se gana.
+
+       El argumento era correcto y la conclusion no: no hay que elegir
+       entre las dos cosas. La tercera opcion es preguntar POR SET, que
+       es como funciona el resto de esta funcion. `moderator` no puede
+       ser propio de nadie, asi que la global es la verdad y se pinta;
+       `subscriber` si puede, asi que mientras no sepamos se deja sin
+       imagen y se ve la etiqueta. Se conservan las globales Y no se
+       muestra el escudo de nadie mas. */
+    if (!seSabe && PERSONALIZABLES.has(tipo)) {
+      i.url = '';
+      continue;
+    }
+
+    i.url = comunes.get(tipo)?.get(version) ?? '';
   }
   return mensaje;
 }

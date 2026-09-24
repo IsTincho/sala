@@ -842,6 +842,21 @@ test('entrado pero sin permiso para escribir se dice, no se deja probar', async 
   p.cerrar();
 });
 
+test('a quien el creador bloqueó se le dice, y no se le apaga la caja sin motivo', async () => {
+  /* El corte de verdad es del servidor (403 al mandar). Lo que arregla
+     esto es la pantalla: antes la caja se apagaba igual que si le
+     faltara el permiso de Kick, y el motivo aparecía recién al
+     intentar mandar un mensaje que no iba a salir. */
+  const p = abrir({ yo: { entrado: true, nombre: 'la bloqueada', puedeEscribir: false, bloqueado: true } });
+  await arrancada();
+
+  assert.equal(p.el('campo-texto').disabled, true);
+  assert.match(p.el('campo-texto').placeholder, /te bloqueó/);
+  assert.equal(p.el('fila-espectador').hidden, false, 'sigue entrada: no se le cierra la sesión');
+
+  p.cerrar();
+});
+
 test('enviar pega en la ruta de la sala y limpia el campo, sin pintar el mensaje', async () => {
   /* El mensaje vuelve por el webhook como cualquier otro: pintarlo acá
      lo mostraría dos veces y encima mentiría si Kick lo retuvo. */

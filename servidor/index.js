@@ -1164,12 +1164,19 @@ async function apiSalaYo(url, req, res, p) {
      sala), pero eran las dos unicas rutas de /api/sala/ que no pasaban
      por aca, y una excepcion sin motivo es una excepcion que alguien
      copia. */
-  if (!await salaPermitida(creadores.normalizar(p.slug))) {
+  const slug = creadores.normalizar(p.slug);
+  if (!await salaPermitida(slug)) {
     return json(res, 404, { error: 'esa sala no existe' });
   }
 
+  /* `bloqueado` va en TODAS las respuestas, tambien en las de "no hay
+     nadie": una clave que aparece solo a veces es la forma de que el dia
+     que alguien la lea se rompa justo en el caso que no probo. Mismo
+     criterio que `version` y `url` en las insignias. */
+  const nadie = { entrado: false, nombre: '', bloqueado: false, puedeEscribir: false };
+
   const suyo = await sesion.leer(req, 'espectador');
-  if (!suyo) return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false });
+  if (!suyo) return json(res, 200, nadie);
 
   const v = await espectadores.leer(suyo.usuario);
   if (!v) {
@@ -1177,8 +1184,7 @@ async function apiSalaYo(url, req, res, p) {
        CLAVE_CIFRADO). No sirve para nada: se cierra en vez de dejar a
        la persona con una caja de escribir que va a fallar. */
     await sesion.cerrar(req, 'espectador');
-    return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false },
-      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+    return json(res, 200, nadie, { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
   }
 
   /* La Sala es de Kick. Alguien que conecto SOLO Twitch (se puede,
@@ -1186,14 +1192,28 @@ async function apiSalaYo(url, req, res, p) {
      de nada: se le dice que no esta entrado, en vez de mostrarle una
      caja de escribir que no va a andar. Y la sesion NO se cierra: su
      Twitch sigue valiendo en el chat abierto. */
-  if (!v.kick) return json(res, 200, { entrado: false, nombre: '', puedeEscribir: false });
+  if (!v.kick) return json(res, 200, nadie);
+
+  /* SE LE DICE QUE ESTA BLOQUEADO, igual que en `/api/chat/:slug/yo`.
+     Era la unica diferencia entre las dos hermanas, y no era una
+     decision: el corte ya existia en el envio (403 "el creador te
+     bloqueó en este chat") y la pantalla no lo sabia, asi que la caja
+     quedaba habilitada para escribir contra una pared.
+
+     Sale de `envio.bloqueadasPara`, la MISMA que usa el envio de aca
+     abajo: si se calculara distinto, la pantalla diria una cosa y la
+     puerta haria otra. Y habla del que pregunta y de nadie mas: nunca
+     quien MAS esta bloqueado. */
+  const bloqueado = (await envio.bloqueadasPara(slug, v, ['kick'])).length > 0;
 
   return json(res, 200, {
     entrado: true,
     nombre: suyo.nombre || v.kick.nombre,
+    bloqueado,
     /* Si el permiso que dio no incluye escribir, mejor decirlo ahora
-       que despues de que escriba un mensaje largo. */
-    puedeEscribir: espectadores.puedeEscribirEn(v, 'kick'),
+       que despues de que escriba un mensaje largo. Un bloqueado
+       tampoco puede: la caja se apaga y el motivo se dice. */
+    puedeEscribir: espectadores.puedeEscribirEn(v, 'kick') && !bloqueado,
   });
 }
 

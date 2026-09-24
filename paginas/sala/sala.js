@@ -626,7 +626,7 @@
 
   let puedoEscribir = false;
 
-  function pintarSesion({ entrado, nombre, puedeEscribir }) {
+  function pintarSesion({ entrado, nombre, puedeEscribir, bloqueado }) {
     puedoEscribir = Boolean(entrado && puedeEscribir);
     bandaEntrar.hidden = Boolean(entrado);
     filaEspectador.hidden = !entrado;
@@ -634,9 +634,15 @@
 
     campoTexto.disabled = !puedoEscribir;
     botonEnviar.disabled = !puedoEscribir;
+    // Se le dice POR QUÉ no puede escribir. Con el bloqueo callado, la
+    // caja se apagaba sin motivo y el aviso aparecía recién al intentar
+    // mandar; y quedarse escribiendo contra una pared que no avisa es
+    // peor que un "el creador te bloqueó". Lo dice el servidor
+    // (`/api/sala/<slug>/yo`): la página no lo adivina.
     campoTexto.placeholder = puedoEscribir
       ? 'Escribí un mensaje…'
-      : (entrado ? 'tu permiso de Kick no incluye escribir' : 'Entrá con Kick para escribir…');
+      : bloqueado ? 'el creador te bloqueó en este chat'
+        : (entrado ? 'tu permiso de Kick no incluye escribir' : 'Entrá con Kick para escribir…');
   }
 
   botonSalir.addEventListener('click', () => {

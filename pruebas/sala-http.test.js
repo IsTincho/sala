@@ -999,6 +999,48 @@ test('salir sin sesión no explota y contesta lo mismo', async () => {
   assert.equal(datos.ok, true);
 });
 
+test('a quien el creador bloqueó, /yo se lo dice: la caja no se apaga sin motivo', async () => {
+  /* ERA LA UNICA DIFERENCIA con su hermana `/api/chat/:slug/yo`, y no
+     era una decision: el corte ya existia en el envio (403 "el creador
+     te bloqueó en este chat") y la pantalla no se enteraba, asi que la
+     caja quedaba habilitada para escribir contra una pared. */
+  const cookie = await nuevoEspectador('1009', 'la bloqueada');
+
+  const antes = await pedirJson(`/api/sala/${SLUG}/yo`, { cookie });
+  assert.equal(antes.datos.bloqueado, false);
+  assert.equal(antes.datos.puedeEscribir, true);
+
+  await creadores.ponerChatAbierto(SLUG, { bloquear: { red: 'kick', id: '1009', nombre: 'la bloqueada' } });
+  try {
+    const { datos } = await pedirJson(`/api/sala/${SLUG}/yo`, { cookie });
+    assert.equal(datos.bloqueado, true);
+    assert.equal(datos.puedeEscribir, false, 'bloqueado no puede escribir, aunque el permiso alcance');
+    assert.equal(datos.entrado, true, 'y sigue entrado: no se le cierra la sesion');
+
+    /* Y LO QUE DICE LA PANTALLA COINCIDE CON LO QUE HACE LA PUERTA:
+       las dos salen de `envio.bloqueadasPara`. */
+    const envio = await pedirJson(`/api/sala/${SLUG}/chat`, {
+      metodo: 'POST', cookie, cuerpo: { texto: 'hola' },
+    });
+    assert.equal(envio.estado, 403);
+    assert.match(envio.datos.error, /te bloqueó/);
+
+    /* A otra persona no le pasa nada. */
+    const otra = await pedirJson(`/api/sala/${SLUG}/yo`, { cookie: sesionEspectador });
+    assert.equal(otra.datos.bloqueado, false);
+  } finally {
+    await creadores.ponerChatAbierto(SLUG, { desbloquear: { red: 'kick', id: '1009' } });
+  }
+});
+
+test('sin sesion, /yo contesta la misma forma: bloqueado tambien esta', async () => {
+  /* Una clave que aparece solo a veces es la forma de que el dia que
+     alguien la lea se rompa justo en el caso que no probo. */
+  const { datos } = await pedirJson(`/api/sala/${SLUG}/yo`);
+  assert.deepEqual(Object.keys(datos).sort(), ['bloqueado', 'entrado', 'nombre', 'puedeEscribir']);
+  assert.equal(datos.bloqueado, false);
+});
+
 test('/yo y /salir también validan el slug', async () => {
   /* Eran las dos únicas rutas de /api/sala/ que no pasaban por
      `canalPermitido`. No filtraban nada, pero una excepción sin motivo

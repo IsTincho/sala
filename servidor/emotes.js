@@ -79,6 +79,7 @@
    hay id y no se pide nada.
    ============================================================ */
 
+import { numeroDeEntorno } from './entorno.js';
 import * as vinculos from './vinculos.js';
 
 const API = 'https://7tv.io/v3';
@@ -126,7 +127,7 @@ export const ACTIVO = process.env.EMOTES_7TV !== '0';
 
    Un emote que ni en 1x entra se descarta: la palabra se ve como
    texto, que es exactamente lo que se ve hoy. Nunca se empeora. */
-export const PRESUPUESTO = Math.max(8, Number(process.env.EMOTES_KB ?? 128)) * 1024;
+export const PRESUPUESTO = numeroDeEntorno('EMOTES_KB', 128, { minimo: 8 }) * 1024;
 
 /* Los dos tamaños candidatos, del que se prefiere al de respaldo.
    No se miran 3x ni 4x: son para pintar el emote grande (el overlay
@@ -202,8 +203,16 @@ export const EN_VUELO_MAX = 6;
    Por eso el plazo cubre la bajada completa y no solo el pedido. Se le
    da margen sobre los dos fetch encadenados (8 s cada uno) y encima el
    viaje al almacen. Lo que vence se reintenta al minuto como cualquier
-   otro fallo. */
-const PLAZO = Math.max(1000, Number(process.env.EMOTES_PLAZO_MS ?? 20000));
+   otro fallo.
+
+   Y SE LEE CON `numeroDeEntorno` Y NO CON `Number()`, que es lo que
+   estaba y era un bug de verdad: con `EMOTES_PLAZO_MS=20s` —el typo
+   natural— `Number()` da NaN, `Math.max(1000, NaN)` da NaN, y
+   `setTimeout(fn, NaN)` dispara a UN milisegundo. O sea que el typo no
+   alargaba el plazo: apagaba los emotes de 7TV para siempre, y el
+   unico rastro era un log que decia "tardo mas de NaN ms". El
+   razonamiento completo esta en `entorno.js`. */
+const PLAZO = numeroDeEntorno('EMOTES_PLAZO_MS', 20000, { minimo: 1000 });
 
 /* Cada cuanto, como mucho, se avisa que el tope de concurrencia esta
    lleno. Sin esto seria una linea por mensaje; sin el aviso, un apagon
@@ -218,7 +227,7 @@ const AVISO_TOPE = 60 * 1000;
    este tope porque su markup ocupa mucho mas lugar en el texto; los
    de 7TV son una palabra corta y ahi esta la diferencia. Pasado el
    tope, el resto de las palabras quedan como texto. */
-export const TOPE_POR_MENSAJE = Math.max(1, Number(process.env.EMOTES_POR_MENSAJE ?? 30));
+export const TOPE_POR_MENSAJE = numeroDeEntorno('EMOTES_POR_MENSAJE', 30, { minimo: 1 });
 
 /* El nombre de la fuente que viaja en cada emote. */
 export const FUENTE = '7tv';

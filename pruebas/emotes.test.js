@@ -56,6 +56,11 @@ let sets = new Map();
    id de set -> lista de emotes. */
 let setsAparte = new Map();
 let pedidos = [];
+/* Cuanto tarda el 7TV de mentira en contestar. Por defecto cero: casi
+   todas las pruebas quieren la respuesta ya. Lo usa la prueba del
+   plazo con typo, que necesita una bajada que tarde MAS que un
+   milisegundo para poder ver la diferencia. */
+let demora = 0;
 
 /** Un emote de 7TV como lo devuelve la API, con los pesos que se le pidan.
  *
@@ -89,6 +94,7 @@ const url2x = (nombre, opts) => `https://cdn.7tv.app/emote/${emote(nombre, opts)
 globalThis.fetch = async (recurso) => {
   const url = String(recurso);
   pedidos.push(url);
+  if (demora) await new Promise(ok => setTimeout(ok, demora));
   const responder = (estado, datos) => new Response(JSON.stringify(datos), {
     status: estado,
     headers: { 'Content-Type': 'application/json' },
@@ -139,6 +145,7 @@ function arrancarDeCero() {
   setsAparte = new Map();
   identidades = new Map();
   pedidos = [];
+  demora = 0;
 }
 
 /** Deja el set de un creador cargado en el 7TV de mentira. */
@@ -525,6 +532,43 @@ test('el tope frena la ráfaga y después el contador se destraba', async () => 
   /* Y acá está el punto: los que no entraron tienen que entrar ahora.
      Si el descuento del contador no corre, esto no pasa nunca. */
   for (const s of todos) await esperarTabla(s, 'kick', `${s} se quedó sin tabla: el contador no se destrabó`);
+});
+
+test('un EMOTES_PLAZO_MS con un typo no apaga los emotes para siempre', async () => {
+  /* EL BUG, y no era teorico: `Math.max(1000, Number('20s'))` da NaN y
+     `setTimeout(fn, NaN)` NO espera para siempre, dispara a UN
+     milisegundo. Asi que `EMOTES_PLAZO_MS=20s` —el typo natural, el
+     que se escribe pensando "veinte segundos"— no alargaba el plazo:
+     hacia vencer TODAS las bajadas, dejaba el modulo sin una sola
+     tabla y el unico rastro era un log que decia "tardo mas de NaN ms".
+
+     Se prueba con una instancia aparte del modulo (el `?` la separa en
+     el cache de modulos) porque el plazo se lee al cargarse. */
+  arrancarDeCero();
+  process.env.EMOTES_PLAZO_MS = '20s';
+  const conTypo = await import('../servidor/emotes.js?plazo-con-typo=1');
+  /* Se devuelve el valor de la suite enseguida: las instancias que
+     vengan despues tienen que leer el de siempre. */
+  process.env.EMOTES_PLAZO_MS = '200';
+
+  conTypo.fijarIdentidad(async (slug, red) => {
+    const i = identidades.get(slug);
+    return i?.[red] ? { red, sala: slug, usuarioId: i[red] } : null;
+  });
+
+  darle('contypo', 'kick', 'idtypo', [emote('CHAD')]);
+  /* La bajada tarda 40 ms: con el plazo en NaN (1 ms) se pierde
+     siempre, y con el plazo en 20 s entra siempre. */
+  demora = 40;
+
+  conTypo.tabla('contypo', 'kick');
+  await conTypo.reposo();
+  demora = 0;
+
+  assert.equal(conTypo.comoEsta('contypo', 'kick').estado, 'ok:1',
+    'con el plazo en NaN esto dice "fallo": la bajada vencio a 1 ms');
+  assert.equal(conTypo.tabla('contypo', 'kick').size, 1);
+  conTypo.olvidarTodo();
 });
 
 test('una bajada colgada no apaga 7TV para todos', async () => {

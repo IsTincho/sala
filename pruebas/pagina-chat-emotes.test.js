@@ -1,5 +1,6 @@
 /* ============================================================
-   El selector de emotes de `/chat/<slug>`, corrido de verdad sobre
+   El selector de emotes de las DOS cajas —`/chat/<slug>`, la del
+   espectador, y `/chat`, la del creador— corrido de verdad sobre
    `paginas/chat/chat.js` y `paginas/chat.html` reales, en el DOM de
    mentira de `fijos/dom-falso.js`.
 
@@ -22,7 +23,9 @@
        no gasta un pedido;
      - buscar filtra por nombre, y las flechas y Escape sirven sin
        mouse;
-     - con el chat cerrado, o sin cuenta, el botón no está.
+     - con el chat cerrado, o sin cuenta, el botón no está;
+     - en `/chat` la lista sale de la ruta SIN slug, y el botón está con
+       la página: esa caja siempre puede escribir.
    ============================================================ */
 
 import test from 'node:test';
@@ -66,6 +69,14 @@ const EMOTES = [
     url: 'https://cdn.7tv.app/emote/01KEKW/2x.webp', redes: ['kick', 'twitch'],
   },
 ];
+
+/* Un nativo de Twitch: existe solo alla, igual que el de Kick existe
+   solo en Kick, y viaja como su nombre pelado. */
+const EMOTE_TWITCH = {
+  nombre: 'anaLOVE', fuente: 'twitch', marca: 'anaLOVE',
+  url: 'https://static-cdn.jtvnw.net/emoticons/v2/emotesv2_ana/default/dark/2.0',
+  redes: ['twitch'],
+};
 
 /** Todos los botones de emote que hay pintados ahora, en orden. */
 function opciones(p) {
@@ -280,7 +291,8 @@ test('cada emote dice de qué fuente es y en qué red sale', async () => {
   /* Y el panel admite lo que NO tiene, en vez de aparentar el
      catálogo completo. */
   assert.match(p.el('nota-emotes').textContent, /sólo los que ya pasaron por este chat/);
-  assert.match(p.el('nota-emotes').textContent, /nativos de Twitch todavía no están/);
+  assert.match(p.el('nota-emotes').textContent, /desbloqueados/,
+    'y lo que no puede saber: quién tiene desbloqueado un emote de sub');
 
   p.cerrar();
 });
@@ -730,6 +742,56 @@ test('en /chat con Twitch sola, los emotes de Kick no se ofrecen', async () => {
   await p.abrirEmotes();
 
   assert.deepEqual(nombres(p), ['CHAD', 'KEKW']);
+
+  p.cerrar();
+});
+
+/* ============================ los nativos de Twitch en el panel */
+
+test('los emotes de Twitch salen en su propio grupo, después de los de Kick', async () => {
+  const p = abrirPublico({ emotes: [...EMOTES, EMOTE_TWITCH] });
+  await asentarse();
+  p.el('select-destino').value = 'ambas';
+  p.el('select-destino').disparar('change');
+  await p.abrirEmotes();
+
+  /* El orden importa: Kick primero porque son los que no se pueden
+     buscar en ningún otro lado. */
+  assert.deepEqual(nombres(p), ['collectiblesMEGALUL', 'anaLOVE', 'CHAD', 'KEKW']);
+  assert.match(p.el('rejilla-emotes').textContent, /De Twitch · del canal y los globales/);
+
+  const deTwitch = opciones(p).find(b => b.dataset.nombre === 'anaLOVE');
+  assert.match(deTwitch.getAttribute('aria-label'), /anaLOVE · Twitch/);
+  assert.match(deTwitch.getAttribute('aria-label'), /en Kick se lee como texto/);
+  assert.ok(deTwitch.className.includes('opcion-emote-parcial'));
+
+  p.cerrar();
+});
+
+test('con Kick sola, los emotes de Twitch no se ofrecen', async () => {
+  const p = abrirPublico({ emotes: [...EMOTES, EMOTE_TWITCH] });
+  await asentarse();
+  p.el('select-destino').value = 'kick';
+  p.el('select-destino').disparar('change');
+  await p.abrirEmotes();
+
+  assert.equal(nombres(p).includes('anaLOVE'), false, 'allá no sirven para nada');
+
+  p.cerrar();
+});
+
+test('un emote de Twitch se inserta como su nombre pelado', async () => {
+  /* No hay markup que armar: en Twitch un emote es su nombre. La
+     página igual no decide nada, pone la `marca` que le dieron. */
+  const p = abrirPublico({ emotes: [...EMOTES, EMOTE_TWITCH] });
+  await asentarse();
+  p.el('select-destino').value = 'twitch';
+  p.el('select-destino').disparar('change');
+  await p.abrirEmotes();
+
+  p.elegir('anaLOVE');
+  assert.equal(p.el('campo-texto').value.trim(), 'anaLOVE');
+  assert.equal(p.el('aviso-emotes').hidden, true, 'no hay nada que avisar: va a la red donde existe');
 
   p.cerrar();
 });

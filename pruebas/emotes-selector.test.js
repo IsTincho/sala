@@ -77,14 +77,47 @@ let respuestaTwitch = { estado: 200, cuerpo: { data: [{ is_sent: true, message_i
 let pedidosKick = [];
 let pedidosTwitch = [];
 let pedidos7TV = [];
+/* Los pedidos a lo PUBLICO de Helix (los emotes nativos y su token de
+   app), que son otra cosa que mandar un mensaje. */
+let pedidosHelix = [];
 
 /* slug de 7TV (`<red>/<id>`) -> lista de emotes. Sin entrada, 404. */
 let sets7TV = new Map();
+
+/* id de canal de Twitch -> lista de emotes nativos, como los devuelve
+   `helix/chat/emotes`. Sin entrada, 200 con `data` vacio, que es lo que
+   contesta Helix con un canal que no tiene emotes propios. */
+let nativosTwitch = new Map();
+let globalesTwitch = [];
 
 const responder = (estado, cuerpo) => new Response(JSON.stringify(cuerpo), {
   status: estado,
   headers: { 'Content-Type': 'application/json' },
 });
+
+/** Un emote nativo de Twitch con la forma que devuelve Helix. */
+function emoteTwitch(nombre, id = `emotesv2_${nombre}`) {
+  return {
+    id,
+    name: nombre,
+    images: {
+      url_1x: `https://static-cdn.jtvnw.net/emoticons/v2/${id}/static/light/1.0`,
+      url_2x: `https://static-cdn.jtvnw.net/emoticons/v2/${id}/static/light/2.0`,
+      url_4x: `https://static-cdn.jtvnw.net/emoticons/v2/${id}/static/light/3.0`,
+    },
+    format: ['static'],
+    scale: ['1.0', '2.0', '3.0'],
+    theme_mode: ['light', 'dark'],
+    emote_type: 'subscriptions',
+    emote_set_id: '301590448',
+    tier: '1000',
+  };
+}
+
+/* La URL con la que el catalogo TIENE que servir un emote de Twitch: la
+   misma que pinta el chat (`mensajes.URL_EMOTE_TWITCH`), no la que
+   viene en `images`. Si alguien cambia una de las dos, esto falla. */
+const urlDeTwitch = id => `https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/2.0`;
 
 /** Un emote de 7TV con la forma que devuelve su API. */
 function emote7TV(nombre) {
@@ -114,6 +147,26 @@ globalThis.fetch = async (entrada, opciones) => {
     pedidosTwitch.push({ url, cuerpo: opciones?.body });
     return responder(respuestaTwitch.estado, respuestaTwitch.cuerpo);
   }
+  /* El token de app, que es lo que `twitch.js` pide antes de cualquier
+     cosa publica de Helix. Sin esto el pedido se iria a internet de
+     verdad, que es lo que este archivo promete no hacer. */
+  if (url.startsWith('https://id.twitch.tv/oauth2/token')) {
+    pedidosHelix.push(url);
+    return responder(200, { access_token: 'token-de-app-de-mentira', expires_in: 5_000_000, token_type: 'bearer' });
+  }
+  if (url.startsWith('https://api.twitch.tv/helix/chat/emotes/global')) {
+    pedidosHelix.push(url);
+    return responder(200, { data: globalesTwitch, template: 'https://ignorada/{{id}}' });
+  }
+  const emotesDeCanal = /\/helix\/chat\/emotes\?broadcaster_id=(.+)$/.exec(url);
+  if (emotesDeCanal) {
+    pedidosHelix.push(url);
+    const id = decodeURIComponent(emotesDeCanal[1]);
+    const guardado = nativosTwitch.get(id);
+    if (guardado === 'roto') return responder(500, { error: 'helix caido' });
+    if (guardado === 'no-existe') return responder(400, { error: 'invalid broadcaster_id' });
+    return responder(200, { data: guardado ?? [], template: 'https://ignorada/{{id}}' });
+  }
   if (url.startsWith('https://7tv.io/')) {
     pedidos7TV.push(url);
     if (url.includes('/emote-sets/global')) return responder(200, { id: 'globales', emotes: [emote7TV('Clap7TV')] });
@@ -132,6 +185,14 @@ emotes.fijarIdentidad(async (slug, red) => {
   const i = identidades.get(slug);
   return i?.[red] ? { red, sala: slug, usuarioId: i[red] } : null;
 });
+
+/** Deja los emotes nativos de un canal cargados en el Helix de mentira. */
+function darleNativosDeTwitch(slug, id, nombres) {
+  const i = identidades.get(slug) ?? {};
+  i.twitch = id;
+  identidades.set(slug, i);
+  nativosTwitch.set(id, Array.isArray(nombres) ? nombres.map(n => emoteTwitch(n)) : nombres);
+}
 
 /** Deja el set de un creador cargado en el 7TV de mentira. */
 function darle7TV(slug, red, id, lista) {
@@ -245,7 +306,10 @@ test.beforeEach(async () => {
   pedidosKick = [];
   pedidosTwitch = [];
   pedidos7TV = [];
+  pedidosHelix = [];
   sets7TV = new Map();
+  nativosTwitch = new Map();
+  globalesTwitch = [];
   identidades = new Map();
   respuestaKick = { estado: 200, cuerpo: { data: { is_sent: true, message_id: 'k-1' } } };
   respuestaTwitch = { estado: 200, cuerpo: { data: [{ is_sent: true, message_id: 't-1' }] } };
@@ -407,6 +471,124 @@ test('un mensaje que en Twitch queda vacio rebota antes de mandarse a Kick', asy
   assert.equal(r.estado, 400);
   assert.match(r.datos.error, /solo un emote de Kick/);
   assert.equal(pedidosKick.length, 0, 'no sale en una y falla en la otra: no sale en ninguna');
+});
+
+/* ============================== los nativos de Twitch (Helix) */
+
+test('el catalogo trae los emotes nativos del canal de Twitch', async () => {
+  darleNativosDeTwitch(ANA, '5555', ['anaLOVE', 'anaRAGE']);
+  const catalogo = await catalogoConTabla(ANA, ['kick', 'twitch']);
+
+  const suyo = porNombre(catalogo, 'anaLOVE');
+  assert.ok(suyo, 'esta');
+  assert.equal(suyo.fuente, 'twitch');
+  assert.equal(suyo.marca, 'anaLOVE', 'un emote de Twitch viaja como su nombre pelado');
+  assert.deepEqual(suyo.redes, ['twitch'], 'en Kick no existe: alla se lee la palabra');
+  assert.equal(suyo.url, urlDeTwitch('emotesv2_anaLOVE'),
+    'la URL es la MISMA que pinta el chat, no la que Helix manda en `images`');
+});
+
+test('los globales de Twitch entran en cualquier canal', async () => {
+  globalesTwitch = [emoteTwitch('Kappa', '25')];
+  const catalogo = await catalogoConTabla(ANA, ['twitch']);
+
+  const kappa = porNombre(catalogo, 'Kappa');
+  assert.ok(kappa, 'los globales valen en todos los canales, como en twitch.tv');
+  assert.equal(kappa.url, urlDeTwitch('25'));
+});
+
+test('el canal le gana a los globales cuando el nombre choca', async () => {
+  /* Un streamer puede llamar a un emote suyo igual que uno global. En
+     su casa manda el suyo, igual que con las insignias. */
+  darleNativosDeTwitch(ANA, '5555', ['Kappa']);
+  globalesTwitch = [emoteTwitch('Kappa', '25')];
+  const catalogo = await catalogoConTabla(ANA, ['twitch']);
+
+  assert.equal(porNombre(catalogo, 'Kappa').url, urlDeTwitch('emotesv2_Kappa'));
+  assert.equal(catalogo.filter(e => e.nombre === 'Kappa').length, 1, 'y aparece una sola vez');
+});
+
+test('pidiendo solo Kick no aparece ningun nativo de Twitch, ni se pide', async () => {
+  darleNativosDeTwitch(ANA, '5555', ['anaLOVE']);
+  const catalogo = await catalogoConTabla(ANA, ['kick']);
+
+  assert.equal(catalogo.some(e => e.fuente === 'twitch'), false);
+  assert.equal(pedidosHelix.length, 0, 'y no se le pidio nada a Helix');
+});
+
+test('un nombre que es nativo en las DOS redes sale en las dos', async () => {
+  /* EL CASO QUE SE ROMPE CALLADO: a Kick le va el markup, que es lo
+     unico que Kick dibuja, y a Twitch le llega la palabra pelada, que
+     alla ES su propio emote. Marcarlo como "en Twitch se lee como
+     texto" seria mentirle a quien lo elige. */
+  darleNativosDeTwitch(ANA, '5555', ['collectiblesMEGALUL']);
+  emotes.resolver(deKick(MARCA), ANA);
+  const catalogo = await catalogoConTabla(ANA, ['kick', 'twitch']);
+
+  const uno = catalogo.filter(e => e.nombre === 'collectiblesMEGALUL');
+  assert.equal(uno.length, 1, 'no se ofrece dos veces el mismo nombre');
+  assert.equal(uno[0].fuente, 'kick', 'gana el de Kick: su markup sirve para las dos');
+  assert.equal(uno[0].marca, MARCA);
+  assert.deepEqual(uno[0].redes, ['kick', 'twitch']);
+});
+
+test('un creador sin Twitch vinculado no le pide nada a Helix', async () => {
+  darle7TV(ANA, 'kick', '4242', ['CHAD']);
+  identidades.set(ANA, { kick: '4242' });   // sin twitch
+  const catalogo = await catalogoConTabla(ANA, ['kick', 'twitch']);
+
+  assert.ok(porNombre(catalogo, 'CHAD'), 'los de 7TV siguen estando');
+  assert.equal(catalogo.some(e => e.fuente === 'twitch'), false);
+  assert.equal(pedidosHelix.filter(u => u.includes('broadcaster_id')).length, 0);
+});
+
+test('un canal sin emotes propios no se vuelve a preguntar cada diez minutos', async () => {
+  /* 200 con `data` vacio es "no tiene", y vence como tal (una hora) y
+     no como un exito. Con 900 creadores, confundirlos es pasar de 3.600
+     pedidos por dia a 130.000. */
+  identidades.set(ANA, { twitch: '5555' });   // sin entrada en nativosTwitch
+  await catalogoConTabla(ANA, ['twitch']);
+
+  const c = emotes.comoEsta(ANA, 'twitch-nativos');
+  assert.equal(c.estado, 'sin-cuenta');
+  assert.ok(c.vence - Date.now() > emotes.REINTENTO * 10,
+    'un "no tiene" no puede vencer como un fallo');
+});
+
+test('un fallo de Helix se reintenta al minuto y no apaga los demas emotes', async () => {
+  darle7TV(ANA, 'kick', '4242', ['CHAD']);
+  darleNativosDeTwitch(ANA, '5555', 'roto');
+  const catalogo = await catalogoConTabla(ANA, ['kick', 'twitch']);
+
+  assert.ok(porNombre(catalogo, 'CHAD'), 'lo que si se pudo bajar se sirve igual');
+  const c = emotes.comoEsta(ANA, 'twitch-nativos');
+  assert.equal(c.estado, 'fallo');
+  assert.ok(c.vence - Date.now() <= emotes.REINTENTO);
+});
+
+test('el set de emotes de Twitch se baja una sola vez, no una por apertura', async () => {
+  darleNativosDeTwitch(ANA, '5555', ['anaLOVE']);
+  for (let i = 0; i < 10; i++) {
+    emotes.catalogo(ANA, ['twitch']);
+    await emotes.reposo();
+  }
+  assert.equal(pedidosHelix.filter(u => u.includes('broadcaster_id')).length, 1);
+});
+
+test('revincular Twitch vence tambien los emotes nativos', async () => {
+  /* La clave de la cache es el slug: sin esto, desvincular una cuenta y
+     vincular otra deja los emotes del canal anterior en el selector.
+     Es el mismo bug que ya habia con las insignias. */
+  darleNativosDeTwitch(ANA, '5555', ['anaLOVE']);
+  await catalogoConTabla(ANA, ['twitch']);
+  assert.ok(porNombre(emotes.catalogo(ANA, ['twitch']), 'anaLOVE'));
+
+  darleNativosDeTwitch(ANA, '9999', ['otroLOVE']);
+  emotes.vencer(ANA);
+  const despues = await catalogoConTabla(ANA, ['twitch']);
+
+  assert.ok(porNombre(despues, 'otroLOVE'), 'se bajan los del canal nuevo');
+  assert.equal(porNombre(despues, 'anaLOVE'), undefined, 'y los del anterior no quedan');
 });
 
 /* ================================================== el catalogo */

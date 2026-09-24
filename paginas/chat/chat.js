@@ -719,18 +719,23 @@
 
   const NOMBRE_FUENTE = { kick: 'Kick', '7tv': '7TV', twitch: 'Twitch' };
   /* En que orden se muestran los grupos. Kick primero porque son los
-     que no se pueden buscar en ningun otro lado. */
-  const ORDEN_FUENTES = ['kick', '7tv'];
+     que no se pueden buscar en ningun otro lado; 7TV al final porque es
+     el mas largo y el unico que no es nativo de una plataforma. */
+  const ORDEN_FUENTES = ['kick', 'twitch', '7tv'];
   const TITULO_GRUPO = {
     kick: 'De Kick · los que pasaron por este chat',
+    twitch: 'De Twitch · del canal y los globales',
     '7tv': 'De 7TV · del canal y los globales',
   };
-  /* Lo que la pagina admite no tener. Se dice en el panel y no en un
-     comentario: un selector que aparenta ser el catalogo completo
-     manda a buscar un emote que no va a estar. */
+  /* Lo que la pagina admite no tener, y lo que no puede saber. Se dice
+     en el panel y no en un comentario: un selector que aparenta ser el
+     catalogo completo manda a buscar un emote que no va a estar, y uno
+     que promete que todos se van a dibujar miente sobre los de
+     suscriptor. */
   const NOTA_EMOTES = 'De Kick aparecen sólo los que ya pasaron por este chat: '
     + 'Kick no ofrece forma de pedirle la lista de emotes de un canal. '
-    + 'Los nativos de Twitch todavía no están.';
+    + 'Los de Twitch que son del canal (sub, seguidor o bits) salen dibujados '
+    + 'sólo para quien los tenga desbloqueados; al resto les llega la palabra.';
   /* No se vuelve a pedir la lista mas seguido que esto aunque se abra
      y cierre el panel. Los de Kick crecen en vivo, asi que refrescar
      al abrir tiene sentido; hacerlo en cada toque, no. */

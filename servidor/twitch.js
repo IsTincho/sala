@@ -23,13 +23,14 @@
    refreshToken, no solo el accessToken.
 
    ---------------------------------------------------------------
-   ...Y POR QUE LAS INSIGNIAS SI VAN CON UN APP TOKEN
+   ...Y POR QUE LAS INSIGNIAS Y LOS EMOTES SI VAN CON UN APP TOKEN
 
-   `helix/chat/badges` es la excepcion, y esta documentada: pide "an
-   app access token or user access token" y NINGUN scope
-   (dev.twitch.tv/docs/api/reference, Get Channel Chat Badges). O sea
-   que las imagenes de las insignias de cualquier canal se pueden
-   pedir sin que el creador autorice nada nuevo.
+   `helix/chat/badges` y `helix/chat/emotes` son la excepcion, y esta
+   documentada: piden "an app access token or user access token" y
+   NINGUN scope (dev.twitch.tv/docs/api/reference, Get Channel Chat
+   Badges y Get Channel Emotes). O sea que las imagenes de las
+   insignias y la lista de emotes de cualquier canal se pueden pedir sin
+   que el creador autorice nada nuevo.
 
    Se usa el app token y no el del creador a proposito:
 
@@ -44,7 +45,8 @@
      - Es UN token para todo el proceso en vez de uno por creador.
 
    El token de app no sale de este archivo: lo guarda `tokenDeApp()` y
-   solo lo ven las dos funciones de insignias de aca abajo.
+   solo lo ve `pedirConTokenDeApp`, que es por donde pasan las cuatro
+   funciones publicas de abajo (dos de insignias y dos de emotes).
 
    ---------------------------------------------------------------
    is_sent Y drop_reason
@@ -274,15 +276,24 @@ export async function suscribirChat({ accessToken, sessionId, broadcasterId, usu
   return resp.json();
 }
 
-/* --------------------------------------------- insignias del chat
+/* ------------------------ lo publico de Helix: insignias y emotes
 
-   Las imagenes que Twitch sirve para cada insignia: las del canal
-   (las que el streamer subio para sus suscriptores y para los bits) y
-   las globales (streamer, mod, VIP, Prime, verificado...).
+   Dos familias de cosas que Twitch sirve a cualquiera con un token de
+   APP y NINGUN scope (verificado el 2026-09-23 en
+   dev.twitch.tv/docs/api/reference):
 
-   Quien las cachea y las casa con cada mensaje es `insignias.js`;
-   aca vive solo el pedido, porque el token y el CLIENT_ID son de este
-   archivo y no salen de el. */
+     - las IMAGENES DE LAS INSIGNIAS del chat: las del canal (las que
+       el streamer subio para sus suscriptores y para los bits) y las
+       globales (streamer, mod, VIP, Prime, verificado...);
+     - los EMOTES NATIVOS: los del canal (los de suscriptor, los de
+       seguidor y los de tramo de bits) y los globales (Kappa, LUL...).
+
+   Quien los cachea es `insignias.js` y `emotes.js`; aca vive solo el
+   pedido, porque el token y el CLIENT_ID son de este archivo y no salen
+   de el.
+
+   EL DUEÑO NO TIENE QUE AUTORIZAR NADA para ninguna de las dos: no hay
+   scope, y el token de app no representa a ninguna persona. */
 
 /* Cuanto se espera a Helix antes de dar el pedido por perdido. El
    mismo numero que usa `emotes.js` con 7TV, y por el mismo motivo: un
@@ -387,15 +398,28 @@ export function olvidarTokenDeApp() {
   pidiendoTokenApp = null;
 }
 
-/* Un 400 o un 404 de este endpoint es un hecho estable —el id no
-   existe o no es un canal— y no un fallo de red. Se distingue para
-   que quien cachea pueda tratarlo como "este canal no tiene
-   insignias propias" y no reintentarlo cada minuto para siempre.
-   Es el mismo reparto que hace `emotes.js` con el 404 de 7TV. */
-export class SinInsignias extends Error {}
+/* Un 400 o un 404 de estos endpoints es un hecho ESTABLE —el id no
+   existe o no es un canal— y no un fallo de red. Y que no haya
+   credenciales de la app es igual de estable: no se arregla
+   reintentando. Se distinguen para que quien cachea pueda tratarlos
+   como "este canal no tiene" y no reintentar cada minuto para siempre.
+   Es el mismo reparto que hace `emotes.js` con el 404 de 7TV.
 
-async function pedirInsignias(ruta) {
-  if (!hayCredenciales()) throw new SinInsignias('faltan las credenciales de la app de Twitch');
+   Se llama `SinDatos` y no `SinInsignias` porque desde que los emotes
+   nativos de Twitch entran por el mismo camino, la excepcion ya no
+   habla de insignias: habla de "Helix contesto un hecho estable, no
+   hay nada que traer". */
+export class SinDatos extends Error {}
+
+/**
+ * Un GET a lo publico de Helix con el token de APP.
+ *
+ * `etiqueta` es lo que sale en el log y en el mensaje del error: sin
+ * ella, un fallo de los emotes diria "chat/badges" y mandaria a leer
+ * el codigo que no era.
+ */
+async function pedirConTokenDeApp(ruta, etiqueta) {
+  if (!hayCredenciales()) throw new SinDatos('faltan las credenciales de la app de Twitch');
   const resp = await fetch(`${URL_HELIX}${ruta}`, {
     headers: cabecerasHelix(await tokenDeApp()),
     signal: AbortSignal.timeout(ESPERA_HELIX),
@@ -406,14 +430,19 @@ async function pedirInsignias(ruta) {
      hasta que alguien reinicie el proceso. */
   if (resp.status === 401) {
     olvidarTokenDeApp();
-    throw new Error('twitch chat/badges respondio 401');
+    throw new Error(`twitch ${etiqueta} respondio 401`);
   }
   if (resp.status === 400 || resp.status === 404) {
-    throw new SinInsignias(`twitch chat/badges respondio ${resp.status}`);
+    throw new SinDatos(`twitch ${etiqueta} respondio ${resp.status}`);
   }
-  if (!resp.ok) throw new Error(`twitch chat/badges respondio ${resp.status}`);
-  const { data } = await resp.json();
-  return Array.isArray(data) ? data : [];
+  if (!resp.ok) throw new Error(`twitch ${etiqueta} respondio ${resp.status}`);
+  let cuerpo;
+  try {
+    cuerpo = await resp.json();
+  } catch {
+    throw new Error(`twitch ${etiqueta} contesto algo que no se pudo leer`);
+  }
+  return Array.isArray(cuerpo?.data) ? cuerpo.data : [];
 }
 
 /**
@@ -424,10 +453,31 @@ async function pedirInsignias(ruta) {
  * image_url_1x, image_url_2x, image_url_4x, title, ... }] }]`.
  */
 export const insigniasDelCanal = broadcasterId =>
-  pedirInsignias(`/chat/badges?broadcaster_id=${encodeURIComponent(broadcasterId)}`);
+  pedirConTokenDeApp(`/chat/badges?broadcaster_id=${encodeURIComponent(broadcasterId)}`, 'chat/badges');
 
 /** Las insignias que valen en todos los canales. Misma forma. */
-export const insigniasGlobales = () => pedirInsignias('/chat/badges/global');
+export const insigniasGlobales = () => pedirConTokenDeApp('/chat/badges/global', 'chat/badges');
+
+/**
+ * Los emotes NATIVOS de un canal: los de suscriptor, los de seguidor y
+ * los de tramo de bits.
+ *
+ * Devuelve la lista cruda de Helix: `[{ id, name, emote_type, tier,
+ * format, scale, theme_mode, ... }]`.
+ *
+ * NO SE DEVUELVE EL `template`, que Helix manda al lado de `data`, y es
+ * a proposito: la URL de un emote de Twitch la arma
+ * `mensajes.URL_EMOTE_TWITCH`, que es la MISMA con la que el chat los
+ * pinta desde la Fase 1. Tener dos formas de armar la misma URL seria
+ * que el panel muestre una imagen y el mensaje otra; y la que ya esta
+ * viene funcionando contra el CDN de verdad, que es mas de lo que se
+ * puede decir de una plantilla interpolada a mano.
+ */
+export const emotesDelCanal = broadcasterId =>
+  pedirConTokenDeApp(`/chat/emotes?broadcaster_id=${encodeURIComponent(broadcasterId)}`, 'chat/emotes');
+
+/** Los emotes que valen en todos los canales. Misma forma. */
+export const emotesGlobales = () => pedirConTokenDeApp('/chat/emotes/global', 'chat/emotes');
 
 /* ------------------------------------------------------- EventSub */
 

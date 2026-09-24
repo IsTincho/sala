@@ -277,7 +277,7 @@ async function bajarDelCanal(slug) {
      fallo: cuenta como "no tiene insignias propias" y no se vuelve a
      intentar por una hora. Un creador que nunca vinculo Twitch no
      puede generar un pedido por mensaje. */
-  if (!id) throw new twitch.SinInsignias('el creador no tiene Twitch vinculado');
+  if (!id) throw new twitch.SinDatos('el creador no tiene Twitch vinculado');
   return tablaDeSets(await twitch.insigniasDelCanal(id));
 }
 
@@ -345,7 +345,7 @@ function agendar(k, como, etiqueta) {
           : `[insignias] ${etiqueta}: ${t.size} juego${t.size === 1 ? '' : 's'}`);
     })
     .catch(e => {
-      if (e instanceof twitch.SinInsignias) {
+      if (e instanceof twitch.SinDatos) {
         /* El creador no tiene Twitch vinculado, o Helix dijo que ese id
            no es un canal. Se deja la tabla vacia y se calla. */
         c.tabla = new Map();

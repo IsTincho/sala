@@ -80,6 +80,8 @@
    ============================================================ */
 
 import { numeroDeEntorno } from './entorno.js';
+import { URL_EMOTE_TWITCH } from './mensajes.js';
+import * as twitch from './twitch.js';
 import * as vinculos from './vinculos.js';
 
 const API = 'https://7tv.io/v3';
@@ -370,8 +372,14 @@ export function vencer(slug, red) {
      "recargar mis emotes": el creador no piensa en redes, piensa en su
      canal. (Antes, sin red, se buscaba la clave `istincho` cuando las
      claves son `istincho/kick`: no vencia nada y no lo decia.) */
-  for (const r of red ? [red] : ['kick', 'twitch']) {
-    const c = cache.get(clave(slug, r));
+  const claves = (red ? [red] : ['kick', 'twitch']).map(r => clave(slug, r));
+  /* Y los NATIVOS de Twitch, que son otro casillero de la misma red. Si
+     no se vencieran aca, desvincular una cuenta de Twitch y vincular
+     otra dejaria los emotes del canal anterior en el selector: el mismo
+     bug que ya habia con las insignias, un piso mas abajo. */
+  if (!red || red === 'twitch') claves.push(clave(slug, RED_NATIVOS));
+  for (const k of claves) {
+    const c = cache.get(k);
     if (c) c.vence = 0;
   }
 }
@@ -486,28 +494,40 @@ const TOPE_ID = 64;
 const TOPE_URL = 300;
 
 /**
- * La URL tal como se la va a mandar al navegador, o '' si no se la
- * puede mandar.
+ * Un validador de URLs anclado a UN dominio.
  *
- * Esto termina en el `src` de un `<img>` en la pantalla de cada
- * espectador, y lo arma un servicio de terceros. No es un XSS —un
- * `javascript:` en un `src` de imagen no se ejecuta—, pero el estandar
- * de la casa es no confiar: es el mismo motivo por el que
+ * Toda URL que sale de aca termina en el `src` de un `<img>` en la
+ * pantalla de cada espectador, y la arma (o la dicta) un tercero. No es
+ * un XSS —un `javascript:` en un `src` de imagen no se ejecuta—, pero
+ * el estandar de la casa es no confiar: es el mismo motivo por el que
  * `colorSeguro()` valida el color del chat en el servidor ademas de en
  * la pagina. Verificado que sin esto pasan `javascript:`, `data:` y
  * `http:`.
  *
- * Se ancla al dominio de 7TV y no al host exacto (`cdn.7tv.app`) para
- * que un cambio de subdominio de ellos no apague los emotes, pero un
- * `//evil.com/` en la respuesta no llegue a ningun lado.
+ * Se ancla al DOMINIO y no al host exacto (`cdn.7tv.app`,
+ * `files.kick.com`, `static-cdn.jtvnw.net`) para que un subdominio
+ * nuevo de ellos no apague los emotes, pero un `//evil.com/` en la
+ * respuesta no llegue a ningun lado.
+ *
+ * Es una fabrica y no tres funciones copiadas porque son tres fuentes
+ * con el mismo criterio: el dia que el criterio cambie —un tope de
+ * largo distinto, un esquema mas— tiene que cambiar una vez.
  */
-function urlSegura(candidata) {
-  let u;
-  try { u = new URL(candidata); } catch { return ''; }
-  if (u.protocol !== 'https:') return '';
-  if (u.hostname !== '7tv.app' && !u.hostname.endsWith('.7tv.app')) return '';
-  return u.href.length <= TOPE_URL ? u.href : '';
+function urlSeguraDe(dominio) {
+  return (candidata) => {
+    let u;
+    try { u = new URL(String(candidata ?? '')); } catch { return ''; }
+    if (u.protocol !== 'https:') return '';
+    if (u.hostname !== dominio && !u.hostname.endsWith(`.${dominio}`)) return '';
+    return u.href.length <= TOPE_URL ? u.href : '';
+  };
 }
+
+/** La de un emote de 7TV. */
+const urlSegura = urlSeguraDe('7tv.app');
+
+/** La de un emote nativo de Twitch (la CDN de emoticons). */
+const urlDeTwitchSegura = urlSeguraDe('jtvnw.net');
 
 /** La tabla nombre -> imagen de un set ya bajado. */
 function tablaDelSet(set) {
@@ -788,20 +808,12 @@ const TOPE_NOMBRE = 80;
  * La url de un emote de Kick tal como se la va a guardar, o '' si no
  * se la puede guardar.
  *
- * Mismo criterio que `urlSegura` con 7TV: esto termina en el `src` de
- * un `<img>` en la pantalla de cada espectador. Hoy la arma
- * `mensajes.js` a partir de un id de solo digitos, asi que no puede
- * venir mal; pero `resolver()` es una entrada EXPORTADA y lo que se
- * guarda aca se le sirve a todo el mundo por una ruta publica. No se
- * confia, y listo.
+ * Hoy la arma `mensajes.js` a partir de un id de solo digitos, asi que
+ * no puede venir mal; pero `resolver()` es una entrada EXPORTADA y lo
+ * que se guarda aca se le sirve a todo el mundo por una ruta publica.
+ * No se confia, y listo.
  */
-function urlDeKickSegura(candidata) {
-  let u;
-  try { u = new URL(String(candidata ?? '')); } catch { return ''; }
-  if (u.protocol !== 'https:') return '';
-  if (u.hostname !== 'kick.com' && !u.hostname.endsWith('.kick.com')) return '';
-  return u.href.length <= TOPE_URL ? u.href : '';
-}
+const urlDeKickSegura = urlSeguraDe('kick.com');
 
 /**
  * Anota los emotes NATIVOS DE KICK de un mensaje que acaba de pasar.
@@ -882,6 +894,160 @@ export function emotesDeKickVistos(slug) {
   return salida.reverse();
 }
 
+/* ============================================================
+   LOS EMOTES NATIVOS DE TWITCH
+
+   Los del canal (`helix/chat/emotes`) y los globales
+   (`helix/chat/emotes/global`). Estaban anotados y no hechos porque
+   faltaba de donde sacar un app token; ahora existe (`twitch.js`, por
+   el camino de las insignias) y no hace falta NINGUN scope nuevo ni que
+   el dueño autorice nada: los dos endpoints piden "an app access token
+   or user access token" y ningun scope (verificado el 2026-09-23 en
+   dev.twitch.tv/docs/api/reference).
+
+   ---------------------------------------------------------------
+   ESTO ES SOLO PARA EL SELECTOR, NO PARA PINTAR MENSAJES
+
+   Un emote nativo de Twitch ya llega resuelto en cada mensaje de
+   EventSub (con su id y su rango), asi que `conEmotes` no tiene nada
+   que buscar aca. La tabla existe para que el panel pueda OFRECERLOS, y
+   por eso se baja cuando alguien abre el selector y no cuando llega un
+   mensaje: un chat donde nadie abre el panel no le cuesta un pedido a
+   Helix.
+
+   ---------------------------------------------------------------
+   LA URL LA ARMA `mensajes.URL_EMOTE_TWITCH`, Y NO EL `template`
+
+   Helix manda un campo `template` al lado de `data`
+   (`.../emoticons/v2/{{id}}/{{format}}/{{theme_mode}}/{{scale}}`) y NO
+   se usa, a proposito: la URL de un emote de Twitch ya la arma
+   `mensajes.js` desde la Fase 1, es la que el chat pinta en cada
+   mensaje, y viene funcionando contra el CDN de verdad. Con dos formas
+   de armar la misma URL, el panel mostraria una imagen y el mensaje
+   otra —y una plantilla interpolada a mano es justo donde se cuela el
+   orden equivocado de los placeholders, que es la trampa que el README
+   dejo anotada—. Ademas asi el navegador se baja UNA imagen: la misma
+   que ya tiene cacheada del chat.
+
+   ---------------------------------------------------------------
+   LOS DEL CANAL SE OFRECEN AUNQUE NO TODOS PUEDAN USARLOS
+
+   Un emote de suscriptor lo dibuja Twitch solo para quien esta
+   suscripto; a los demas les sale la palabra. No hay forma de saber
+   desde aca quien tiene cual sin pedirle a CADA espectador el scope
+   `user:read:emotes` (eso es `helix/chat/emotes/user`), y un permiso
+   nuevo por persona para un adorno no se paga.
+
+   Asi que se ofrecen igual y el panel lo DICE: en la nota, al lado de
+   la de Kick. Es el mismo trato honesto— lo peor que pasa es que salga
+   la palabra, que es exactamente lo que pasa hoy si alguien la escribe
+   a mano. En la ventana del creador, ademas, el problema no existe: el
+   streamer tiene desbloqueados todos los emotes de su canal.
+
+   ---------------------------------------------------------------
+   TRES VENCIMIENTOS, LOS MISMOS QUE 7TV, Y UN TOPE
+
+   Se reusa `agendar()` entero: casillero por clave, una sola bajada en
+   vuelo, el tope de `EN_VUELO_MAX`, el plazo sobre la bajada COMPLETA y
+   el log cuando cambia el estado. Los vencimientos son los que ya
+   estan: exito diez minutos, "no tiene" una hora, fallo un minuto sin
+   pisar la tabla que habia.
+
+   Una respuesta buena pero VACIA se trata como "no tiene" y no como un
+   exito, igual que en `insignias.js`: un canal sin emotes propios es el
+   caso de la mayoria, y preguntar cada diez minutos por algo que no
+   aparece solo seria gastar al pedo (con 900 creadores, 130.000 pedidos
+   por dia contra 3.600).
+
+   El tope de entradas por tabla es un freno de memoria y de ancho de
+   banda, no una medida: no se probo contra el Helix de verdad cuantos
+   emotes tiene un canal grande. Cada entrada son ~150 bytes, asi que
+   300 por canal y 900 creadores son ~40 MB en el peor caso imposible
+   (los 900 con el panel abierto).
+   ============================================================ */
+
+/* Se puede apagar sin tocar codigo, como `EMOTES_7TV` y como
+   `INSIGNIAS_TWITCH`: son tres terceros distintos y cada uno se apaga
+   solo. Apagar 7TV no tiene por que apagar los de Twitch. */
+export const ACTIVO_TWITCH = process.env.EMOTES_TWITCH !== '0';
+
+export const TOPE_NATIVOS_TWITCH = 300;
+
+/* Es OTRO casillero de la misma red y no se pisa con el de 7TV
+   (`<slug>/twitch`): un slug validado no tiene `/` ni `-`, asi que
+   `<slug>/twitch-nativos` no puede chocar con la clave de nadie. Usar
+   `clave()` ademas hace que `comoEsta(slug, 'twitch-nativos')` ande
+   gratis. */
+const RED_NATIVOS = 'twitch-nativos';
+const CLAVE_GLOBALES_TWITCH = '/globales-twitch';
+
+/** Lo que devuelve Helix, pasado a la misma tabla `nombre -> {id,url}`. */
+function tablaDeNativosDeTwitch(lista) {
+  const t = new Map();
+  for (const e of lista ?? []) {
+    if (t.size >= TOPE_NATIVOS_TWITCH) break;
+    const nombre = String(e?.name ?? '').slice(0, TOPE_NOMBRE);
+    /* El id entra en una URL: se deja lo que Twitch usa de verdad
+       (`25`, `emotesv2_abc...`) y nada mas. Sin esto, un id con `../`
+       armaria otra ruta del CDN. */
+    const id = String(e?.id ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, TOPE_ID);
+    if (!nombre || !id || t.has(nombre)) continue;
+    const url = urlDeTwitchSegura(URL_EMOTE_TWITCH(id));
+    if (url) t.set(nombre, { id, url });
+  }
+  return t;
+}
+
+/** El "no hay nada que traer" de Helix, en el idioma de este modulo. */
+const comoSinCuenta = e =>
+  (e instanceof twitch.SinDatos ? new ErrorSinCuenta(e.message) : e);
+
+async function bajarNativosDeTwitch(slug) {
+  const quien = await identidad(slug, 'twitch');
+  const id = String(quien?.usuarioId ?? '');
+  /* Sin Twitch vinculado no hay a quien preguntarle, y eso NO es un
+     fallo: no se vuelve a intentar por una hora. */
+  if (!id) throw new ErrorSinCuenta('el creador no tiene vinculado Twitch', { vinculada: false });
+
+  let lista;
+  try { lista = await twitch.emotesDelCanal(id); }
+  catch (e) { throw comoSinCuenta(e); }
+
+  const t = tablaDeNativosDeTwitch(lista);
+  /* 200 con la lista vacia es "este canal no tiene emotes propios", que
+     es el caso de la mayoria: vence como "no tiene" y no como exito. */
+  if (!t.size) throw new ErrorSinCuenta('el canal no tiene emotes nativos');
+  return t;
+}
+
+async function bajarGlobalesDeTwitch() {
+  let lista;
+  try { lista = await twitch.emotesGlobales(); }
+  catch (e) { throw comoSinCuenta(e); }
+  const t = tablaDeNativosDeTwitch(lista);
+  if (!t.size) throw new ErrorSinCuenta('Twitch no devolvio emotes globales');
+  return t;
+}
+
+/**
+ * Los emotes nativos del canal de Twitch de este creador.
+ * Sincrona, como `tabla()`: lo que haya AHORA, y deja agendada la
+ * bajada.
+ */
+export function nativosDeTwitch(slug) {
+  if (!ACTIVO_TWITCH || !slug) return new Map();
+  const k = clave(slug, RED_NATIVOS);
+  agendar(k, () => bajarNativosDeTwitch(slug), `${slug}/twitch-nativos`);
+  return casillero(k).tabla;
+}
+
+/** Los emotes globales de Twitch, compartidos por todos los canales. */
+export function globalesDeTwitch() {
+  if (!ACTIVO_TWITCH) return new Map();
+  agendar(CLAVE_GLOBALES_TWITCH, bajarGlobalesDeTwitch, 'globales-twitch');
+  return casillero(CLAVE_GLOBALES_TWITCH).tabla;
+}
+
 /* ------------------------------------------------------- catalogo
 
    Lo que el selector de la caja de escribir ofrece, ya mezclado y ya
@@ -896,16 +1062,16 @@ export function emotesDeKickVistos(slug) {
      - 7TV viaja como su nombre pelado, igual en las dos redes.
      - un nativo de Kick solo existe en Kick: en Twitch, lo mejor que
        se puede hacer es que se lea la palabra (ver `sinMarcasDeKick`).
+     - un nativo de Twitch solo existe en Twitch, por lo mismo.
+     - un nombre que es nativo en las DOS sale en las dos: se manda el
+       markup de Kick, que a Twitch le llega como la palabra y alla es
+       su propio emote.
 
-   LOS NATIVOS DE TWITCH TODAVIA NO ESTAN, y es a proposito, no un
-   olvido. `GET helix/chat/emotes` y `/emotes/global` los dan con un
-   app access token y SIN NINGUN SCOPE (verificado el 2026-09-23 en
-   dev.twitch.tv/docs/api/reference): o sea que se pueden sumar sin
-   pedirle un permiso nuevo a nadie. Lo que falta es de donde sacar
-   el app token, y eso esta escribiendose en `twitch.js` en este mismo
-   momento por otro camino (las insignias). Sumarlo ahora seria
-   escribir dos veces la misma credencial. Queda anotado en el README
-   con la forma exacta que tiene que tener. */
+   LAS TRES FUENTES SE DEDUPLICAN POR NOMBRE, y el orden de prioridad es
+   nativos primero (Kick, despues Twitch) y 7TV al final. Es la misma
+   regla que `conEmotes` usa para pintar ("ganan los nativos"), y aca
+   ademas Kick va antes que Twitch porque un emote de Kick no se puede
+   buscar en ningun otro lado. */
 
 /**
  * El catalogo de emotes de una sala para las redes que se pidan.
@@ -924,6 +1090,18 @@ export function catalogo(slug, redes) {
   const salida = [];
   const puestos = new Set();
 
+  /* Los nativos de Twitch se arman PRIMERO aunque se muestren despues:
+     hace falta saber si un nombre de Kick tambien existe alla. */
+  const deTwitch = new Map();
+  if (pedidas.includes('twitch')) {
+    for (const [nombre, img] of nativosDeTwitch(slug)) deTwitch.set(nombre, img);
+    /* El canal le gana a los globales, igual que con las insignias: un
+       streamer puede llamar a un emote suyo como uno global. */
+    for (const [nombre, img] of globalesDeTwitch()) {
+      if (!deTwitch.has(nombre)) deTwitch.set(nombre, img);
+    }
+  }
+
   /* Los nativos de Kick van PRIMERO: son los que no se pueden buscar
      en ningun otro lado, y con dos emotes del mismo nombre el de la
      casa le gana al de 7TV (el mismo criterio que usa `conEmotes`
@@ -937,9 +1115,23 @@ export function catalogo(slug, redes) {
         url: e.url,
         fuente: 'kick',
         marca: marcaDeKick(e.id, e.nombre),
-        redes: ['kick'],
+        /* UN NOMBRE QUE TAMBIEN ES NATIVO EN TWITCH SALE EN LAS DOS, y
+           no es un detalle cosmetico: a Kick le va el markup (que es lo
+           unico que Kick dibuja) y a Twitch le llega la palabra pelada,
+           que alla ES su propio emote. Marcarlo como "en Twitch se lee
+           como texto" seria mentirle a quien lo elige. */
+        redes: deTwitch.has(e.nombre) ? ['kick', 'twitch'] : ['kick'],
       });
     }
+  }
+
+  /* Y ahora los de Twitch que no quedaron ya puestos. Un nativo de
+     Twitch existe SOLO en Twitch: en Kick, lo mejor que puede pasar es
+     que se lea la palabra. */
+  for (const [nombre, img] of deTwitch) {
+    if (puestos.has(nombre)) continue;
+    puestos.add(nombre);
+    salida.push({ nombre, url: img.url, fuente: 'twitch', marca: nombre, redes: ['twitch'] });
   }
 
   /* 7TV: el set del canal de cada red pedida y despues los globales.

@@ -4181,3 +4181,134 @@ curl -sN localhost:8778/eventos/istincho | head -5      # evento estado al conec
 ## 2026-09-06 — Arranque
 
 Repo creado con el plan (`PLAN.md`), los prompts para agentes (`AGENTES.md`), el prompt del director (`ARRANQUE.md`) y la lista de tareas del dueño (`TAREAS-DUENO.md`). Nada de código todavía. Puerto local reservado: 8778 (CosasStream usa 8777).
+## 2026-09-23 — El selector de emotes de la caja, y la traducción por red
+
+**961 pruebas en verde**, con 58 nuevas (`pruebas/emotes-selector.test.js` y
+`pruebas/pagina-chat-emotes.test.js`).
+
+### Lo que se agrega
+
+En `/chat/<slug>`, un botón **Emotes** al lado de la caja: panel con buscador, navegable con
+teclado y con blancos de 44 px para el dedo. Se elige un emote y se inserta en el mensaje, sin
+acordarse del nombre exacto.
+
+### El problema de fondo, que era el trabajo de verdad
+
+El mismo emote **no se escribe igual en las dos redes**: en Kick va
+`[emote:5747892:collectiblesMEGALUL]`, en Twitch y en 7TV va el nombre pelado. Y con
+`red: "ambas"` el mensaje sale a las dos a la vez, así que armar el markup en la página
+significaría elegir uno y que el otro lado vea `[emote:5747892:…]` literal en pantalla.
+
+**La decisión:** la caja guarda **una sola forma** del mensaje y la traducción la hace el
+servidor, en `envio.comoViajaA()`, que es el único lugar por el que pasan los dos envíos y el
+único que sabe a qué red le está hablando. La `marca` de cada emote la manda el servidor en el
+catálogo; **la página nunca escribe markup de ninguna plataforma**.
+
+**Y por qué la marca es el formato de Kick y no una marca inventada.** Porque el servidor tiene
+que saber sacarlo igual: hoy, sin nada de esto, cualquiera puede escribir `[emote:1:X]` a mano
+en la caja y con "las dos" eso llega a Twitch con los corchetes puestos. O sea que
+`sinMarcasDeKick()` había que escribirla de todos modos. Una vez que existe, que el selector
+use el formato de Kick **no agrega una sola línea de servidor**; una marca propia (`:nombre:`)
+habría agregado una tabla nombre→id que consultar al enviar, con su carrera entre lo que se
+mide y lo que se manda, y con dos emotes del mismo nombre resolviendo al que no era. La marca
+lleva todo lo que hace falta y por eso la traducción es una **función pura**.
+
+### Contra qué se mide el tope de 500 (la pregunta del encargo)
+
+**Contra lo que cada red va a recibir.** `[emote:5747892:collectiblesMEGALUL]` son 36 caracteres
+para Kick y 19 para Twitch: medir los dos topes contra un solo texto obligaría a mentir en uno.
+
+La invariante que ya había costado un bug **no era** "el mismo string a las dos redes": era
+**lo que se mide es lo que se manda**. Sigue en pie, ahora por red, y se sostiene sin acordarse
+de nada porque `comoViajaA` no mira tablas, ni cachés, ni el reloj: no hay estado que pueda
+cambiar entre la medición y el envío.
+
+### El bug que encontró la revisión adversarial (y que no era teórico)
+
+`String.replace` **no vuelve a mirar lo que acaba de escribir**. Con una sola pasada,
+`[emote:1:[emote:2:AB]]` —escrito a mano por cualquiera— salía como `[emote:2:AB]`: markup de
+Kick **válido**, camino a Twitch. Justo lo que todo esto viene a impedir.
+
+Cerrar el patrón para que el nombre tampoco acepte `[` **no alcanza**: ahí matchea el de adentro
+y queda `[emote:1:AB]`, lo mismo al revés. La solución es repetir hasta que el texto no cambie,
+y **termina siempre sin tope arbitrario** porque cada reemplazo borra por lo menos los 10
+caracteres de `[emote:N:]`, así que cada vuelta útil acorta el texto. Hay prueba, con anidado
+de cuatro niveles.
+
+### Los emotes de Kick: verificado que no hay forma de listarlos
+
+No es una suposición heredada del informe viejo. Verificado el **2026-09-23**:
+
+- `docs.kick.com/llms-full.txt` completa: **ni un endpoint de emotes**. La palabra aparece sólo
+  dentro del payload de ejemplo de `chat.message.sent`. El changelog está vivo (última entrada,
+  11/08/2026) y nunca los menciona.
+- Pedido formal de la comunidad **abierto y sin respuesta desde diciembre de 2025**
+  ([KickDevDocs#323](https://github.com/KickEngineering/KickDevDocs/issues/323)).
+- Los coleccionables no se listan por ningún lado.
+- El único que los enumera, `kick.com/emotes/<slug>`, **no está documentado**, y los términos
+  dicen que uno *"will only access Program Materials documented on the Kick Developer Site"*.
+  No se toca.
+
+**La salida:** el selector ofrece los emotes de Kick **que ese chat vio pasar**. Llegan
+resueltos en cada mensaje (id, nombre y url del `[emote:id:nombre]` del `content`), así que
+anotarlos no cuesta un pedido. Es una lista viva, incluye coleccionables —que no se listan de
+ninguna otra forma— y arranca vacía; el panel lo **dice con todas las letras** en vez de
+aparentar un catálogo completo.
+
+**Hallazgo nuevo de los términos, que el informe del repo no tenía** y que fijó el vencimiento:
+Kick permite cachear su contenido *"for only a twenty-four hour time period"*, y además prohíbe
+la **re-syndication**. Por eso los vistos caducan a las **12 horas** (entra con margen y no
+depende de que el proceso se reinicie seguido) y por eso **no se persiste nada**: un JSON de
+emotes de Kick versionado en el repo sería una copia permanente *y* una redistribución.
+
+Dato al pasar que confirma lo que ya decía `mensajes.js`: el array `emotes` del webhook **viene
+`null` en la práctica** pese a que la doc lo muestra lleno
+([KickDevDocs#210](https://github.com/KickEngineering/KickDevDocs/issues/210), cerrada como
+resuelta). El markup del `content` no es la fuente preferible: es la única que llega.
+
+### Twitch: se averiguó, y se decidió NO hacerlo ahora
+
+`GET helix/chat/emotes` y `/emotes/global` piden *"an app access token or user access token"* y
+**ningún scope** (verificado el 2026-09-23 en `dev.twitch.tv/docs/api/reference`). O sea: **el
+dueño no tiene que reautorizar nada**, alcanza con lo que ya hay.
+
+Lo que falta es de dónde sacar el app token, y eso **se está escribiendo en `twitch.js` en este
+mismo momento** por el camino de las insignias. Sumarlo ahora sería escribir dos veces la misma
+credencial y chocar de frente con el otro trabajo en curso. Queda anotado en el README con la
+forma exacta, incluidas tres trampas que la doc no pone de frente (el `template` viene al lado
+de `data` y no dentro de cada emote; el orden real de los placeholders es
+id/format/theme_mode/scale, distinto del de la prosa; y `format: default` funciona pero no está
+documentado).
+
+### Archivos tocados
+
+- `servidor/emotes.js`: `marcaDeKick`, `sinMarcasDeKick`, el registro de vistos
+  (`anotarVistos`, `emotesDeKickVistos`) y `catalogo()`. El registro se engancha en
+  `resolver()`, que ya corre en todos los mensajes de las dos redes: **cero puntos de llamada
+  nuevos y `chat.js` sin tocar**. Va en su propio `try`, para que romperse no le saque los
+  emotes de 7TV a un mensaje.
+- `servidor/envio.js`: `comoViajaA()`, y `porQueNoSePuedeMandar`/`aUnaRed` midiendo y mandando
+  por red.
+- `servidor/index.js`: `GET /api/chat/:slug/emotes`, pública y sin sesión (leer el chat nunca
+  pidió login), con `emotes: []` si el chat está cerrado.
+- `paginas/chat.html`, `paginas/chat/chat.js`, `paginas/chat/chat.css`.
+- `pruebas/emotes-selector.test.js`, `pruebas/pagina-chat-emotes.test.js`.
+
+### Cómo verlo
+
+`npm run local`, abrir `/chat/<slug>` con el chat abierto y una cuenta conectada. Los de 7TV
+aparecen enseguida; los de Kick, a medida que alguien los use en el chat. Con "las dos"
+elegidas, poner uno de Kick tiene que mostrar el aviso de que en Twitch sale como texto.
+
+### Qué queda pendiente
+
+- **El selector no está en `/chat`**, la ventana del creador: esa caja manda por
+  `chat.enviar()`, que **todavía no traduce por red**. Ponerlo ahí hoy mandaría markup de Kick a
+  Twitch. El día que esa puerta pase por `envio.comoViajaA`, es sacarle el `hidden` al botón.
+- **Los nativos de Twitch**, cuando aterrice el `tokenDeApp()` de las insignias.
+- **Sin probar en producción:** que Kick dibuje un `[emote:id:nombre]` mandado por la API con el
+  token de un espectador. El formato lo confirmó el dueño y es el que Kick pone en el `content`,
+  pero mandarlo de vuelta por `POST /public/v1/chat` es el camino que sólo se ve en vivo.
+
+---
+

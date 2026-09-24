@@ -79,9 +79,12 @@ test('Kick: el fixture real se traduce entero', () => {
   assert.equal(m.color, '#ff5733');
   assert.equal(m.texto, 'que peli mas larga HYPERCLAP');
   assert.equal(recortar(m.texto, m.emotes[0]), 'HYPERCLAP');
+  /* `version` vacia porque Kick no tiene versiones de insignia, y
+     `url` vacia porque Kick no publica las imagenes por ninguna API
+     documentada: se ve la etiqueta de texto. */
   assert.deepEqual(m.insignias, [
-    { tipo: 'moderator', texto: 'Moderator' },
-    { tipo: 'subscriber', texto: 'Subscriber (3)' },
+    { tipo: 'moderator', version: '', texto: 'Moderator', url: '' },
+    { tipo: 'subscriber', version: '', texto: 'Subscriber (3)', url: '' },
   ]);
   assert.equal(m.hora, '2026-01-14T16:08:06.000Z');
   assert.equal(m.respondeA, undefined);
@@ -246,12 +249,15 @@ test('Twitch: las insignias se traducen y el subscriber muestra los meses', () =
       { set_id: 'subscriber_nuevo_de_twitch', id: '1', info: '' },
     ],
   }));
+  /* `version` es el `id` que manda EventSub: CUAL de los dibujos del
+     set, no los meses (los meses son `info`, y van en el texto).
+     `url` la completa despues `insignias.js`. */
   assert.deepEqual(m.insignias, [
-    { tipo: 'broadcaster', texto: 'Streamer' },
-    { tipo: 'subscriber', texto: 'Sub (18)' },
+    { tipo: 'broadcaster', version: '1', texto: 'Streamer', url: '' },
+    { tipo: 'subscriber', version: '12', texto: 'Sub (18)', url: '' },
     /* Una insignia que no conocemos se muestra con su id: esconderla
        seria mentir sobre quien es el que habla. */
-    { tipo: 'subscriber_nuevo_de_twitch', texto: 'subscriber_nuevo_de_twitch' },
+    { tipo: 'subscriber_nuevo_de_twitch', version: '1', texto: 'subscriber_nuevo_de_twitch', url: '' },
   ]);
 });
 
@@ -316,9 +322,13 @@ test('IRC: badge-info manda sobre badges para los meses de sub', () => {
     new Map([['badges', 'moderator/1,subscriber/6'], ['badge-info', 'subscriber/25']]),
     'x', 'hola',
   );
+  /* Y la version sale de `badges` (el 6, o sea el tramo de 6 meses),
+     no de `badge-info` (el 25, los meses de verdad). Son dos numeros
+     distintos en el mismo tag y confundirlos le cambia el escudo a
+     todos los subs justo la noche en que entra el plan B. */
   assert.deepEqual(m.insignias, [
-    { tipo: 'moderator', texto: 'Mod' },
-    { tipo: 'subscriber', texto: 'Sub (25)' },
+    { tipo: 'moderator', version: '1', texto: 'Mod', url: '' },
+    { tipo: 'subscriber', version: '6', texto: 'Sub (25)', url: '' },
   ]);
 });
 

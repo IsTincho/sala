@@ -198,6 +198,7 @@ Reglas que no se negocian:
 | `/api/chat/enviar` | Manda un mensaje a Kick, a Twitch o a los dos, con la cuenta de quien pide. Pide cookie de creador |
 | `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick de su sala. Pide cookie de creador |
 | `/api/chat/:slug/abierto` | `GET` público: `{ abierto, redes }`. Cerrado contesta `redes: []`: de un chat cerrado no se cuenta nada. 404 si la sala no existe. Contesta de la misma memoria que usa el filtro del bus |
+| `/api/chat/:slug/emotes` | `GET` público: los emotes que puede ofrecer el selector de la caja de escribir, cada uno con la `marca` que hay que poner en la caja y en qué `redes` sirve. **Sin sesión**, igual que `/abierto`: leer el chat nunca pidió login y esto es parte de leerlo. Con el chat cerrado contesta `emotes: []`. `?red=` acota a qué red va a ir el mensaje y **pide menos, nunca más**: se cruza contra las redes que el creador abrió. 404 si la sala no existe |
 | `/api/chat/:slug/yo` | `GET` con cookie de espectador: qué redes conectó esa persona y en cuáles puede escribir **acá** (lo suyo cruzado con lo que el creador abrió). Habla del que pregunta y de nadie más |
 | `/api/chat/:slug/enviar` | `POST { red: "kick" \| "twitch" \| "ambas", texto }` con cookie de espectador **y `Origin` propio**. Mismos frenos que `/api/sala/:slug/chat`, y **"ambas" cuenta como un solo mensaje**. 403 si el chat está cerrado, si esa red no está abierta o si la persona no la conectó. El resultado viene **por red**: `{ ok, kick: {ok, motivo}, twitch: {ok, motivo} }` |
 | `/api/espectador/salir` | `POST` con `Origin` propio: cierra la sesión y **borra los tokens de las dos redes**. Sin slug: la cuenta de espectador es del dominio, no de una sala |
@@ -398,6 +399,136 @@ Se loguea cuando **cambia** algo, no cada vez que se confirma: un creador sin 7T
 
 El gancho ya está: `emotes.vencer(slug, red)` marca una tabla como vencida. El día que se haga la EventAPI, es llamarlo cuando llegue el dispatch.
 
+### El selector de emotes de la caja
+
+En `/chat/<slug>` hay un botón **Emotes** al lado de la caja: se abre un panel con buscador, se elige uno y se inserta en el mensaje. Existe para mandar un emote sin acordarse del nombre exacto.
+
+#### El problema de fondo: el mismo emote no se escribe igual en las dos redes
+
+| Qué emote | Cómo viaja a Kick | Cómo viaja a Twitch |
+|---|---|---|
+| Nativo de Kick | `[emote:5747892:collectiblesMEGALUL]` | no existe |
+| Nativo de Twitch | no existe | el nombre pelado (`Kappa`) |
+| De 7TV | el nombre pelado | el nombre pelado |
+
+Y con `red: "ambas"` el mensaje sale **a las dos a la vez**. Si la página armara el markup tendría que elegir uno, y el otro lado vería un `[emote:5747892:…]` literal en pantalla.
+
+Por eso **la caja guarda una sola forma del mensaje y la traducción la hace el servidor**, en `servidor/envio.js` (`comoViajaA`), que es el único lugar del proyecto por el que pasan los dos envíos y el único que sabe a qué red le está hablando. A Kick le va el markup tal cual; a Twitch se le reemplaza cada `[emote:id:nombre]` por `nombre`, que es lo mejor que se puede hacer con un emote que ahí no existe: que se lea la palabra.
+
+**Esto no es sólo para el selector.** Cualquiera podía escribir `[emote:1:X]` a mano en la caja, y hasta ahora eso llegaba a Twitch con los corchetes puestos. El arreglo es el mismo y vale para los dos casos. El precio, dicho sin adornos: quien quiera escribir esos corchetes *literalmente* en Twitch no va a poder. Es un texto que nadie escribe.
+
+La marca la arma el servidor y viaja en cada emote del catálogo: **la página nunca escribe markup de ninguna plataforma**. El día que Kick cambie el formato, cambia en un archivo.
+
+#### Contra qué se mide el tope de 500
+
+**Contra lo que cada red va a recibir.** Desde que hay emotes el mensaje ya no es el mismo string en las dos: `[emote:5747892:collectiblesMEGALUL]` son 36 caracteres para Kick y `collectiblesMEGALUL` son 19 para Twitch. Medir los dos topes contra un solo texto obligaría a mentir en uno: con el largo de Twitch se dejarían pasar mensajes que Kick rechaza, y con el de Kick se frenarían mensajes que Twitch aceptaba.
+
+La invariante que hubo que cuidar —la que ya había costado un bug— **no era "el mismo string a las dos redes"**: era **lo que se mide es lo que se manda**. Eso sigue en pie, ahora por red: `aUnaRed` manda exactamente `comoViajaA(texto, red)`, que es lo mismo que midió `porQueNoSePuedeMandar`. Y se sostiene sin acordarse de nada, porque `comoViajaA` es una **función pura**: no mira tablas, ni cachés, ni el reloj, así que no hay estado que pueda cambiar entre la medición y el envío.
+
+El contador de la página cuenta el texto crudo, que es exactamente lo que recibe Kick. Para Twitch siempre es más corto, así que nunca promete lugar que no hay.
+
+#### De dónde salen los emotes que ofrece
+
+- **7TV**: ya estaban resueltos por `(slug, red)` con su caché, su respaldo entre redes y sus globales. El selector los lee de la **misma tabla** que usan los mensajes, así que abrir el panel no cuesta un pedido extra y un creador sin 7TV no genera ninguno.
+- **Nativos de Kick**: **los que ese chat vio pasar**. No hay de dónde pedir la lista (abajo el porqué). Cada mensaje de Kick ya llega con sus emotes resueltos —id, nombre y url, sacados del `[emote:id:nombre]` del `content`—, así que anotarlos no le cuesta un pedido a nadie. Es una lista **viva**: crece con lo que la comunidad usa e incluye **coleccionables**, que no se pueden listar de ninguna otra forma. Arranca vacía, y el panel lo dice con todas las letras en vez de aparentar un catálogo completo.
+- **Nativos de Twitch**: **todavía no**. Ver más abajo.
+
+Se anotan en memoria, hasta 100 por sala y 300 salas (techo ~4,5 MB, y para llegar ahí hacen falta 300 chats vivos con 100 emotes distintos cada uno). Las salas se desalojan por la que hace más que no ve un emote, así que lo que se tira es siempre un chat dormido.
+
+**Caducan a las 12 horas**, y el número no es al azar: los términos de `dev.kick.com` dejan guardar su contenido *"for only a twenty-four hour time period"*. Doce horas entra con margen, no depende de que el proceso se reinicie seguido para cumplir, y es más o menos un ciclo de stream. Nada se persiste: vive en memoria y muere con el proceso. Un JSON de emotes de Kick versionado en el repo sería una copia permanente **y** una redistribución, y los términos prohíben las dos cosas.
+
+#### Por qué no se le pide a Kick la lista
+
+Porque no existe, y está verificado el **2026-09-23**, no supuesto:
+
+- La documentación completa de Kick (`docs.kick.com/llms-full.txt`) **no tiene un solo endpoint de emotes**: la palabra aparece únicamente dentro del payload de ejemplo de `chat.message.sent`. El changelog está vivo (última entrada, 11/08/2026) y nunca los menciona.
+- Hay un pedido formal de la comunidad, **abierto y sin respuesta desde diciembre de 2025** ([KickDevDocs#323](https://github.com/KickEngineering/KickDevDocs/issues/323)).
+- Los **coleccionables** no se listan por ningún lado: no aparecen en `kick.com/emotes/<slug>` y `kick.com/emotes` sin slug da 401, porque es la lista del usuario logueado.
+- El único endpoint que enumera los emotes de un canal, `kick.com/emotes/<slug>`, **no está documentado**, y los términos de desarrollador dicen que uno *"will only access Program Materials documented on the Kick Developer Site"*. Usarlo —o scrapear con la cookie de sesión del dueño— pondría su app del lado equivocado del acuerdo. No se hace.
+
+Dato al pasar que confirma la decisión de `mensajes.js`: el array `emotes` del webhook **viene `null` en la práctica** pese a que la doc lo muestra lleno ([KickDevDocs#210](https://github.com/KickEngineering/KickDevDocs/issues/210), cerrada como resuelta). El markup del `content` no es sólo la fuente preferible: es la única que llega.
+
+#### Los nativos de Twitch: anotados, no hechos
+
+`GET helix/chat/emotes?broadcaster_id=` (los del canal) y `GET helix/chat/emotes/global` los dan con **un app access token y sin ningún scope** — verificado el 2026-09-23 en `dev.twitch.tv/docs/api/reference`, donde los tres endpoints de emotes dicen literalmente *"Requires an app access token or user access token"* (el único que pide scope es `/emotes/user`, con `user:read:emotes`). O sea que **no hace falta pedirle un permiso nuevo a nadie**: alcanza con lo que ya hay.
+
+Lo que falta es de dónde sacar el app token, y eso está llegando por otro camino (las insignias de Twitch, `servidor/twitch.js`). Sumarlo ahora sería escribir dos veces la misma credencial. Cuando ese `tokenDeApp()` esté, son dos funciones en `twitch.js` y un grupo más en `emotes.catalogo()`.
+
+Tres trampas para cuando se haga, que la doc no pone de frente:
+
+- La URL de la imagen sale de un campo **`template`** que viene **al lado de `data`, una sola vez por respuesta**, no dentro de cada emote: `https://static-cdn.jtvnw.net/emoticons/v2/{{id}}/{{format}}/{{theme_mode}}/{{scale}}`.
+- El orden de los placeholders es **id / format / theme_mode / scale**. La prosa de la doc los enumera en otro orden ("id, format, scale, and theme_mode"), que no es el de la URL.
+- El valor `default` para `format` funciona pero **no está documentado**; los documentados son `static` y `animated`. Lo mismo la escala `4.0`.
+
+#### Lo que muestra el panel
+
+Cada emote dice **de qué fuente es** (agrupados: "De Kick · los que pasaron por este chat", "De 7TV · del canal y los globales") y **en qué red va a salir**, en palabras y no sólo con un borde: el color no puede ser el único canal de información. Un emote que no sirve en todas las redes elegidas se ofrece igual pero marcado —esconder los de Kick apenas alguien elige "las dos", que es lo que elige casi todo el mundo, sería esconder justo los que no se consiguen en ningún otro lado— y al usarlo aparece el aviso: *"collectiblesMEGALUL es un emote de Kick: en Twitch va a salir como texto"*. **Se dice antes de mandar, no después**, y también cuando el cambio es del selector de red y no de lo que se escribió, que es el caso fácil de olvidar.
+
+Con **Twitch sola** elegida, los nativos de Kick directamente no se ofrecen: ahí no sirven para nada.
+
+El emote se inserta **separado con espacios**, y eso no es cosmético: los emotes se resuelven por palabra entera, así que pegado a una letra dejaría de ser un emote. El panel **no se cierra al elegir** (poner tres seguidos es lo normal) y se maneja con teclado: flechas para recorrer, Enter para poner el marcado —o el primero de la lista si no se bajó—, Escape para cerrar devolviendo el foco a la caja.
+
+**La lista se pide la primera vez que alguien abre el panel**, no al cargar la página: quien no lo usa no gasta un pedido. Después no se vuelve a pedir más seguido que cada 30 s.
+
+El botón aparece **con la caja de escribir**, o sea sólo cuando la persona puede escribir. La *lista*, en cambio, no pide sesión: leer el chat nunca pidió login y esto es parte de leerlo.
+
+#### Lo que todavía no está
+
+- **El selector no está en `/chat`**, la ventana del creador. Esa caja manda por otra puerta (`/api/chat/enviar` → `chat.enviar`) que **todavía no traduce por red**: ofrecerlo ahí mandaría markup de Kick a Twitch, justo lo que esto viene a evitar. El día que esa puerta pase por `envio.comoViajaA`, es sacarle el `hidden` al botón.
+- **Los nativos de Twitch**, por lo de arriba.
+
+### Las insignias
+
+En `/chat/<slug>` las insignias se veían como etiquetas de texto: "Broadcaster", "Moderator", "Verified channel". Las de **Twitch** ahora se ven con **la imagen oficial**, la misma que se ve en twitch.tv. Las de **Kick** siguen siendo texto, y eso no es una tarea pendiente: es una decisión, y está explicada abajo.
+
+Se resuelven **en el servidor** (`servidor/insignias.js`), igual que los emotes de 7TV y por el mismo motivo: la página no habla con APIs de terceros. Entran por el mismo array `insignias` del formato único, con una clave `url` nueva.
+
+#### Twitch: de dónde sale la imagen
+
+`GET helix/chat/badges?broadcaster_id=…` da las insignias **propias del canal** (las de suscriptor, una por tramo de meses, y las de bits) y `GET helix/chat/badges/global` las que valen en todos lados (streamer, mod, VIP, Prime, verificado…). Las dos devuelven, por cada `set_id`, una lista de `versions` con su `id` y sus `image_url_1x/2x/4x`.
+
+**No hace falta ningún scope nuevo ni que el creador vuelva a vincular nada.** Los dos endpoints piden *"an app access token or user access token"* y ningún scope ([dev.twitch.tv/docs/api/reference](https://dev.twitch.tv/docs/api/reference/#get-channel-chat-badges)). Se usa un **token de app** (client credentials, uno para todo el proceso) y no el del creador: con el del creador haría falta un vínculo sano —alguien con el refresh vencido se quedaría sin insignias además de sin chat— y sería un camino más que dispara el refresh, que en Twitch **rota** el token en cada uso. El token vive en `servidor/twitch.js` y no sale de ahí.
+
+El `broadcaster_id` sale de `vinculos.identidad()`, sin tocar tokens. **Un creador que no vinculó Twitch no genera un solo pedido**, y tampoco lo genera un mensaje de Kick.
+
+El casamiento es exacto: el mensaje trae `{ set_id, id, info }` y ese `id` es el mismo que `versions[].id`. **El canal le gana a los globales set por set**, no en bloque: un canal que personalizó `subscriber` sigue usando el `moderator` global. Y si el canal tiene ese set pero no esa versión, **no** se cae a la global: se muestra la etiqueta, porque mostrar el escudo genérico de Twitch como si fuera el del canal es peor que no mostrar ninguno.
+
+Se pide **`image_url_2x`** (36 px) porque el CSS la muestra a 1,1em, o sea unos 18 px. No hay presupuesto en bytes como el de los emotes y no hace falta: medido el 2026-09-23 contra `static-cdn.jtvnw.net`, las globales pesan entre **320 B y 1.250 B**, y Twitch fija las tres medidas (18, 36 y 72 px, comprobado leyendo el IHDR del PNG) y no acepta animadas. No hay cola cara que cortar.
+
+#### Kick: por qué no hay imagen
+
+**Kick no las publica.** El índice completo de `docs.kick.com/llms.txt` (26 páginas, revisado el 2026-09-23) no tiene una sola página de insignias, emotes ni assets, y la Channels API no devuelve ningún campo de badge. Lo único que existe es `kick.com/api/v2/*`, que es exactamente lo que prohíben los términos de dev.kick.com: *"you will not access undocumented Program Materials … without Kick's prior written permission"* (la cita completa está en `INVESTIGACION-EMOTES.md`, sección 6).
+
+Se probó el plan B —dibujos propios, como los que tiene el repo hermano para su overlay— y **el dueño lo rechazó** (2026-09-23): no quiere íconos inventados en su chat. Así que las de Kick se quedan con su etiqueta de texto hasta que haya una fuente oficial, o hasta que alguien diseñe un set aparte y el dueño lo apruebe.
+
+Por eso `insignias.js` no tiene ninguna rama para Kick: un mensaje de Kick pasa y sale intacto, con `url: ""`. El día que Kick publique un endpoint, lo único que hay que agregar es esa rama; la caché, los vencimientos y el respaldo a texto ya están.
+
+#### Siempre hay texto
+
+`alt` y `title` llevan **siempre** el nombre de la insignia. Una insignia dice quién es esa persona en ese chat: un lector de pantalla tiene que poder decirlo y el que pasa el mouse tiene que poder averiguarlo.
+
+Y si la imagen no carga —un 404, un bloqueador, el CDN caído— la página la reemplaza **en su lugar** por la etiqueta de texto de siempre. Nunca queda un hueco, y nunca se ve peor que antes de este cambio.
+
+La imagen va a **1,1em**, que es la altura que no cambia el alto de línea del chat: la fila del nombre ya mide 1em. Probado con tres insignias seguidas, que es el caso del streamer hablando en su propio canal.
+
+#### Cuándo se refresca
+
+Sin esperar nunca, igual que los emotes: `resolver()` es síncrona, y si la tabla todavía no está el mensaje sale con las etiquetas de texto y la bajada queda agendada. Pasa una vez por creador y por arranque, y menos veces que con los emotes, porque la bajada se agenda recién cuando llega un mensaje de Twitch **con** insignias.
+
+Tres vencimientos, y no son los de los emotes:
+
+| Qué pasó | Vence en | Por qué |
+|---|---|---|
+| El canal tiene insignias propias | 6 h | Un set de insignias cambia cuando el streamer sube una nueva, que pasa una vez cada mucho. No es un set de emotes, que se toca todas las semanas. Con 900 creadores son unos 3.600 pedidos por día en vez de 130.000 |
+| No tiene propias (200 vacío, 400, 404, o sin Twitch vinculado) | 1 hora | Es el caso de la mayoría y es estable, pero el día que alguien se hace afiliado y sube su primera insignia lo nota. Mismo trato que le da `emotes.js` al 404 de 7TV |
+| Falló de verdad (timeout, 500, 401) | 1 min | Y **no** se pisa la tabla que había: una insignia vieja es mejor que ninguna |
+
+Un 401 además tira el token de app cacheado, para que el próximo intento pida uno nuevo en vez de repetir el mismo 401 hasta que alguien reinicie el proceso.
+
+El resto de la disciplina es la de `emotes.js`, entera: una sola bajada en vuelo por casillero, tope de seis en todo el proceso, plazo sobre la bajada **completa** y no sólo sobre el `fetch` (la trampa del socket de Mongo que no vence nunca está explicada allá), y log cuando **cambia** el estado, no por mensaje. Se apaga con `INSIGNIAS_TWITCH=0`, que deja el chat exactamente como estaba.
+
+**Lo que no está medido:** el tamaño del bucket de rate limit de Helix. La guía de Twitch documenta las cabeceras `Ratelimit-Limit` / `Remaining` / `Reset` pero no publica el número del bucket por defecto. Con estos vencimientos el peor caso son ~21.600 pedidos por día (unos 15 por minuto), así que el número no debería importar; si algún día importa, está en esas cabeceras.
+
 ### El indicador de salud
 
 `GET /api/chat/salud` (cookie de dueño) contesta:
@@ -513,6 +644,8 @@ Al escribir —`POST /api/sala/:slug/chat` en la Sala, `POST /api/chat/:slug/env
 **Un permiso vencido y un baneo no son lo mismo.** Las dos plataformas contestan **401** cuando el token ya no sirve y **403** cuando esa persona no puede escribir *en ese canal* (baneada, sólo-seguidores, sólo-suscriptores). Sólo el 401 desconecta esa red y le pide que vuelva a conectar; el 403 se le cuenta y no se le toca nada, porque reconectar la cuenta no arregla un baneo. Y **se desconecta sólo esa red**: el espectador es uno solo para todo el dominio, así que un permiso de Kick vencido mientras mira una peli no puede llevarse puesto el Twitch que está usando en `/chat/<slug>`. Si no le queda ninguna red, ahí sí se le cierra la sesión.
 
 **Lo que se mide es lo que viaja.** El tope se comprueba sobre el texto recortado y es ese mismo texto el que sale (`envio.comoViaja`): antes se medía recortado y se mandaba crudo, así que 400 letras y 400 espacios pasaban como 400 caracteres y llegaban a Twitch como 800 —y distintos de los que recibía Kick, que recorta por su cuenta.
+
+Desde los emotes, el mensaje **ya no es el mismo string en las dos redes** (`envio.comoViajaA` traduce el markup de Kick para Twitch), así que **cada tope se mide contra el texto de su red**. La invariante no cambió, se precisó: lo que se mide para una red es lo que se le manda a esa red. Ver "El selector de emotes de la caja".
 
 **Los dos POST del espectador exigen `Origin` nuestro**, tanto en la Sala como en el chat abierto: hacen que alguien escriba con su nombre en el chat de un tercero, o que se quede sin cuenta. La cookie es `SameSite=Lax` y el `Origin` es la otra mitad (`servidor/origenes.js`).
 

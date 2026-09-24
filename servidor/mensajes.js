@@ -8,7 +8,7 @@
        tipo: "chat",
        red: "kick" | "twitch",
        id, usuario, usuarioId, color,
-       insignias: [{ tipo, texto }],
+       insignias: [{ tipo, version, texto, url }],
        texto,
        emotes: [{ id, inicio, fin, url, fuente }],
        hora,                       // ISO
@@ -132,7 +132,35 @@ const largoEnPuntos = s => {
    id del set ("moderator", "subscriber") y hay que traducirlo. Los
    que no estan en la tabla se muestran con su id: es feo, pero es
    mejor que esconder una insignia que existe, y avisa que hay una
-   nueva para agregar. */
+   nueva para agregar.
+
+   ---------------------------------------------------------------
+   `version` Y `url`, Y POR QUE ESTAN EN LAS TRES
+
+   Cada insignia sale asi:
+
+       { tipo, version, texto, url }
+
+   `url` es la imagen, y la pone `insignias.js` DESPUES, con la misma
+   division de trabajo que tienen los emotes de 7TV: los traductores de
+   aca son puros —no conocen el slug de la sala ni una cache ni una
+   API—, asi que salen con `url: ''` y el que sabe la completa.
+
+   `version` es lo que hace falta para casarla. Twitch manda por
+   mensaje `{ set_id, id, info }`, donde `id` NO son los meses sino
+   cual de los dibujos del set corresponde: `subscriber` id "12" es el
+   icono del tramo de 12 meses, y los meses de verdad van en `info`
+   (verificado en el ejemplo de `channel.chat.message`, que trae
+   `{"set_id":"subscriber","id":"12","info":"16"}`). Ese `id` es el que
+   matchea con `versions[].id` de `helix/chat/badges`. Sin el, un sub
+   de tres años se ve con el icono del primer mes.
+
+   Las dos claves estan en TODAS las insignias y no solo en las que las
+   necesitan —Kick no tiene versiones y su `version` es siempre ''—
+   por el mismo motivo por el que `fuente` esta en todos los emotes: un
+   array donde algunos elementos tienen una clave y otros no es la
+   forma de que el dia que alguien la lea se le rompa justo con los
+   mensajes de una red. Es aditivo: un cliente viejo las ignora. */
 
 const NOMBRES_TWITCH = {
   broadcaster: 'Streamer',
@@ -170,7 +198,10 @@ function insigniasDeKick(identity) {
     const cuenta = Number(b?.count);
     return {
       tipo: String(b?.type ?? '').slice(0, 40),
+      /* Kick no tiene versiones de insignia: manda un tipo y listo. */
+      version: '',
       texto: Number.isFinite(cuenta) && cuenta > 1 ? `${texto} (${cuenta})` : texto,
+      url: '',
     };
   }).filter(b => b.texto || b.tipo);
 }
@@ -186,7 +217,10 @@ function insigniasDeTwitch(badges) {
     const info = String(b?.info ?? '').trim();
     const n = Number(info);
     const texto = Number.isFinite(n) && n > 1 ? `${base} (${n})` : base;
-    return { tipo, texto };
+    /* `id` es CUAL de los dibujos del set, no los meses. Ver el bloque
+       de arriba: los meses son `info`, y mezclarlos le pone a un sub
+       de tres años el icono del primer mes. */
+    return { tipo, version: String(b?.id ?? '').slice(0, 40), texto, url: '' };
   }).filter(b => b.texto || b.tipo);
 }
 
@@ -425,11 +459,21 @@ function insigniasDeTagIrc(badges, badgeInfo) {
     if (k) info.set(k, v ?? '');
   }
   return String(badges).split(',').slice(0, TOPE_INSIGNIAS).map(par => {
-    const [tipo] = par.split('/');
+    /* `subscriber/12`: lo de despues de la barra es la VERSION, o sea
+       cual de los dibujos del set. Es el mismo numero que EventSub
+       manda como `id`, asi que las dos vias casan contra la misma
+       tabla de `helix/chat/badges`. Antes se tiraba, y con el se
+       tiraba el icono del tramo. */
+    const [tipo, version] = par.split('/');
     if (!tipo) return null;
     const base = NOMBRES_TWITCH[tipo] ?? tipo;
     const n = Number(info.get(tipo));
-    return { tipo, texto: Number.isFinite(n) && n > 1 ? `${base} (${n})` : base };
+    return {
+      tipo,
+      version: String(version ?? '').slice(0, 40),
+      texto: Number.isFinite(n) && n > 1 ? `${base} (${n})` : base,
+      url: '',
+    };
   }).filter(Boolean);
 }
 

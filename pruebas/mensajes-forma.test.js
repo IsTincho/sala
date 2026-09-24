@@ -112,6 +112,43 @@ test('las tres traducciones dan emotes con las mismas claves', () => {
     'la fuente dice de donde salio el emote, no de que traductor');
 });
 
+test('las tres traducciones dan insignias con las mismas claves', () => {
+  /* El mismo razonamiento que los emotes, con la insignia. `url` la
+     completa `insignias.js` DESPUES y `version` es lo que hace falta
+     para casarla contra `helix/chat/badges`: si una de las tres no las
+     pusiera, habria mensajes donde algunas insignias las tienen y
+     otras no, y el primero que las lea se rompe justo con una red.
+     Y la que mas duele seria `deIrc`, que es el plan B: se descubre
+     la peor noche. */
+  const k = mensajes.deKick({
+    message_id: 'k1', content: 'hola', created_at: AHORA,
+    sender: { username: 'Fulana', user_id: 909, identity: { badges: [{ type: 'moderator', text: 'Moderator' }] } },
+  }).insignias[0];
+  const t = mensajes.deTwitch({
+    message: { fragments: [] },
+    badges: [{ set_id: 'subscriber', id: '12', info: '16' }],
+  }).insignias[0];
+  const i = mensajes.deIrc(new Map([
+    ['badges', 'subscriber/12'],
+    ['badge-info', 'subscriber/16'],
+  ]), 'x', 'hola').insignias[0];
+
+  assert.deepEqual(claves(k), ['texto', 'tipo', 'url', 'version']);
+  assert.deepEqual(claves(t), claves(k), 'deTwitch no da las mismas claves de insignia que deKick');
+  assert.deepEqual(claves(i), claves(k), 'deIrc tampoco, y deIrc es el plan B');
+
+  /* Las tres salen SIN imagen: resolverla es trabajo de
+     `insignias.js`, que si conoce el slug de la sala y la cache. */
+  assert.deepEqual([k.url, t.url, i.url], ['', '', '']);
+
+  /* Y las dos vias de Twitch tienen que dar la MISMA version, o la
+     noche que entra el plan B a todos los subs les cambia el escudo.
+     Kick no tiene versiones y manda vacio. */
+  assert.equal(t.version, '12');
+  assert.equal(i.version, '12', 'el plan B de IRC perdio la version de la insignia');
+  assert.equal(k.version, '');
+});
+
 test('las tres traducciones dan el mismo respondeA', () => {
   const k = deKick(true);
   const t = deTwitch(true);

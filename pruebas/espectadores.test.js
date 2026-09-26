@@ -28,6 +28,7 @@ process.env.CLAVE_CIFRADO = crypto.randomBytes(32).toString('base64');
 
 const almacen = await import('../servidor/almacen.js');
 const cifrado = await import('../servidor/cifrado.js');
+const colores = await import('../servidor/colores.js');
 const espectadores = await import('../servidor/espectadores.js');
 
 test.after(async () => {
@@ -404,6 +405,120 @@ test('leer anota que la persona sigue viniendo, como mucho cada tantas horas', a
   assert.ok((await almacen.obtener('espectadores', UNO)).ultimoUso > haceRato);
 
   await espectadores.olvidar(UNO);
+});
+
+/* ------------------------------------------------------------ el color
+
+   El color propio vive en la ficha del espectador (decision del
+   dueño) y se reparte por el indice en memoria de colores.js. Lo que
+   se prueba aca es la escritura: que quede guardado, que el indice se
+   entere, que el reseteo del creador limpie TODOS los documentos de
+   esa cuenta y que el color no sea un lugar por donde entre basura. */
+
+test('el color se guarda, se lee y pinta', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+
+  assert.equal(await espectadores.ponerColor(UNO, '#7A5CFF'), '#7a5cff');
+  const v = await espectadores.leer(UNO);
+  assert.equal(v.color, '#7a5cff');
+  assert.equal(colores.deUsuario('kick', '4242'), '#7a5cff',
+    'el indice tiene que enterarse sin esperar al proximo arranque');
+
+  await espectadores.olvidar(UNO);
+});
+
+test('un color que no es un color no se guarda', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+
+  assert.equal(await espectadores.ponerColor(UNO, 'rojo'), null);
+  assert.equal(await espectadores.ponerColor(UNO, '#abc'), null);
+  const v = await espectadores.leer(UNO);
+  assert.equal(v.color, '#7a5cff', 'el que ya tenia no se toca');
+
+  await espectadores.olvidar(UNO);
+});
+
+test('el vacio le saca el color y vuelve el de la plataforma', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+
+  assert.equal(await espectadores.ponerColor(UNO, ''), '');
+  const crudo = await almacen.obtener('espectadores', UNO);
+  assert.equal(crudo.color, undefined, 'no queda un campo vacio dando vueltas');
+  assert.equal(colores.deUsuario('kick', '4242'), '');
+
+  await espectadores.olvidar(UNO);
+});
+
+test('el color no le toca los tokens a nadie', async () => {
+  /* `ponerColor` reescribe el documento entero: si se olvidara de lo
+     que habia, elegir un color desconectaria a la persona. */
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+
+  const v = await espectadores.leer(UNO);
+  assert.equal(v.kick.accessToken, KICK.accessToken);
+  assert.equal(v.twitch.refreshToken, TWITCH.refreshToken);
+
+  await espectadores.olvidar(UNO);
+});
+
+test('el creador le saca el color a una cuenta, en los dos navegadores', async () => {
+  /* Dos espectadores con la MISMA cuenta de Kick: el celular y la
+     compu. Si el reseteo limpiara solo el que esta pintando, el otro
+     color volveria solo en el proximo arranque. */
+  const CELU = 'esp_celu';
+  const COMPU = 'esp_compu';
+  await espectadores.conectar(CELU, 'kick', KICK);
+  await espectadores.conectar(COMPU, 'kick', KICK);
+  await espectadores.ponerColor(CELU, '#111111');
+  await espectadores.ponerColor(COMPU, '#7a5cff');
+  assert.equal(colores.deUsuario('kick', '4242'), '#7a5cff');
+
+  assert.equal(await espectadores.quitarColorDe('kick', '4242'), 2);
+
+  assert.equal(colores.deUsuario('kick', '4242'), '');
+  assert.equal((await espectadores.leer(CELU)).color, '');
+  assert.equal((await espectadores.leer(COMPU)).color, '');
+
+  /* Y no se llevo puesto nada mas: siguen pudiendo escribir. */
+  assert.equal((await espectadores.leer(COMPU)).kick.accessToken, KICK.accessToken);
+
+  await espectadores.olvidar(CELU);
+  await espectadores.olvidar(COMPU);
+});
+
+test('resetear a alguien que no tiene color no rompe nada', async () => {
+  assert.equal(await espectadores.quitarColorDe('kick', 'nadie-con-ese-id'), 0);
+  assert.equal(await espectadores.quitarColorDe('otra-red', '4242'), 0);
+});
+
+test('el indice se llena al arrancar con lo que hay guardado', async () => {
+  /* El caso que lo justifica: alguien eligio su color hace un mes y
+     hoy escribe desde kick.com sin abrir esta pagina. Su mensaje llega
+     por el webhook y no pasa por ninguna sesion nuestra. */
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+  colores.reiniciar();
+  assert.equal(colores.deUsuario('kick', '4242'), '', 'a mano: el indice quedo vacio');
+
+  const cuantas = await espectadores.cargarColores();
+
+  assert.equal(cuantas, 1);
+  assert.equal(colores.deUsuario('kick', '4242'), '#7a5cff');
+
+  await espectadores.olvidar(UNO);
+});
+
+test('salir se lleva el color: no queda pintando a nadie', async () => {
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+
+  await espectadores.olvidar(UNO);
+
+  assert.equal(colores.deUsuario('kick', '4242'), '');
 });
 
 /* ------------------------------------------------------- limite personal */

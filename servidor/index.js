@@ -72,6 +72,7 @@ import * as canales from './canales.js';
 import * as chat from './chat.js';
 import * as cifrado from './cifrado.js';
 import * as cobro from './cobro.js';
+import * as colores from './colores.js';
 import * as creadores from './creadores.js';
 import { numeroDeEntorno } from './entorno.js';
 import * as emotes from './emotes.js';
@@ -2641,7 +2642,14 @@ async function apiChatYo(url, req, res, p) {
 
   const conectadas = {};
   for (const red of espectadores.redesDe(v)) {
-    conectadas[red] = { nombre: v[red].nombre || v[red].login || '' };
+    conectadas[red] = {
+      nombre: v[red].nombre || v[red].login || '',
+      /* Su propio id en esa red. Lo usa la pagina para repintar sus
+         mensajes ya puestos cuando cambia de color, y es el mismo id
+         que la plataforma publica en cada mensaje suyo: no se cuenta
+         nada nuevo, y nunca el de nadie mas. */
+      usuarioId: v[red].usuarioId,
+    };
   }
 
   /* Se le dice que esta bloqueado, y no se le esconde la caja sin
@@ -2655,6 +2663,10 @@ async function apiChatYo(url, req, res, p) {
     abierto: c.activo,
     redes: abiertas,
     conectadas,
+    /* El color que eligio, para que el selector de la pagina arranque
+       en el suyo y no en uno cualquiera. Vacio si no eligio ninguno:
+       ahi manda el de cada plataforma. */
+    color: v.color ?? '',
     bloqueado,
     puedeEscribir: abiertas.filter(red =>
       v[red] && espectadores.puedeEscribirEn(v, red) && !bloqueado.includes(red)),
@@ -2811,6 +2823,89 @@ async function apiChatEnviarEspectador(url, req, res, p) {
  * Sin slug: la cuenta de espectador es del dominio y no de una sala,
  * asi que salir es salir de todas.
  */
+/**
+ * El color propio de quien mira: `{ color: "#rrggbb" }`, o
+ * `{ color: "" }` para sacarselo y volver al de cada plataforma.
+ *
+ * Sin slug, como salir: el color es de la persona y vale en el chat de
+ * cualquier creador. Lo elige una vez.
+ *
+ * SE VALIDA ACA TAMBIEN, y no solo en la pagina: es una entrada de
+ * terceros que termina en un `style` del navegador de todos los que
+ * esten mirando. La forma aceptada es `#rrggbb` y nada mas
+ * (`colores.limpiar`). Lo que no entra en esa forma se rechaza con un
+ * 400 que lo dice, en vez de guardarse "arreglado": nadie eligio
+ * `#000000` cuando escribio `rojo`.
+ *
+ * Lo que NO se decide aca es el contraste. El color se guarda tal cual
+ * y cada pagina lo ajusta al tema que tenga puesta la persona que
+ * mira, que es la unica que sabe si el fondo es claro u oscuro.
+ */
+async function apiEspectadorColor(url, req, res) {
+  if (origenAjeno(req, res)) return;
+
+  const suyo = await sesion.leer(req, 'espectador');
+  if (!suyo) return json(res, 401, { error: 'conecta tu cuenta para elegir un color' });
+
+  let pedido;
+  try { pedido = await leerJson(req); }
+  catch { return json(res, 400, { error: 'json invalido' }); }
+
+  const elegido = pedido?.color;
+  if (!colores.esColorOVacio(elegido)) {
+    return json(res, 400, { error: 'el color tiene que ser un #rrggbb (por ejemplo #7a5cff), o "" para sacarlo' });
+  }
+
+  const quedo = await espectadores.ponerColor(suyo.usuario, elegido);
+  if (quedo === null) {
+    /* La sesion sobrevivio a la ficha: no sirve para nada y se cierra,
+       igual que en /yo y en enviar. */
+    await sesion.cerrar(req, 'espectador');
+    return json(res, 401, { error: 'tu sesion ya no vale: conecta de nuevo' },
+      { 'Set-Cookie': sesion.cabeceraBorrar('espectador') });
+  }
+
+  return json(res, 200, { ok: true, color: quedo });
+}
+
+/**
+ * El creador le saca el color propio a alguien: `{ red, id }`.
+ *
+ * Es el boton de al lado del de bloquear, para el que se pasa de vivo
+ * con el color. NO es un bloqueo: la persona sigue escribiendo, y
+ * puede volver a elegir uno. Si insiste, lo que sigue es bloquearla.
+ *
+ * VALE EN TODAS LAS SALAS, y eso es la consecuencia directa de que el
+ * color sea uno solo por persona: se le borra de su ficha, asi que
+ * tambien deja de verse en el chat de otro creador. Esta escrito en el
+ * README. El dia que moleste, la salida es una lista por sala en el
+ * documento del creador (como `bloqueados`), no partir el color en uno
+ * por sala.
+ *
+ * Cookie de creador, como todo /api/panel: el slug sale de ahi y es
+ * solo para el log. No se comprueba que esa persona haya escrito en su
+ * chat —el id lo saco de un mensaje que vio— porque no hay forma
+ * barata de probarlo y lo unico que se pierde es un color que se puede
+ * volver a elegir.
+ */
+async function apiPanelColor(url, req, res) {
+  return conCreador(req, res, async (slug) => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const red = String(pedido?.red ?? '');
+    const id = String(pedido?.id ?? '');
+    if (!creadores.REDES_CHAT.includes(red) || !/^[0-9a-zA-Z_-]{1,64}$/.test(id)) {
+      return json(res, 400, { error: 'hace falta una red (kick o twitch) y un id de esa red' });
+    }
+
+    const cuantos = await espectadores.quitarColorDe(red, id);
+    console.log(`[colores] ${slug}: reseteo el color de ${red}:${id} (${cuantos})`);
+    return json(res, 200, { ok: true, reseteados: cuantos });
+  });
+}
+
 async function apiEspectadorSalir(url, req, res) {
   if (origenAjeno(req, res)) return;
   const suyo = await sesion.leer(req, 'espectador');
@@ -2899,12 +2994,14 @@ const RUTAS = [
   ['DELETE', '/api/panel/twitch',      apiTwitchDesvincular],
   ['POST',   '/api/panel/suscribirse', apiSuscribirse],
   ['POST',   '/api/panel/chat',        apiPanelChat],
+  ['POST',   '/api/panel/color',       apiPanelColor],
   ['POST',   '/api/panel/sala',        apiPanelSala],
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
   ['GET',    '/api/chat/:slug/emotes',  apiChatEmotes],
   ['GET',    '/api/chat/:slug/yo',      apiChatYo],
   ['POST',   '/api/chat/:slug/enviar',  apiChatEnviarEspectador],
   ['POST',   '/api/espectador/salir',   apiEspectadorSalir],
+  ['POST',   '/api/espectador/color',   apiEspectadorColor],
   ['POST',   '/api/subida',            apiSubidaFirmar],
   ['POST',   '/api/subida/borrar',     apiSubidaBorrar],
   ['GET',    '/api/admin/creadores',   apiAdminCreadores],
@@ -3123,6 +3220,19 @@ export async function arrancar() {
       if (idos) console.log(`[espectadores] ${idos} espectadores vencidos al arrancar`);
     } catch (e) {
       console.warn('[espectadores] no se pudieron podar:', e.name);
+    }
+
+    /* El indice de colores se llena ACA y no cuando cada persona
+       entra: quien eligio su color hace un mes y hoy escribe desde
+       kick.com, sin abrir esta pagina, tiene que salir con su color
+       igual. Su mensaje llega por el webhook y no pasa por ninguna
+       sesion nuestra. Va DESPUES de podar, para no indexar a los que
+       se acaban de ir. */
+    try {
+      const conColor = await espectadores.cargarColores();
+      if (conColor) console.log(`[colores] ${conColor} cuentas con color propio`);
+    } catch (e) {
+      console.warn('[colores] no se pudieron cargar los colores:', e.name);
     }
   }
 

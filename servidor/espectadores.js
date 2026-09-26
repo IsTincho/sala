@@ -89,6 +89,7 @@ import crypto from 'node:crypto';
 
 import * as almacen from './almacen.js';
 import * as cifrado from './cifrado.js';
+import * as colores from './colores.js';
 import * as kick from './kick.js';
 import * as twitch from './twitch.js';
 
@@ -180,13 +181,18 @@ export async function conectar(id, red, datos) {
      ya no sirve, porque las dos plataformas rotan el refresh token). */
   return almacen.enCola('espectadores', id, async () => {
     const viejo = await documento(id);
-    await almacen.poner('espectadores', id, {
+    const nuevo = {
       ...(viejo ?? {}),
       id: String(id),
       [red]: redParaGuardar(datos),
       creado: Number(viejo?.creado ?? Date.now()),
       ultimoUso: Date.now(),
-    });
+    };
+    await almacen.poner('espectadores', id, nuevo);
+    /* Recien conectada, esta red todavia no estaba en el indice de
+       colores: quien eligio su color con Kick y hoy suma Twitch tiene
+       que salir con el mismo color en las dos. */
+    colores.anotar(nuevo);
   });
 }
 
@@ -275,7 +281,15 @@ export async function leer(id) {
   await tocar(doc.id ?? String(id), Number(doc.ultimoUso ?? 0));
 
   try {
-    const v = { id: doc.id ?? String(id), creado: doc.creado ?? 0, ultimoUso: doc.ultimoUso ?? 0 };
+    const v = {
+      id: doc.id ?? String(id),
+      creado: doc.creado ?? 0,
+      ultimoUso: doc.ultimoUso ?? 0,
+      /* El color propio no es un secreto ni esta cifrado: sale tal
+         cual para que `/api/chat/:slug/yo` se lo pueda mostrar a su
+         dueño en el selector. */
+      color: colores.limpiar(doc.color),
+    };
     for (const red of REDES) {
       const r = descifrarRed(doc[red]);
       if (r) v[red] = r;
@@ -344,12 +358,98 @@ export const redesDe = v => REDES.filter(red => Boolean(v?.[red]));
 export const puedeEscribirEn = (v, red) =>
   String(v?.[red]?.scopes ?? '').split(/\s+/).includes(SCOPE_PARA_ESCRIBIR[red]);
 
+/* ----------------------------------------------------- el color
+
+   El color con el que se pinta su nombre EN ESTA PLATAFORMA. Vive en
+   la ficha del espectador y no en la de ninguna sala, porque es de la
+   persona: lo elige una vez y le sirve en el chat de cualquier
+   creador. Por que se guarda asi y como se reparte esta contado en
+   `servidor/colores.js`.
+
+   No va cifrado: no es un secreto, y cifrarlo lo dejaria fuera del
+   alcance del indice en memoria, que es lo que hace que pintar un
+   mensaje no cueste un pedido. */
+
+/**
+ * Guarda (o borra, con '') el color propio de un espectador.
+ *
+ * Devuelve el color que quedo, o null si ese espectador no existe.
+ * `colorDesde` es lo que desempata cuando la misma cuenta tiene dos
+ * espectadores con colores distintos: gana el ultimo elegido.
+ */
+export async function ponerColor(id, color) {
+  if (!valido(id)) return null;
+  const limpio = colores.limpiar(color);
+  if (!limpio && String(color ?? '') !== '') return null;
+
+  /* En cola, como todo lo que es leer-cambiar-guardar sobre el mismo
+     documento: si no, elegir un color mientras se refresca un token
+     pisa el token nuevo. */
+  return almacen.enCola('espectadores', id, async () => {
+    const doc = await documento(id);
+    if (!doc) return null;
+    const nuevo = { ...doc, ultimoUso: Date.now() };
+    if (limpio) {
+      nuevo.color = limpio;
+      nuevo.colorDesde = Date.now();
+    } else {
+      delete nuevo.color;
+      delete nuevo.colorDesde;
+    }
+    await almacen.poner('espectadores', id, nuevo);
+    colores.anotar(nuevo);
+    return limpio;
+  });
+}
+
+/**
+ * Le saca el color propio a UNA CUENTA de una red: es lo que toca el
+ * creador cuando alguien se pasa de vivo. Devuelve a cuantos
+ * espectadores se les borro.
+ *
+ * Se limpian TODOS los espectadores de esa cuenta y no solo el que
+ * estaba pintando: la misma persona puede tener dos (el celular y la
+ * compu, ver arriba), y borrar uno solo haria que el color volviera
+ * en el proximo arranque.
+ *
+ * VALE EN TODAS LAS SALAS, igual que el color: es la ficha de la
+ * persona lo que se toca, no la del creador. Esta anotado en el README
+ * porque es la consecuencia de que el color sea uno solo.
+ */
+export async function quitarColorDe(red, usuarioId) {
+  if (!redValida(red)) return 0;
+  let cuantos = 0;
+  for (const id of colores.espectadoresCon(red, usuarioId)) {
+    const quedo = await ponerColor(id, '');
+    if (quedo !== null) cuantos++;
+  }
+  return cuantos;
+}
+
+/**
+ * Llena el indice de colores con lo que hay guardado. Se llama al
+ * arrancar y devuelve cuantas cuentas quedaron con color.
+ *
+ * Al arrancar y no cuando la persona entra: quien eligio su color hace
+ * un mes y hoy escribe desde kick.com sin abrir esta pagina tiene que
+ * salir con su color igual.
+ */
+export async function cargarColores() {
+  for (const doc of await almacen.listar('espectadores')) {
+    if (doc?.color) colores.anotar(doc);
+  }
+  return colores.cuantos();
+}
+
 /* ------------------------------------------------------- olvidar */
 
 /** Borra el espectador entero: las dos redes y sus tokens. */
 export async function olvidar(id) {
   if (!valido(id)) return false;
   limpiarLimite(id);
+  /* Su color se va con el: el indice no puede quedar pintando a
+     alguien que ya no tiene ficha. */
+  colores.olvidar(id);
   /* Se borran los dos: el del modelo nuevo y, por si nunca se llego a
      migrar, el viejo. Un "salir" que deja un refresh token atras no es
      un salir. */
@@ -376,9 +476,12 @@ export async function desconectar(id, red) {
     const quedan = REDES.filter(r => r !== red && doc[r]);
     if (!quedan.length) return olvidar(id);
 
-    const nuevo = { ...doc };
+    const nuevo = { ...doc, ultimoUso: Date.now() };
     delete nuevo[red];
-    await almacen.poner('espectadores', id, { ...nuevo, ultimoUso: Date.now() });
+    await almacen.poner('espectadores', id, nuevo);
+    /* La red que se fue deja de pintar: su color seguia en el indice
+       bajo un id de una cuenta que esta persona ya no tiene conectada. */
+    colores.anotar(nuevo);
     return true;
   });
 }
@@ -527,6 +630,7 @@ export async function podar(ahora = Date.now()) {
     if (ultimo + VENCE_EN >= ahora) continue;
     await almacen.quitar('espectadores', doc.id);
     limpiarLimite(doc.id);
+    colores.olvidar(doc.id);
     cuantos++;
   }
 
@@ -547,4 +651,5 @@ export function reiniciar() {
   ultimoEnvio.clear();
   esperaDelCanal.clear();
   refrescando.clear();
+  colores.reiniciar();
 }

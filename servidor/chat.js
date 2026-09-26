@@ -92,6 +92,7 @@
    ============================================================ */
 
 import * as canales from './canales.js';
+import * as colores from './colores.js';
 import * as emotes from './emotes.js';
 import { numeroDeEntorno } from './entorno.js';
 import * as envio from './envio.js';
@@ -406,6 +407,10 @@ export function recibirDeKick(slug, evento, cuerpo) {
        EL DIA QUE KICK LAS PUBLIQUE hay que volver a ponerla, o las
        insignias se van a ver por el camino de Twitch y no por este.
        Esta anotado tambien arriba de `resolver()` en insignias.js. */
+    /* El color propio de quien escribio, si eligio uno en esta
+       plataforma. Va en los DOS embudos, como `emotes.resolver`: el
+       color es de la persona y no de la red. */
+    colores.pintar(mensaje);
     canales.recordar(c.slug, mensaje);
     return { hecho: 'chat', mensaje };
   }
@@ -541,6 +546,7 @@ export function recibirDeTwitch(slug, mensaje) {
   c.twitch.ultima = new Date();
   emotes.resolver(mensaje, c.slug);
   insignias.resolver(mensaje, c.slug);
+  colores.pintar(mensaje);
   canales.recordar(c.slug, mensaje);
   return true;
 }

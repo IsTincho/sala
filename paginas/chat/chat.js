@@ -269,6 +269,15 @@
       .then(async r => {
         const datos = await r.json().catch(() => null);
         if (!r.ok) throw new Error(datos?.error || 'http ' + r.status);
+        /* `reseteados` es a cuántas fichas se les sacó. Cero es el caso
+           normal en un mensaje viejo del buffer de alguien que ya no
+           tiene color puesto: decirle "listo, se lo sacaste" sería
+           mentirle y dejarlo pensando que el botón no anda. */
+        if (!datos?.reseteados) {
+          mostrarAviso(`${quien} ya no tenía ningún color propio puesto: no había nada que sacar.`,
+            { autoOcultar: true });
+          return;
+        }
         mostrarAviso(
           `le sacaste el color a ${quien}: desde su próximo mensaje vuelve al de ${NOMBRE_RED[red] ?? red}. ` +
           'El color es de la persona, así que deja de verse también en el chat de otros creadores.',

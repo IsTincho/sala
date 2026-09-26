@@ -380,14 +380,29 @@ export const puedeEscribirEn = (v, red) =>
 export async function ponerColor(id, color) {
   if (!valido(id)) return null;
   const limpio = colores.limpiar(color);
-  if (!limpio && String(color ?? '') !== '') return null;
+  /* Un color que no es un color NO devuelve null: TIRA. `null` de esta
+     funcion quiere decir una sola cosa —"ese espectador no existe"— y
+     la ruta lo usa para cerrarle la sesion a quien quedo sin ficha. Si
+     ademas quisiera decir "eso no es un color", un color mal escrito
+     desloguearia a la persona. Hoy no llega ninguno (la ruta valida
+     antes, con la misma funcion), asi que si llega, es un bug nuestro
+     y tiene que hacer ruido. */
+  if (!limpio && String(color ?? '') !== '') {
+    throw new Error('ese color no es un #rrggbb');
+  }
 
   /* En cola, como todo lo que es leer-cambiar-guardar sobre el mismo
      documento: si no, elegir un color mientras se refresca un token
      pisa el token nuevo. */
   return almacen.enCola('espectadores', id, async () => {
     const doc = await documento(id);
-    if (!doc) return null;
+    if (!doc) {
+      /* Sin ficha no hay color que guardar, y tampoco tiene que quedar
+         uno pintando: si el indice tenia algo de este espectador, era
+         de una ficha que ya no esta. */
+      colores.olvidar(id);
+      return null;
+    }
     const nuevo = { ...doc, ultimoUso: Date.now() };
     if (limpio) {
       nuevo.color = limpio;
@@ -443,9 +458,42 @@ export async function cargarColores() {
 
 /* ------------------------------------------------------- olvidar */
 
-/** Borra el espectador entero: las dos redes y sus tokens. */
+/**
+ * Borra el espectador entero: las dos redes y sus tokens.
+ *
+ * VA EN LA COLA, como todo lo que escribe sobre el mismo documento, y
+ * eso es del 2026-09-25: antes era el unico que no, con el argumento
+ * de que "un borrado no es un leer-cambiar-guardar". El argumento
+ * miraba este borrado solo, y el problema no era este borrado: era
+ * este borrado CONTRA los otros.
+ *
+ * Lo que pasaba, reproducido: alguien manda un mensaje con el token
+ * casi vencido —eso dispara un refresh, o sea `conectar`, que si esta
+ * encolado y lee el documento— y toca "Salir" en el medio. El borrado
+ * se colaba entre el `await documento(id)` de la otra tarea y su
+ * `almacen.poner`, asi que el documento volvia A ESCRIBIRSE DESPUES DE
+ * BORRADO, con el refresh token cifrado adentro: un "salir" que no
+ * borra los tokens. Y en el indice de colores quedaba un color
+ * fantasma, sin ficha detras, que seguia pintando a esa cuenta en
+ * todas las salas y que ni el creador podia sacar (`quitarColorDe`
+ * busca el documento, no lo encuentra y no toca el indice).
+ *
+ * Adentro de la cola las dos tareas se ordenan y cualquiera de los dos
+ * ordenes deja algo coherente: o se borra y despues se reescribe
+ * entero (y el proximo "salir" lo borra), o se reescribe y despues se
+ * borra, que es lo que la persona pidio.
+ */
 export async function olvidar(id) {
   if (!valido(id)) return false;
+  return almacen.enCola('espectadores', id, () => olvidarYa(id));
+}
+
+/**
+ * El borrado en si, SIN la cola: lo llama `olvidar` desde adentro de
+ * la cola, y `desconectar` desde adentro de la suya (encolarlo ahi
+ * seria esperarse a si mismo, que es un cuelgue y no un error).
+ */
+async function olvidarYa(id) {
   limpiarLimite(id);
   /* Su color se va con el: el indice no puede quedar pintando a
      alguien que ya no tiene ficha. */
@@ -466,15 +514,15 @@ export async function olvidar(id) {
 export async function desconectar(id, red) {
   if (!valido(id) || !redValida(red)) return false;
   /* En cola, por lo mismo que `conectar`: con "las dos" caidas a la
-     vez, las dos desconexiones corren juntas. `olvidar` no entra en la
-     cola —es un borrado, no un leer-cambiar-guardar— y ademas se llama
-     desde adentro de esta tarea: encolarlo seria esperarse a si mismo. */
+     vez, las dos desconexiones corren juntas. Adentro se llama a
+     `olvidarYa` y no a `olvidar`, que ahora tambien encola: llamar al
+     encolado desde adentro de la cola seria esperarse a si mismo. */
   return almacen.enCola('espectadores', id, async () => {
     const doc = await documento(id);
     if (!doc?.[red]) return false;
 
     const quedan = REDES.filter(r => r !== red && doc[r]);
-    if (!quedan.length) return olvidar(id);
+    if (!quedan.length) return olvidarYa(id);
 
     const nuevo = { ...doc, ultimoUso: Date.now() };
     delete nuevo[red];

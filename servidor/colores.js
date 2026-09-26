@@ -30,7 +30,7 @@
    Lo que NO hace el servidor es corregir el contraste: eso depende
    del tema (claro u oscuro) de quien esta mirando, que el servidor no
    sabe. Manda el color elegido, tal cual, y la pagina lo ajusta al
-   fondo que tenga puesto. Ver `colorDeUsuario` en comun/mensajes.js.
+   fondo que tenga puesto. Ver `coloresDeUsuario` en comun/mensajes.js.
 
    ---------------------------------------------------------------
    POR QUE HAY UN INDICE EN MEMORIA

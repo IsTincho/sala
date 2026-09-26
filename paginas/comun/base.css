@@ -16,15 +16,30 @@
   --kick:   #53fc18;
   --twitch: #9146ff;
 
-  /* Los dos fondos, SIEMPRE los dos, en los dos temas. No es una
-     repeticion: el color propio de cada persona se corrige para que se
-     lea sobre el fondo, y el JS tiene que poder calcular las dos
-     correcciones —la del tema claro y la del oscuro— sin importar cual
-     este puesto ahora. El valor de una variable de adentro de un
-     @media no se puede leer desde el otro tema. Ver `colorDeUsuario`
-     en comun/mensajes.js. */
-  --fondo-oscuro: #0e1013;
-  --fondo-claro:  #f5f6f8;
+  /* EL FONDO MAS DESFAVORABLE sobre el que puede caer el nombre de
+     alguien, en cada tema. Contra estos dos se corrige el color propio
+     de cada persona (ver `coloresDeUsuario` en comun/mensajes.js), y
+     por eso no son `--fondo` a secas: el mismo nombre se dibuja sobre
+     tres fondos distintos y hay que garantizar el peor.
+
+       tema oscuro: #0e1013 la lista del chat, #181a1c la fila con el
+       puntero encima, y #181b20 la tarjeta de la lista de la Sala. El
+       peor para un texto claro es el mas claro: #181b20.
+
+       tema claro: #ffffff la tarjeta de la Sala, #f5f6f8 la lista del
+       chat y #eeeff1 la fila con el puntero encima. El peor para un
+       texto oscuro es el mas oscuro: #eeeff1.
+
+     Corregir contra el peor aclara (u oscurece) un poco de mas en los
+     otros dos, y esa es la unica forma de que el minimo se cumpla
+     SIEMPRE y no solo en la pantalla donde se probo.
+
+     Los dos estan declarados fuera del @media, y los dos en los dos
+     temas, a proposito: el JS calcula las dos correcciones de una y el
+     valor de una variable de adentro de un @media no se puede leer
+     desde el otro tema. */
+  --fondo-peor-oscuro: #181b20;
+  --fondo-peor-claro:  #eeeff1;
 
   /* paleta oscura (default) */
   --fondo:        #0e1013;
@@ -108,8 +123,8 @@ a{ color: var(--acento); }
 /* El nombre de quien escribio, en su color.
 
    Llegan LOS DOS colores ya corregidos, en dos variables que escribe
-   comun/mensajes.js sobre el propio <span>: el que se lee sobre el
-   fondo oscuro y el que se lee sobre el claro. Elegir cual se usa es
+   `pintarNombre` (comun/mensajes.js) sobre el propio <span>: el que se
+   lee sobre el fondo oscuro y el que se lee sobre el claro. Elegir cual se usa es
    cosa del CSS y no del JS, y por eso cambiar el tema del sistema con
    el chat abierto repinta todos los nombres solo, incluidos los
    mensajes que ya estaban en pantalla.

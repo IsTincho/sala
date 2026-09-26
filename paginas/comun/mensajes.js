@@ -62,7 +62,7 @@
 
   /* Respaldo por si la hoja de estilos no cargo o no tiene las
      variables. Son los mismos valores de base.css. */
-  const FONDOS_POR_DEFECTO = { oscuro: '#0e1013', claro: '#f5f6f8' };
+  const FONDOS_POR_DEFECTO = { oscuro: '#181b20', claro: '#eeeff1' };
 
   function variableCss(nombre) {
     try {
@@ -74,7 +74,12 @@
   /* Los fondos se leen una vez: no cambian en toda la vida de la
      pagina (los dos estan declarados fuera del @media a proposito) y
      preguntarle al navegador por mensaje es pedirle que resuelva
-     estilos en el camino caliente del chat. */
+     estilos en el camino caliente del chat.
+
+     Son los MAS DESFAVORABLES de cada tema, no los del body: el mismo
+     nombre cae sobre la lista del chat, sobre la fila resaltada y
+     sobre la tarjeta de la Sala, que no son el mismo color. Cual es
+     cual esta en base.css, al lado de las variables. */
   let fondos = null;
   function fondosDeLaPagina() {
     if (fondos) return fondos;
@@ -83,8 +88,8 @@
       return REGEX_COLOR_HEX.test(v) ? v : respaldo;
     };
     fondos = {
-      oscuro: leer('--fondo-oscuro', FONDOS_POR_DEFECTO.oscuro),
-      claro: leer('--fondo-claro', FONDOS_POR_DEFECTO.claro),
+      oscuro: leer('--fondo-peor-oscuro', FONDOS_POR_DEFECTO.oscuro),
+      claro: leer('--fondo-peor-claro', FONDOS_POR_DEFECTO.claro),
     };
     return fondos;
   }

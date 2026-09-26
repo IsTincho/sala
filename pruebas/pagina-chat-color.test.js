@@ -52,15 +52,43 @@ function contraste(a, b) {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-/** Los dos fondos, leídos de base.css igual que los lee la página. */
+/* TODOS los fondos sobre los que puede caer el nombre de alguien, en
+   cada tema, ESCRITOS ACÁ A MANO.
+
+   A mano a propósito: si la prueba leyera los mismos valores que lee
+   la página, estaría comprobando que la página se lleva bien consigo
+   misma —cambiar el fondo en base.css movía las dos puntas a la vez y
+   la prueba seguía en verde—. Con los números escritos, cambiar el
+   tema y olvidarse del contraste rompe esta prueba, que es lo que
+   tiene que pasar.
+
+   De dónde sale cada uno:
+     oscuro  #0e1013  la lista de mensajes de /chat (el fondo del body)
+             #181a1c  esa misma fila con el puntero encima
+             #181b20  la tarjeta de la lista de la Sala (--fondo-tarjeta)
+     claro   #ffffff  la tarjeta de la Sala
+             #f5f6f8  la lista de /chat
+             #eeeff1  esa misma fila con el puntero encima */
+const FONDOS_REALES = {
+  oscuro: ['#0e1013', '#181a1c', '#181b20'],
+  claro: ['#ffffff', '#f5f6f8', '#eeeff1'],
+};
+
+const MINIMO = 4.5;
+
+/* El más desfavorable de cada tema: para un texto claro, el fondo más
+   claro; para uno oscuro, el más oscuro. */
+const peorOscuro = FONDOS_REALES.oscuro.reduce((a, b) => (luminancia(b) > luminancia(a) ? b : a));
+const peorClaro = FONDOS_REALES.claro.reduce((a, b) => (luminancia(b) < luminancia(a) ? b : a));
+
+/** Lo que dice base.css, para comprobar que sigue siendo lo mismo. */
 function fondosDeBase() {
   const css = fs.readFileSync(path.join(PAGINAS, 'comun', 'base.css'), 'utf8');
   const leer = nombre => new RegExp(`${nombre}\\s*:\\s*([^;]+);`).exec(css)?.[1].trim();
-  return { oscuro: leer('--fondo-oscuro'), claro: leer('--fondo-claro') };
+  return { oscuro: leer('--fondo-peor-oscuro'), claro: leer('--fondo-peor-claro') };
 }
 
-const FONDOS = fondosDeBase();
-const MINIMO = 4.5;
+const FONDOS = { oscuro: peorOscuro, claro: peorClaro };
 
 const mensaje = (extra = {}) => ({
   tipo: 'chat', red: 'kick', id: 'm1', usuario: 'Fulana', usuarioId: '909',
@@ -78,12 +106,17 @@ function abrirRender() {
   return { ...p, SalaMensajes: p.ventana.SalaMensajes };
 }
 
-test('los dos fondos están declarados fuera del @media', () => {
-  /* Si alguien los mete adentro del tema, el JS no puede leer el del
-     otro tema y la corrección del tema que no está puesto queda mal
-     calculada, en silencio. */
-  assert.match(FONDOS.oscuro, /^#[0-9a-f]{6}$/i, 'falta --fondo-oscuro en :root');
-  assert.match(FONDOS.claro, /^#[0-9a-f]{6}$/i, 'falta --fondo-claro en :root');
+test('base.css declara como peor fondo el que de verdad es el peor', () => {
+  /* Si alguien cambia un fondo del tema y no toca estas variables, la
+     corrección se calcula contra un fondo que ya no existe y el mínimo
+     deja de cumplirse sin que nadie se entere. Esta prueba es el
+     recordatorio. También se cae si los mete adentro del @media: ahí
+     el JS no puede leer el del tema que no está puesto. */
+  const declarado = fondosDeBase();
+  assert.equal(declarado.oscuro, peorOscuro,
+    `--fondo-peor-oscuro tendría que ser ${peorOscuro}, el más claro sobre el que cae un nombre`);
+  assert.equal(declarado.claro, peorClaro,
+    `--fondo-peor-claro tendría que ser ${peorClaro}, el más oscuro sobre el que cae un nombre`);
 });
 
 test('un color que ya se lee no se toca', () => {
@@ -120,19 +153,28 @@ test('un color ilegible sobre el tema claro se corrige, y es OTRO color', () => 
   p.cerrar();
 });
 
-test('cualquier color termina legible en los dos temas', () => {
+test('cualquier color termina legible sobre CUALQUIERA de los fondos reales', () => {
   const p = abrirRender();
-  /* Una vuelta por todo el círculo de tonos, más los extremos. Nadie
-     puede quedar ilegible: esa es la promesa. */
+  /* Una vuelta por todo el círculo de tonos, más los extremos, contra
+     los tres fondos de cada tema: la lista, la fila resaltada y la
+     tarjeta de la Sala. Nadie puede quedar ilegible en ninguna de las
+     tres pantallas, que es la promesa de verdad; medir sólo contra el
+     fondo del body dejaba la Sala en 4,08:1 y la fila resaltada del
+     tema claro en 4,24:1. */
   const colores = ['#000000', '#ffffff', '#ff0000', '#00ff00', '#0000ff', '#ffff00',
-    '#00ffff', '#ff00ff', '#808080', '#53fc18', '#9146ff', '#1a1a1a', '#f0f0f0'];
+    '#00ffff', '#ff00ff', '#808080', '#53fc18', '#9146ff', '#1a1a1a', '#f0f0f0',
+    '#776611', '#0000cc', '#336699'];
 
   for (const color of colores) {
     const par = p.SalaMensajes.coloresDeUsuario({ red: 'kick', color });
-    assert.ok(contraste(par.oscuro, FONDOS.oscuro) >= MINIMO,
-      `${color} no se lee sobre el fondo oscuro: ${contraste(par.oscuro, FONDOS.oscuro).toFixed(2)}:1`);
-    assert.ok(contraste(par.claro, FONDOS.claro) >= MINIMO,
-      `${color} no se lee sobre el fondo claro: ${contraste(par.claro, FONDOS.claro).toFixed(2)}:1`);
+    for (const fondo of FONDOS_REALES.oscuro) {
+      assert.ok(contraste(par.oscuro, fondo) >= MINIMO,
+        `${color} no se lee sobre ${fondo}: ${contraste(par.oscuro, fondo).toFixed(2)}:1`);
+    }
+    for (const fondo of FONDOS_REALES.claro) {
+      assert.ok(contraste(par.claro, fondo) >= MINIMO,
+        `${color} no se lee sobre ${fondo}: ${contraste(par.claro, fondo).toFixed(2)}:1`);
+    }
   }
   p.cerrar();
 });
@@ -400,7 +442,8 @@ test('el botón lleva la red y el id, que es lo único con lo que se puede reset
   p.cerrar();
 });
 
-test('tocarlo le pega a /api/panel/color con la red y el id', async () => {
+/** La ventana del creador, con un mensaje de alguien con color propio. */
+function abrirCreador({ reseteados = 1 } = {}) {
   const pedidos = [];
   const p = abrirPagina({
     antes: ['comun/mensajes.js'],
@@ -409,10 +452,33 @@ test('tocarlo le pega a /api/panel/color con la red y el id', async () => {
       if (String(url) === '/api/chat/salud') {
         return { ok: false, status: 401, json: async () => ({}) };
       }
-      return { ok: true, status: 200, json: async () => ({ ok: true, reseteados: 1 }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, reseteados }) };
     },
     Sala: { conectar: () => ({ cerrar() {} }) },
   });
+  return { ...p, pedidos };
+}
+
+test('si no había nada que sacar, se lo dice en vez de mentirle', async () => {
+  /* Pasa de verdad: el creador toca el botón en un mensaje viejo del
+     buffer de alguien que ya se sacó el color solo. El servidor
+     contesta `reseteados: 0` y decirle "listo, se lo sacaste" lo deja
+     pensando que el botón anda cuando no pasó nada. */
+  const p = abrirCreador({ reseteados: 0 });
+  await asentarse();
+
+  const li = p.ventana.SalaMensajes.crear(mensaje({ colorPropio: true }), { conBloquear: true });
+  p.el('lista-mezclada').appendChild(li);
+  p.el('lista-mezclada').disparar('click', { target: buscarPorClase(li, 'boton-color') });
+  await asentarse();
+
+  assert.match(p.el('texto-aviso-envio').textContent, /no había nada que sacar/);
+  p.cerrar();
+});
+
+test('tocarlo le pega a /api/panel/color con la red y el id', async () => {
+  const p = abrirCreador();
+  const pedidos = p.pedidos;
   await asentarse();
 
   const li = p.ventana.SalaMensajes.crear(mensaje({ colorPropio: true }), { conBloquear: true });

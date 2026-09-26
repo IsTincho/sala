@@ -2632,7 +2632,8 @@ async function apiChatYo(url, req, res, p) {
      las respuestas de esta ruta tienen las mismas claves, asi que la
      pagina no tiene que preguntarse si el campo existe. */
   const nadie = {
-    entrado: false, abierto: c.activo, redes: abiertas, conectadas: {}, color: '', puedeEscribir: [],
+    entrado: false, abierto: c.activo, redes: abiertas, conectadas: {},
+    color: '', bloqueado: [], puedeEscribir: [],
   };
 
   const suyo = await sesion.leer(req, 'espectador');

@@ -427,16 +427,66 @@ test('el color se guarda, se lee y pinta', async () => {
   await espectadores.olvidar(UNO);
 });
 
-test('un color que no es un color no se guarda', async () => {
+test('un color que no es un color tira, y no se guarda', async () => {
+  /* TIRA y no devuelve null a proposito: `null` quiere decir "ese
+     espectador no existe" y la ruta lo usa para cerrar la sesion. Si
+     un color mal escrito tambien diera null, desloguearia a la
+     persona. La ruta valida antes con la misma funcion, asi que si
+     esto salta es un bug nuestro y tiene que hacer ruido. */
   await espectadores.conectar(UNO, 'kick', KICK);
   await espectadores.ponerColor(UNO, '#7a5cff');
 
-  assert.equal(await espectadores.ponerColor(UNO, 'rojo'), null);
-  assert.equal(await espectadores.ponerColor(UNO, '#abc'), null);
+  await assert.rejects(() => espectadores.ponerColor(UNO, 'rojo'));
+  await assert.rejects(() => espectadores.ponerColor(UNO, '#abc'));
   const v = await espectadores.leer(UNO);
   assert.equal(v.color, '#7a5cff', 'el que ya tenia no se toca');
 
   await espectadores.olvidar(UNO);
+});
+
+test('salir espera su turno en la cola, como todo lo que escribe', async () => {
+  /* LA CARRERA QUE ENCONTRO LA REVISION ADVERSARIAL. `olvidar` era el
+     unico que escribia sin pasar por la cola, con el argumento de que
+     un borrado no es un leer-cambiar-guardar. El problema no era este
+     borrado: era este borrado CONTRA los otros.
+
+     Alguien manda un mensaje con el token casi vencido —eso dispara un
+     refresh, o sea `conectar`, que si esta encolado y lee el
+     documento— y toca "Salir" en el medio. El borrado se colaba entre
+     la lectura y la escritura de la otra tarea, asi que el documento
+     se reescribia DESPUES de borrado, con el refresh token cifrado
+     adentro: un "salir" que no borra los tokens. Y en el indice de
+     colores quedaba un color sin ficha detras, pintando esa cuenta en
+     todas las salas, que ni el creador podia sacar (`quitarColorDe`
+     busca el documento, no lo encuentra y no toca el indice).
+
+     Se prueba la invariante y no el reloj: mientras la cola de ese
+     espectador esta ocupada, `olvidar` NO puede haber terminado. Una
+     prueba que intente reproducir el intercalado a fuerza de esperas
+     pasa o falla segun lo rapido que ande el disco. */
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+
+  let soltar;
+  const ocupada = almacen.enCola('espectadores', UNO, () => new Promise(listo => { soltar = listo; }));
+
+  let termino = false;
+  const yendose = espectadores.olvidar(UNO).then(() => { termino = true; });
+  await new Promise(listo => setTimeout(listo, 20));
+  const seColo = termino;
+
+  /* Se suelta SIEMPRE, antes de fallar: si la cola de este espectador
+     queda tomada, las pruebas que vienen despues no se cuelgan un
+     rato, se cuelgan para siempre. */
+  soltar();
+  await ocupada;
+  await yendose;
+
+  assert.equal(seColo, false, 'olvidar se salteo la cola: puede colarse en medio de otra escritura');
+
+  assert.equal(await almacen.obtener('espectadores', UNO), null);
+  assert.equal(colores.deUsuario('kick', '4242'), '');
+  assert.deepEqual(colores.espectadoresCon('kick', '4242'), []);
 });
 
 test('el vacio le saca el color y vuelve el de la plataforma', async () => {
@@ -461,6 +511,24 @@ test('el color no le toca los tokens a nadie', async () => {
   const v = await espectadores.leer(UNO);
   assert.equal(v.kick.accessToken, KICK.accessToken);
   assert.equal(v.twitch.refreshToken, TWITCH.refreshToken);
+
+  await espectadores.olvidar(UNO);
+});
+
+test('sumar la segunda red despues de elegir el color la pinta igual', async () => {
+  /* Lo que se rompia si `conectar` se olvidaba de avisarle al indice:
+     elegir el color con Kick y sumar Twitch despues dejaba a Twitch
+     sin color. Ninguna prueba lo miraba (todas conectaban las dos
+     ANTES de elegir), asi que sacar ese gancho pasaba las 1080. */
+  await espectadores.conectar(UNO, 'kick', KICK);
+  await espectadores.ponerColor(UNO, '#7a5cff');
+  assert.equal(colores.deUsuario('twitch', '9090'), '', 'todavia no conecto Twitch');
+
+  await espectadores.conectar(UNO, 'twitch', TWITCH);
+
+  assert.equal(colores.deUsuario('twitch', '9090'), '#7a5cff',
+    'la red recien conectada tiene que salir con el mismo color');
+  assert.equal(colores.deUsuario('kick', '4242'), '#7a5cff');
 
   await espectadores.olvidar(UNO);
 });

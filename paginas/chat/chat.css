@@ -44,6 +44,14 @@ html, body{
   flex-direction: column;
   height: 100dvh;
   font-size: var(--tam-chat);
+
+  /* El alto de los controles que se tocan, para que no queden tres
+     alturas distintas una al lado de la otra. Va acá y no en la fila
+     de abajo porque el botón Guardar del panel de color es un
+     `.boton-enviar` que vive en OTRA barra: declarada sólo en la fila,
+     `var(--alto-control)` no resolvía ahí y la regla se caía entera,
+     en silencio, justo en el único botón grande de ese panel. */
+  --alto-control: 2.25rem;
 }
 
 /* ---------- barra superior ---------- */
@@ -247,8 +255,22 @@ html, body{
 /* Entre dos mensajes, no arriba del primero ni abajo del ultimo. Va
    en un ::before y no en un border para que el redondeo del hover no
    se coma la linea, y para que el separador quede a lo ancho del
-   texto y no del renglon entero. */
-.mensaje + .mensaje::before{
+   texto y no del renglon entero.
+
+   Y MIRA EL FILTRO, con un selector por caso. El filtro de la vista
+   mezclada esconde los mensajes de la otra red con `display: none`,
+   pero el hermano escondido SIGUE SIENDO el hermano: con `.mensaje +
+   .mensaje` el primer mensaje que se ve dibujaba su linea de arriba
+   —una raya suelta contra el borde de la lista— cada vez que habia un
+   filtro puesto. Con filtro se usa `~` entre mensajes de la red que se
+   ve, que es "cualquiera que tenga otro antes", y da lo mismo cuantos
+   escondidos haya en el medio.
+
+   La lista sin `data-filtro` es la de cada columna, donde el filtro
+   esconde la columna entera y no mensajes sueltos. */
+.lista-mensajes:not([data-filtro="kick"]):not([data-filtro="twitch"]) > .mensaje + .mensaje::before,
+.lista-mensajes[data-filtro="kick"] > .mensaje[data-red="kick"] ~ .mensaje[data-red="kick"]::before,
+.lista-mensajes[data-filtro="twitch"] > .mensaje[data-red="twitch"] ~ .mensaje[data-red="twitch"]::before{
   content: '';
   position: absolute;
   top: 0;
@@ -259,11 +281,6 @@ html, body{
 }
 
 .mensaje:hover{ background: var(--chat-fila-hover); }
-
-/* El mensaje de arriba del que se esta mirando no necesita ademas la
-   linea: el fondo ya lo separa. */
-.mensaje:hover::before,
-.mensaje:hover + .mensaje::before{ background: transparent; }
 
 /* El filtro por red de la vista mezclada. Se esconde con CSS y no
    sacando el mensaje de la lista: sacarlo haria que volver a "todas"
@@ -543,9 +560,6 @@ a.boton-chip{
   display: flex;
   align-items: center;
   gap: var(--espacio-2);
-  /* alto comun de los controles de esta fila, para que no queden tres
-     alturas distintas una al lado de la otra */
-  --alto-control: 2.25rem;
 }
 
 .fila-controles-envio .boton-chip,
@@ -762,14 +776,19 @@ select:focus-visible{
   .contador-caracteres{ min-width: 3.4em; }
 }
 
-/* ---------- con el dedo, todo lo que se toca mide 44px ----------
+/* ---------- con el dedo, los controles crecen ----------
 
    Solo en pantallas tactiles: en una ventana angosta al costado del
    monitor, con mouse, 44px de alto en cada control es alto regalado.
-   El chat se instala como app y ahi si hace falta. */
+   El chat se instala como app y ahi si hace falta.
+
+   Los de escribir (y el Guardar del color, que comparte la variable)
+   van a 44px, que es el minimo para el dedo. Los chips de las dos
+   barras van a 40: son ocho y a 44 la barra de arriba se parte en tres
+   renglones en un telefono, que cuesta mas de lo que arregla. */
 
 @media (pointer: coarse){
-  .fila-controles-envio{ --alto-control: 2.75rem; }
+  .chat-app{ --alto-control: 2.75rem; }
   .barra-conectar .boton-chip,
   .barra-controles .boton-chip{ min-height: 2.5rem; }
 }

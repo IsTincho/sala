@@ -205,15 +205,16 @@ test('un pedido de reseteo mal escrito se rechaza', async () => {
   assert.equal(colores.deUsuario('kick', '4242'), '#7a5cff');
 });
 
-test('el reseteo también exige Origin propio', async () => {
+test('el reseteo exige Origin propio, como las rutas que tocan a un tercero', async () => {
+  /* El resto de /api/panel se apoya sólo en la cookie SameSite=Lax:
+     son ajustes de la sala propia. Ésta le borra un dato a otra
+     persona, y en todas las salas, así que lleva la segunda traba. */
   await ponerColor(cookieEspectador, '#7a5cff');
+
   const r = await resetear(cookieAna, { red: 'kick', id: '4242' }, { origen: 'https://otro.example' });
-  /* `conCreador` no mira el Origin, pero la cookie es SameSite=Lax y
-     esto es un POST con cuerpo JSON: si algún día esta ruta deja de
-     estar detrás de eso, esta prueba lo tiene que decir. Hoy pasa
-     porque la sesión sí llega; lo que se verifica es que no haya
-     quedado una puerta sin dueño. */
-  assert.ok([200, 403].includes(r.estado), `estado inesperado: ${r.estado}`);
+
+  assert.equal(r.estado, 403);
+  assert.equal(colores.deUsuario('kick', '4242'), '#7a5cff', 'no tocó nada');
 });
 
 test('otro creador también puede sacárselo, y eso es a propósito', async () => {

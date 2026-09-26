@@ -746,6 +746,22 @@ select:focus-visible{
 
 .texto-tenue{ color: var(--texto-tenue); }
 
+/* ---------- pantalla muy angosta (320px, el celular mas chico) ----
+
+   Los cuatro controles de la fila de abajo suman 299px y en 320 entran
+   288: se iba 11px. En vez de dejar que "Enviar" se corte o que la
+   fila se parta en dos renglones, se le saca aire a los costados de la
+   caja y a los lados del boton, que es lo que menos se nota. */
+
+@media (max-width: 360px){
+  .caja-escritura,
+  .barra-conectar,
+  .barra-superior{ padding-inline: var(--espacio-2); }
+  .lista-mensajes{ padding-inline: var(--espacio-2); }
+  .boton-enviar{ padding-inline: 0.7rem; }
+  .contador-caracteres{ min-width: 3.4em; }
+}
+
 /* ---------- con el dedo, todo lo que se toca mide 44px ----------
 
    Solo en pantallas tactiles: en una ventana angosta al costado del

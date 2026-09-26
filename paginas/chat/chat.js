@@ -1279,8 +1279,11 @@
     const puedeElegir = Boolean(datos?.entrado) && Object.keys(misIds).length > 0;
     botonColor.hidden = !puedeElegir;
     if (!puedeElegir) { cerrarPanelColor({ devolverFoco: false }); return; }
-    if (miColor) campoColor.value = miColor;
-    if (!panelColor.hidden) previsualizar();
+    /* Con el panel ABIERTO no se toca el elegidor: la persona está en
+       el medio de elegir, y /yo se vuelve a consultar sola cada vez
+       que el creador cambia algo. Pisarle lo que tiene puesto con lo
+       último guardado sería arrebatarle la mano. */
+    if (miColor && panelColor.hidden) campoColor.value = miColor;
   }
 
   function aplicarYo(datos) {

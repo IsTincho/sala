@@ -2627,7 +2627,13 @@ async function apiChatYo(url, req, res, p) {
   /* De un chat cerrado no se cuenta nada, ni siquiera que redes eligio
      el creador. Mismo criterio que /api/chat/:slug/abierto. */
   const abiertas = c.activo ? [...c.redes] : [];
-  const nadie = { entrado: false, abierto: c.activo, redes: abiertas, conectadas: {}, puedeEscribir: [] };
+  /* `color: ''` va tambien en la respuesta de "no entraste", con el
+     mismo criterio que `bloqueado` en la hermana de /api/sala: todas
+     las respuestas de esta ruta tienen las mismas claves, asi que la
+     pagina no tiene que preguntarse si el campo existe. */
+  const nadie = {
+    entrado: false, abierto: c.activo, redes: abiertas, conectadas: {}, color: '', puedeEscribir: [],
+  };
 
   const suyo = await sesion.leer(req, 'espectador');
   if (!suyo) return json(res, 200, nadie);
@@ -2889,6 +2895,12 @@ async function apiEspectadorColor(url, req, res) {
  * volver a elegir.
  */
 async function apiPanelColor(url, req, res) {
+  /* Exige `Origin` nuestro, a diferencia del resto de /api/panel, que
+     se apoya solo en la cookie SameSite=Lax. El criterio es el mismo
+     que en las rutas del espectador: las que tocan a UN TERCERO llevan
+     la segunda traba. Esta le borra un dato a otra persona y en todas
+     las salas, no un ajuste de la sala propia. */
+  if (origenAjeno(req, res)) return;
   return conCreador(req, res, async (slug) => {
     let pedido;
     try { pedido = await leerJson(req); }

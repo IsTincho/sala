@@ -114,7 +114,6 @@
   const buscarEmote    = document.getElementById('buscar-emote');
   const cerrarEmotes   = document.getElementById('cerrar-emotes');
   const rejillaEmotes  = document.getElementById('rejilla-emotes');
-  const notaEmotes     = document.getElementById('nota-emotes');
   const avisoEmotes    = document.getElementById('aviso-emotes');
 
   const tituloChat      = document.getElementById('titulo-chat');
@@ -777,15 +776,12 @@
     twitch: 'De Twitch · del canal y los globales',
     '7tv': 'De 7TV · del canal y los globales',
   };
-  /* Lo que la pagina admite no tener, y lo que no puede saber. Se dice
-     en el panel y no en un comentario: un selector que aparenta ser el
-     catalogo completo manda a buscar un emote que no va a estar, y uno
-     que promete que todos se van a dibujar miente sobre los de
-     suscriptor. */
-  const NOTA_EMOTES = 'De Kick aparecen sólo los que ya pasaron por este chat: '
-    + 'Kick no ofrece forma de pedirle la lista de emotes de un canal. '
-    + 'Los de Twitch que son del canal (sub, seguidor o bits) salen dibujados '
-    + 'sólo para quien los tenga desbloqueados; al resto les llega la palabra.';
+  /* Lo que la pagina admite no tener, y lo que no puede saber, vive
+     en el HTML (el <details> de #nota-emotes) y no acá: es un texto
+     fijo que no depende de nada que pase en la pantalla, y escribirlo
+     desde JS obligaba a que fuera un párrafo suelto. Plegado ocupa un
+     renglón, que es lo que hacía falta para que el panel vacío dejara
+     de ocupar media pantalla. */
   /* No se vuelve a pedir la lista mas seguido que esto aunque se abra
      y cierre el panel. Los de Kick crecen en vivo, asi que refrescar
      al abrir tiene sentido; hacerlo en cada toque, no. */
@@ -925,8 +921,6 @@
         : 'Todavía no hay emotes para ofrecer en este chat.';
       rejillaEmotes.appendChild(vacio);
     }
-
-    notaEmotes.textContent = NOTA_EMOTES;
   }
 
   /* DETECCION, NO TRADUCCION. La traduccion la hace el servidor

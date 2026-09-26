@@ -161,7 +161,22 @@
         <button type="button" id="cerrar-emotes" class="boton-chip" aria-label="Cerrar los emotes">×</button>
       </div>
       <div id="rejilla-emotes" class="rejilla-emotes"></div>
-      <p id="nota-emotes" class="nota-emotes texto-tenue"></p>
+      <!-- Lo que el panel admite no tener, y lo que no puede saber.
+           Sigue estando entero, pero plegado: la primera línea dice lo
+           único que hay que saber para no buscar un emote que no está,
+           y el resto se abre si alguien pregunta por qué. Antes era un
+           párrafo de cuatro renglones metido adentro de un panel que
+           muchas veces está vacío. Es un <details> y no un botón con
+           JS: lo hace el navegador y funciona sin scripts. -->
+      <details id="nota-emotes" class="nota-emotes texto-tenue">
+        <summary>De Kick aparecen sólo los que ya pasaron por este chat</summary>
+        <p>
+          Kick no ofrece forma de pedirle la lista de emotes de un canal, así que ésta
+          crece con lo que usa la comunidad. Los de Twitch que son del canal (sub,
+          seguidor o bits) salen dibujados sólo para quien los tenga desbloqueados; al
+          resto les llega la palabra.
+        </p>
+      </details>
     </div>
 
     <!-- "este emote no existe en la red a la que estás mandando".

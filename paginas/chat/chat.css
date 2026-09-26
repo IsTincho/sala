@@ -55,7 +55,7 @@ html, body{
   align-items: center;
   justify-content: space-between;
   gap: var(--espacio-2);
-  padding: var(--espacio-1) var(--espacio-3);
+  padding: var(--espacio-2) var(--espacio-3);
   background: var(--fondo-tarjeta);
   border-bottom: 1px solid var(--borde);
   flex-wrap: wrap;
@@ -212,26 +212,58 @@ html, body{
   border-bottom: 1px solid var(--borde);
 }
 
+/* El scroll con aire a los costados: antes el texto arrancaba a 8px
+   del borde de la ventana, que en una ventana angosta al costado del
+   monitor es estar pegado al borde. El padding de abajo es mas grande
+   que el de arriba para que el ultimo mensaje no quede lamiendo la
+   caja de escribir. */
 .lista-mensajes{
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   margin: 0;
-  padding: var(--espacio-2);
+  padding: var(--espacio-2) var(--espacio-3) var(--espacio-3);
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: var(--espacio-2);
+  /* sin hueco entre mensajes: lo que los separa ahora es el aire de
+     adentro de cada uno mas una linea fina, que se lee de un vistazo
+     sin gastar el doble de alto */
+  gap: 0;
+  /* La linea de separacion. Es el mismo borde que usa todo lo demas:
+     en el tema oscuro alcanza para guiar el ojo sin dibujar una tabla,
+     y en el claro se necesita entero para verse. */
+  --chat-separador: var(--borde);
 }
 
 .mensaje{
+  position: relative;
   border-radius: var(--radio);
-  padding: 0.3rem 0.5rem;
+  padding: 0.4rem 0.55rem;
   overflow-wrap: anywhere; /* mensajes largos sin espacios no rompen el ancho */
 }
 
+/* Entre dos mensajes, no arriba del primero ni abajo del ultimo. Va
+   en un ::before y no en un border para que el redondeo del hover no
+   se coma la linea, y para que el separador quede a lo ancho del
+   texto y no del renglon entero. */
+.mensaje + .mensaje::before{
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0.55rem;
+  right: 0.55rem;
+  height: 1px;
+  background: var(--chat-separador);
+}
+
 .mensaje:hover{ background: var(--chat-fila-hover); }
+
+/* El mensaje de arriba del que se esta mirando no necesita ademas la
+   linea: el fondo ya lo separa. */
+.mensaje:hover::before,
+.mensaje:hover + .mensaje::before{ background: transparent; }
 
 /* El filtro por red de la vista mezclada. Se esconde con CSS y no
    sacando el mensaje de la lista: sacarlo haria que volver a "todas"
@@ -483,8 +515,8 @@ a.boton-chip{
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: var(--espacio-1);
-  padding: var(--espacio-2) var(--espacio-3);
+  gap: var(--espacio-2);
+  padding: var(--espacio-2) var(--espacio-3) var(--espacio-3);
   background: var(--fondo-tarjeta);
   border-top: 1px solid var(--borde);
 }
@@ -504,10 +536,22 @@ a.boton-chip{
 
 .campo-texto:disabled{ opacity: 0.6; }
 
+/* Emotes, a que red, cuanto llevas escrito y Enviar. Cuatro cosas en
+   una fila que en una ventana angosta mide 300px: lo que se cuida es
+   que se puedan tocar y que no se toquen entre si. */
 .fila-controles-envio{
   display: flex;
   align-items: center;
   gap: var(--espacio-2);
+  /* alto comun de los controles de esta fila, para que no queden tres
+     alturas distintas una al lado de la otra */
+  --alto-control: 2.25rem;
+}
+
+.fila-controles-envio .boton-chip,
+.select-destino,
+.boton-enviar{
+  min-height: var(--alto-control);
 }
 
 .select-destino{
@@ -516,13 +560,18 @@ a.boton-chip{
   color: var(--texto);
   border: 1px solid var(--borde);
   border-radius: var(--radio);
-  padding: 0.3rem 0.4rem;
+  padding: 0.3rem 0.5rem;
 }
 
+/* El contador no puede empujar a los botones cada vez que se escribe
+   una letra: se reserva el lugar de "500/500" y se queda quieto. */
 .contador-caracteres{
   font-size: 0.8em;
   color: var(--texto-tenue);
   margin-left: auto;
+  min-width: 4em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .contador-caracteres.excedido{
@@ -536,7 +585,7 @@ a.boton-chip{
   color: #04110a;
   border: none;
   border-radius: var(--radio);
-  padding: 0.4rem 0.9rem;
+  padding: 0.4rem 1.1rem;
   cursor: pointer;
   font-weight: 600;
 }
@@ -588,8 +637,12 @@ a.boton-chip{
   padding: 0.4rem 0.6rem;
 }
 
+/* `flex: 0 1 auto` y no `flex: 1`: la rejilla ocupa lo que necesita y
+   no estira el panel. Con el panel vacio —que es como arranca en un
+   chat donde todavia no paso ningun emote de Kick— eso es un renglon,
+   no media pantalla. El tope de alto sigue siendo del panel. */
 .rejilla-emotes{
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   /* el dedo puede arrastrar el panel sin llevarse la pagina de atras */
@@ -649,10 +702,27 @@ a.boton-chip{
   object-fit: contain;
 }
 
+/* La nota de lo que el panel no tiene, plegada en un renglon. Abierta
+   dice lo mismo de antes; cerrada deja de ser la mitad del panel. */
 .nota-emotes{
   flex: none;
   margin: 0;
   font-size: 0.75em;
+}
+
+.nota-emotes > summary{
+  cursor: pointer;
+  padding: 0.15rem 0;
+  list-style-position: inside;
+}
+
+.nota-emotes > summary:focus-visible{
+  outline: 2px solid var(--acento);
+  outline-offset: 2px;
+}
+
+.nota-emotes > p{
+  margin: 0.25rem 0 0;
 }
 
 .boton-emotes{ flex: none; }
@@ -675,6 +745,18 @@ select:focus-visible{
 }
 
 .texto-tenue{ color: var(--texto-tenue); }
+
+/* ---------- con el dedo, todo lo que se toca mide 44px ----------
+
+   Solo en pantallas tactiles: en una ventana angosta al costado del
+   monitor, con mouse, 44px de alto en cada control es alto regalado.
+   El chat se instala como app y ahi si hace falta. */
+
+@media (pointer: coarse){
+  .fila-controles-envio{ --alto-control: 2.75rem; }
+  .barra-conectar .boton-chip,
+  .barra-controles .boton-chip{ min-height: 2.5rem; }
+}
 
 /* ---------- pantalla angosta: columnas cae a mezclada ---------- */
 

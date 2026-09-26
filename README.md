@@ -215,9 +215,10 @@ Reglas que no se negocian:
 | `/api/chat/resuscribir` | Vuelve a crear las suscripciones de Kick de su sala. Pide cookie de creador |
 | `/api/chat/:slug/abierto` | `GET` público: `{ abierto, redes }`. Cerrado contesta `redes: []`: de un chat cerrado no se cuenta nada. 404 si la sala no existe. Contesta de la misma memoria que usa el filtro del bus |
 | `/api/chat/:slug/emotes` | `GET` público: los emotes que puede ofrecer el selector de la caja de escribir, cada uno con la `marca` que hay que poner en la caja y en qué `redes` sirve. **Sin sesión**, igual que `/abierto`: leer el chat nunca pidió login y esto es parte de leerlo. Con el chat cerrado contesta `emotes: []`. `?red=` acota a qué red va a ir el mensaje y **pide menos, nunca más**: se cruza contra las redes que el creador abrió. 404 si la sala no existe |
-| `/api/chat/:slug/yo` | `GET` con cookie de espectador: qué redes conectó esa persona y en cuáles puede escribir **acá** (lo suyo cruzado con lo que el creador abrió). Habla del que pregunta y de nadie más |
+| `/api/chat/:slug/yo` | `GET` con cookie de espectador: qué redes conectó esa persona y en cuáles puede escribir **acá** (lo suyo cruzado con lo que el creador abrió), su **color propio** y su propio id en cada red (con eso la página repinta sus mensajes al cambiar de color). Habla del que pregunta y de nadie más |
 | `/api/chat/:slug/enviar` | `POST { red: "kick" \| "twitch" \| "ambas", texto }` con cookie de espectador **y `Origin` propio**. Mismos frenos que `/api/sala/:slug/chat`, y **"ambas" cuenta como un solo mensaje**. 403 si el chat está cerrado, si esa red no está abierta o si la persona no la conectó. El resultado viene **por red**: `{ ok, kick: {ok, motivo}, twitch: {ok, motivo} }` |
 | `/api/espectador/salir` | `POST` con `Origin` propio: cierra la sesión y **borra los tokens de las dos redes**. Sin slug: la cuenta de espectador es del dominio, no de una sala |
+| `/api/espectador/color` | `POST { color }` con cookie de espectador y `Origin` propio: guarda **su** color. `#rrggbb` y nada más; `""` se lo saca y vuelve el de cada plataforma. Cualquier otra cosa es 400 y no se guarda "arreglada". Sin slug, por lo mismo que salir: el color es de la persona y vale en el chat de cualquier creador |
 | `/chat/:slug/manifest.webmanifest` | El manifest de la PWA de **esa** sala: `start_url` y `scope` son `/chat/<slug>`, así cada espectador instala el chat de su streamer y abre ahí. 404 si la sala no existe |
 | `/api/hora` | La hora del servidor, y nada más. Con esto cada navegador mide su desfase y calcula en qué segundo va la peli |
 | `/api/videos` | `POST` guarda una ficha (cabecera `X-Clave-Subida`); la `url` tiene que ser `https`, terminar en `.m3u8` y **no ser la nuestra**. La clave autoriza **una sola sala**. `GET` lista el catálogo **de la sala de la cookie o de la clave**: no hay parámetro que lo cambie. **404 con la Sala apagada** |
@@ -231,6 +232,7 @@ Reglas que no se negocian:
 | `/api/panel/clave` | `POST` genera la clave de subida de su sala (se devuelve una sola vez), `DELETE` la revoca. **404 con la Sala apagada** |
 | `/api/panel/twitch` | `DELETE` desvincula Twitch de su sala: cierra la conexión y borra el token |
 | `/api/panel/suscribirse` | `POST` devuelve la URL del checkout del proveedor de cobro. **404 con la Sala apagada**: lo único que se cobra es pasar una película, así que con la Sala cerrada no hay nada que suscribir, y el panel tampoco pinta el botón |
+| `/api/panel/color` | `POST { red, id }` con cookie de creador: le saca a esa cuenta el color propio y la deja con el de su plataforma. **No la bloquea** y puede volver a elegir. **Vale en todas las salas**, porque el color es de la persona: ver "El color propio de cada persona". El slug de la cookie se usa sólo para el log |
 | `/api/panel/sala` | `POST { abierta }` prende o apaga **su** Sala. Existe para cualquier creador con sesión y contesta **403 al que no sea el dueño del SERVICIO**: `esDueno` se pregunta acá, contra `KICK_SLUG`, no en la base. Un `abierta` que no sea `true`/`false` da 400 |
 | `/api/panel/chat` | `POST { activo?, redes?, bloquear?, desbloquear? }` abre o cierra el chat abierto de **su** sala, elige las redes (`kick`, `twitch` o las dos) y maneja la lista de bloqueados. Lo que no viene queda como estaba; una red desconocida o una lista vacía da 400. **El slug sale de la cookie**: un `slug` en el cuerpo no se lee. Los bloqueados se tocan **de a uno** (`{ red, id, nombre? }`), nunca la lista entera: con dos pestañas del panel abiertas, mandar la lista completa haría que la segunda pise el bloqueo de la primera. Entra en todos los planes. Vale en el acto para la gente conectada y se avisa por el bus (`chat-abierto`) |
 | `/api/subida` | `POST` firma las URL de subida a R2 de su prefijo `<slug>/<id>/`. **404 con la Sala apagada** (antes que el plan), 402 si su plan no sube, 409 si no entra en su tope de GB. Acepta la cookie **o** la cabecera `X-Clave-Subida`: el script corre en una terminal |
@@ -351,7 +353,33 @@ Se filtra **en el servidor y por conexión** (`canales.js`, `leDaEl`), no en el 
 
 `fuente` dice de dónde salió cada emote: `kick`, `twitch` o `7tv`. Está en **todos** los emotes y no sólo en los de terceros, porque un array donde algunos elementos tienen una clave y otros no es la forma de que, el día que alguien la lea, se rompa justo con los mensajes de una red. Es aditivo: un cliente viejo lo ignora. Hoy la página no lo mira; está para quien quiera mostrar en pantalla de dónde viene el emote, que es una decisión de diseño todavía sin tomar.
 
+`color` es con qué se pinta el nombre. Puede ser el que da cada plataforma o **el que la persona eligió acá**, que lo pisa; cuando es el suyo, el mensaje trae además `colorPropio: true`. Ver "El color propio de cada persona".
+
 Cada insignia lleva `tipo`, `version`, `texto` y `url`, por el mismo motivo de arriba: las cuatro están en **todas**, aunque a las de Kick `version` y `url` les queden siempre vacías. `url` la completa el servidor (ver "Las insignias") y `version` es lo que hace falta para casarla: Twitch manda `{ set_id: "subscriber", id: "12", info: "16" }`, donde el `12` es **cuál de los dibujos** del set y el `16` son los meses de verdad. Confundirlos le pone a un suscriptor de tres años el ícono del primer mes, sin romper nada y sin avisar.
+
+### El color propio de cada persona
+
+Quien conecta su cuenta en `/chat/<slug>` puede elegir **su** color, y su nombre se pinta con ése acá: en el chat abierto, en la ventana del creador y en la Sala. En kick.com y en twitch.tv sigue saliendo con el color que le da cada plataforma —eso no lo controlamos— y el elegidor lo dice con todas las letras.
+
+**Es de la persona y vale en todas las salas.** Se guarda en su ficha de `espectadores` (`color` y `colorDesde`), no en la de ningún creador: lo elige una vez y le sirve en el chat de cualquiera. Por defecto manda el color de cada plataforma; el propio lo pisa.
+
+**El color viaja ya resuelto en el mensaje**, no lo averigua la página. Lo pone `servidor/colores.js` en los dos embudos de `chat.js`, al lado de `emotes.resolver` y de `insignias.resolver`. Se decidió así porque la página no tiene de dónde sacarlo: resolverlo allá sería un pedido por cada nombre que aparece, o bajarse la tabla de colores de todo el mundo, que es repartir datos de terceros a cualquiera que abra el chat.
+
+**Hay un índice en memoria** (`red:usuarioId` → color) porque `pintar()` corre en cada mensaje de las dos redes y ahí no entra un `await` a Mongo, igual que en el filtro del bus. Se llena **al arrancar**, no cuando la persona entra: quien eligió su color hace un mes y hoy escribe desde kick.com no pasa por ninguna sesión nuestra. Con una sola instancia en Railway no se desincroniza; el día que haya dos, esto viaja junto con el Map de `creadores`.
+
+**El contraste lo corrige la página, no el servidor**, y no es un capricho: depende del tema —claro u oscuro— de quien está mirando, que el servidor no sabe. `comun/mensajes.js` mide la **relación de contraste de WCAG** (luminancias relativas de verdad) contra el fondo y, si no llega a **4,5:1**, mezcla el color hacia el blanco o hacia el negro hasta el primer paso que sí llega: el tono más cercano que se lee. Nadie puede quedar ilegible.
+
+Y calcula **los dos**, el del tema claro y el del oscuro, siempre. Salen como dos variables CSS sobre el `<span>` del nombre y el `@media` de `base.css` elige cuál usa, así que cambiar el tema del sistema con el chat abierto repinta hasta los mensajes que ya estaban. Por eso `--fondo-oscuro` y `--fondo-claro` están declarados **fuera** del `@media`: el valor de una variable de adentro de un tema no se puede leer desde el otro.
+
+**La validación es una forma única, `#rrggbb`**, en las dos puntas (servidor y página). Es entrada de terceros que termina en un atributo `style` del navegador de todos los que estén mirando: no hay lista de cosas prohibidas —esas siempre tienen un agujero—, hay una forma y lo que no la cumple no es un color. El vacío es lo único que además se acepta, y quiere decir "sacámelo".
+
+**Los mensajes ya pintados no se repintan** cuando alguien cambia de color: cada mensaje salió con el color que esa persona tenía en ese momento. La única pantalla donde sí se repinta es la de **quien acaba de cambiarlo** (busca sus mensajes por `data-usuario-id` y por red), porque si no, elegir un color parece no haber hecho nada hasta escribir. Los demás lo ven desde el mensaje siguiente.
+
+**El creador tiene un botón para sacárselo a alguien**, al lado del de bloquear y **sólo en los mensajes de quien eligió uno** (`colorPropio`). No es un bloqueo: la persona sigue escribiendo igual y puede volver a elegir. Si insiste, lo que sigue es bloquearla, que ya existe.
+
+**Ese reseteo vale en todas las salas**, y es la consecuencia directa de que el color sea uno solo por persona: se le borra de su ficha, así que también deja de verse en el chat de otro creador. Está dicho en el aviso que ve el creador cuando lo toca. Es el precio de que el color sea de la persona y no de cada sala; el día que moleste —cuando haya muchos creadores que no se conocen entre sí— la salida es una lista por sala en el documento del creador, como `bloqueados`, y no partir el color en uno por sala. Tampoco tiene "deshacer", a diferencia de bloquear: para devolverlo habría que guardar el color de otra persona para escribírselo después.
+
+Lo que **no** incluye: el creador no elige color para su propia ventana (`/chat`), porque ahí no hay ficha de espectador. Si quiere uno, conecta su cuenta como espectador en su propio `/chat/<slug>` y lo elige ahí: el pintado es por (red, id de esa red), así que le vale en las dos pantallas.
 
 ### Los emotes de 7TV
 
@@ -510,6 +538,14 @@ La lista sale de `GET /api/chat/emotes`, que es la hermana de la pública con do
 2. **No mira el interruptor del chat abierto.** Ese interruptor es *"mi comunidad puede escribir desde mi página"*; el creador escribe en su propio chat desde su propia ventana con el chat cerrado, y el selector tiene que seguir andando ahí. La hermana pública, en cambio, con el chat cerrado no cuenta ni un emote: de un chat cerrado no se cuenta nada.
 
 El vocabulario de cada caja se mantiene: la del creador manda `destino: "kick" | "twitch" | "ambos"` (elige entre **sus** canales) y la del espectador `red: "kick" | "twitch" | "ambas"` (elige entre **sus** cuentas). Son dos cosas distintas y por eso son dos palabras distintas.
+
+### Cómo se ve la pantalla del chat
+
+Es la herramienta que el dueño mira horas por día, en una ventana angosta al costado del monitor o instalada como app en el teléfono. Tres cosas que se arreglaron el 2026-09-25 mirando la pantalla de verdad:
+
+- **El panel de emotes ya no ocupa media pantalla cuando está vacío.** El párrafo que explica por qué faltan los de Kick sigue entero, pero **plegado en un `<details>`**: una línea que dice lo único que hay que saber y el resto a un click. Es del navegador, no hay JS. Y la rejilla ya no estira el panel cuando no tiene nada adentro (`flex: 0 1 auto`).
+- **Los mensajes tienen aire y se separan de un vistazo.** Antes el texto arrancaba a 8 px del borde de la ventana y lo único que separaba un mensaje del otro era un hueco. Ahora hay aire a los costados y **una línea fina entre uno y otro**, dibujada con `::before` (no con `border`, que el redondeo del hover se come) y que **se apaga alrededor del mensaje que tiene el puntero encima**, para que el resaltado no compita con la línea.
+- **La barra de abajo respira.** Todos sus controles miden lo mismo de alto, el contador de caracteres **reserva su lugar** (`min-width` y `tabular-nums`) y ya no empuja los botones cada vez que se escribe una letra, y con el dedo —`@media (pointer: coarse)`— todo sube a 44 px. Con mouse no: en una ventana angosta, 44 px por control es alto regalado.
 
 ### Las insignias
 

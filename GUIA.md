@@ -65,6 +65,29 @@ Si Twitch te figura sin vincular, se vincula desde el mismo panel.
    como palabra suelta): tiene que verse la imagen, no la palabra.
 7. Tocá **Emotes** al lado de la caja, elegí uno y mandalo. El botón está en tu ventana
    (`/chat`) y en la de tu comunidad (`/chat/<slug>`).
+8. Tocá **Mi color**, elegí uno y guardá: tu nombre tiene que quedar pintado con ése, y los
+   mensajes tuyos que ya estaban en pantalla también.
+
+### El color de cada uno (2026-09-25)
+
+Cualquiera que conecte su cuenta en tu chat puede elegir **su** color con el botón **Mi color**,
+al lado de la caja. Tres cosas que conviene saber:
+
+- **Se ve sólo acá.** En kick.com y en twitch.tv esa persona sigue saliendo con el color que le
+  da cada plataforma. El panel se lo dice cuando elige.
+- **Es de la persona, no de tu sala.** Lo elige una vez y le sirve en el chat de cualquier
+  creador que use esto. Quien no elige nada queda con el color de su plataforma, como siempre.
+- **Nadie puede quedar ilegible**: si el color que eligió no se lee sobre el fondo, se ajusta
+  solo al tono más cercano que sí se lea, y funciona igual con el tema claro y con el oscuro.
+
+Si alguien se pasa de vivo con el color, en **tu** ventana (`/chat`) cada mensaje de quien
+eligió uno tiene un botón **color** al lado del de **bloquear**. Le saca el color y lo deja con
+el de su plataforma; **no** lo bloquea, y puede volver a elegir otro (si insiste, ahí sí está
+bloquear). **Ojo**: como el color es de la persona y no de tu sala, sacárselo también hace que
+deje de verse en el chat de otros creadores.
+
+Vos, para tener tu propio color, conectá tu cuenta como uno más en tu `/chat/<tu-slug>` y
+elegilo ahí: después se ve también en tu ventana.
 
 **Los emotes de 7TV ya se ven**, los tuyos y los globales, en Kick y en Twitch. Si sólo tenés
 7TV activado en una de las dos redes, tus emotes también aparecen en los mensajes de la otra:
@@ -76,7 +99,13 @@ una hora en aparecer; un deploy lo resuelve en el acto.
 **El botón Emotes** (2026-09-23) ofrece tres cosas: los emotes de tu 7TV, **los nativos de tu
 Twitch** (los de suscriptor y los globales tipo Kappa) y **los de Kick que ya pasaron por ese
 chat** — de Kick no hay forma de pedirle la lista, así que la lista crece con lo que la
-comunidad usa y arranca vacía. El panel lo dice con todas las letras.
+comunidad usa y arranca vacía. El panel lo dice en un renglón, y el porqué completo se abre si
+alguien toca ahí.
+
+Lo de los emotes de Kick se volvió a investigar el 2026-09-25 (`INVESTIGACION-EMOTES-KICK.md`):
+**sigue sin haber forma oficial**, y la que hay la prohíben los términos. Hay una salida sin
+riesgo —que vos pegues tu lista una vez— que está descripta ahí y **no está construida**: es
+para que decidas.
 
 Dos cosas que conviene saber antes de que alguien pregunte:
 

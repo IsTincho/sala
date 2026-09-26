@@ -4,6 +4,196 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-25 — El color propio de cada persona, y la pantalla más fácil de leer
+
+**1.083 pruebas en verde**, con 58 nuevas (`pruebas/colores.test.js`,
+`pruebas/color-http.test.js`, `pruebas/pagina-chat-color.test.js` y una tanda en
+`pruebas/espectadores.test.js`).
+
+### Lo que se agrega
+
+Quien conecta su cuenta en `/chat/<slug>` elige **su** color con un botón al lado de la caja y
+su nombre se pinta con ése en esta plataforma: en el chat abierto, en la ventana del creador y
+en la Sala. En kick.com y en twitch.tv sigue saliendo con el color que le da cada plataforma, y
+el panel lo dice con todas las letras. El creador tiene, al lado del botón de bloquear, uno para
+sacárselo a quien se pase de vivo.
+
+### Las decisiones, y por qué
+
+**El color viaja resuelto en el mensaje.** La otra opción era que la página lo averiguara por
+persona, y no cierra por dos motivos: sería un pedido por cada nombre que aparece, o bajarse la
+tabla de colores de todo el mundo —repartir datos de terceros a cualquiera que abra el chat—. Y
+el mensaje ya viaja con todo resuelto: la url de cada emote y la de cada insignia las completa
+el servidor. El color entra por la misma puerta, al lado de las otras dos, y aparece en las tres
+pantallas sin tocar ninguna.
+
+**Pero el contraste lo corrige la página**, y eso no es una inconsistencia: depende del tema
+—claro u oscuro— de quien está mirando, que el servidor no sabe. El servidor manda el color tal
+cual; `comun/mensajes.js` mide la relación de contraste de WCAG contra el fondo y, si no llega a
+4,5:1, mezcla hacia el blanco o hacia el negro hasta el **primer** paso que sí llega. El tono más
+cercano que se lee, no el primero que se le ocurra.
+
+**Se calculan los dos colores, siempre.** Salen como dos variables CSS sobre el `<span>` del
+nombre y el `@media` de `base.css` elige. Si se calculara sólo el del tema puesto, cambiar el
+tema del sistema con el chat abierto dejaría todos los mensajes que ya están en pantalla
+corregidos para el fondo de antes. Como efecto, esto **arregla el tema claro**, donde hasta hoy
+el verde de Kick sobre blanco daba 1,3:1 y no se leía: la corrección vieja (`aclararSiOscuro`)
+sólo sabía aclarar, que es exactamente lo contrario de lo que hace falta ahí.
+
+**El índice en memoria se llena al arrancar, no cuando la persona entra.** Es lo que hace que
+alguien que eligió su color hace un mes y hoy escribe desde kick.com salga pintado: su mensaje
+llega por el webhook y no pasa por ninguna sesión nuestra. `pintar()` corre en cada mensaje de
+las dos redes y ahí no entra un `await` a Mongo, igual que en el filtro del bus.
+
+**La clave del índice es (red, id de esa red) y no el espectador**, porque lo que llega es un
+mensaje de Kick o de Twitch y ahí el `esp_…` no aparece por ningún lado. De eso sale el detalle
+más feo: la misma cuenta puede tener **dos espectadores** (el celular y la compu, que ya estaba
+documentado en `espectadores.js`), y cada uno guarda su color. Gana el último elegido, por
+`colorDesde`, que se guarda en el documento para que el desempate dé lo mismo después de un
+reinicio. Y el reseteo del creador limpia **los dos documentos**: si limpiara sólo el que está
+pintando, el color del otro volvería solo en el próximo arranque.
+
+**La validación es una forma única, `#rrggbb`, en las dos puntas.** Es entrada de terceros que
+termina en un atributo `style` del navegador de todos los que estén mirando. Nada de listas de
+cosas prohibidas: una forma, y lo que no la cumple no es un color. El vacío es lo único que
+además se acepta, y quiere decir "sacámelo"; un `null` o una clave ausente **no**, porque eso no
+es un pedido, es un bug de la página borrándole el color a alguien.
+
+**El reseteo del creador vale en todas las salas**, y hay que decirlo porque es el filo de la
+decisión del dueño: el color es de la persona, así que sacárselo también se lo saca en el chat
+de otro creador. Cualquier creador puede hacerlo con cualquier id que haya visto pasar. El daño
+posible es que alguien pierda un color y lo tenga que volver a elegir; el aviso que ve el creador
+lo dice. El día que haya muchos creadores que no se conocen entre sí, la salida es una lista por
+sala en el documento del creador (como `bloqueados`), no partir el color en uno por sala.
+
+**Los mensajes ya pintados no se repintan**, salvo en la pantalla de quien acaba de cambiar su
+color. Cada mensaje salió con el color que esa persona tenía en ese momento y quien lo está
+leyendo no tiene por qué enterarse del cambio hasta el siguiente. Pero en la pantalla de quien
+lo cambió sí, porque si no, elegir un color parece no haber hecho nada hasta escribir. Al
+sacárselo, los suyos vuelven al color de la red: el que le dé la plataforma se ve recién en su
+próximo mensaje, y guardarlo aparte sería un segundo color en cada mensaje que no mira nadie.
+
+### La pantalla del chat
+
+Tres cosas que se veían mal mirando la pantalla de verdad, no el código:
+
+- **El panel de emotes ocupaba media pantalla aunque estuviera vacío**, por un párrafo de cuatro
+  renglones adentro. El párrafo sigue entero, pero plegado en un `<details>` del navegador (sin
+  JS): un renglón dice lo único que hay que saber y el resto se abre si alguien pregunta. Y la
+  rejilla ya no estira el panel cuando no tiene nada (`flex: 0 1 auto`).
+- **Los mensajes estaban pegados al borde** y lo único que los separaba era un hueco: ahora hay
+  aire a los costados y una línea fina entre uno y otro, con `::before` y no con `border`
+  (el redondeo del hover se come el borde), que se apaga alrededor del mensaje que tiene el
+  puntero encima para que el resaltado no compita con la línea.
+- **La barra de abajo estaba apretada**: todos sus controles miden lo mismo de alto, el contador
+  reserva su lugar y no empuja los botones con cada letra, y con el dedo (`pointer: coarse`)
+  todo sube a 44 px. Con mouse no: en una ventana angosta al costado del monitor eso es alto
+  regalado.
+
+### Lo que encontró la revisión adversarial
+
+Cuatro cosas, y las dos primeras valían el ejercicio solas:
+
+**"Salir" escribía sin hacer la cola.** Era el único que no pasaba por
+`almacen.enCola`, con el argumento de que un borrado no es un
+leer-cambiar-guardar. El argumento miraba este borrado solo; el problema
+era este borrado **contra los otros**. Alguien manda un mensaje con el
+token casi vencido —eso dispara un refresh, o sea `conectar`, que sí
+encola y lee el documento— y toca "Salir" en el medio: el borrado se
+colaba entre la lectura y la escritura de la otra tarea, así que **el
+documento se reescribía después de borrado, con el refresh token cifrado
+adentro**. Un "salir" que no borra los tokens. Y en el índice de colores
+quedaba un color sin ficha detrás, pintando esa cuenta en todas las
+salas, que **ni el creador podía sacar**: `quitarColorDe` busca el
+documento, no lo encuentra y no toca el índice. Ahora `olvidar` encola
+como todo lo demás, y `desconectar` —que lo llama desde adentro de su
+propia cola— usa la mitad sin cola, que es por lo que la versión vieja
+se había escrito así.
+
+La prueba que lo cuida **no intenta reproducir el intercalado**: mide la
+invariante (con la cola de ese espectador ocupada, "salir" no puede
+haber terminado). Una prueba que corriera la carrera con esperas pasa o
+falla según lo rápido que ande el disco, y la primera que escribí hacía
+exactamente eso: pasaba con el bug puesto.
+
+**El 4,5:1 se medía contra un fondo que no siempre es el fondo.** El
+mismo nombre cae sobre tres colores distintos: la lista de `/chat`
+(`#0e1013`), esa fila con el puntero encima (`#181a1c`) y la tarjeta de
+la lista de la Sala (`#181b20`), que es la más clara. Corregido contra
+el primero, todo lo corregido quedaba en **4,08:1** sobre la tarjeta de
+la Sala, y en el tema claro la fila resaltada (`#eeeff1`) dejaba el
+rango en 4,24–4,49. Ahora se corrige contra el más desfavorable de cada
+tema (`--fondo-peor-oscuro` / `--fondo-peor-claro`), que aclara un
+poquito de más en los otros dos y es la única forma de que el mínimo se
+cumpla en las tres pantallas.
+
+**Y la prueba del contraste era circular**: leía la misma variable que
+lee la página, así que cambiar el fondo en base.css movía las dos puntas
+a la vez y seguía en verde. Ahora los seis fondos están escritos a mano
+en la prueba y se mide contra los tres de cada tema.
+
+Las otras dos, chicas: el botón **Guardar** del panel de color se
+quedaba sin sus 44px con el dedo (`--alto-control` estaba declarada en
+la fila de escribir y ese botón vive en otra barra: la variable no
+resolvía y la regla se caía entera, en silencio), y el separador entre
+mensajes dibujaba **una raya suelta arriba del primero** cuando había un
+filtro puesto, porque el hermano escondido con `display: none` sigue
+siendo el hermano.
+
+De paso quedaron cerradas dos mutaciones que sobrevivían las 1.080:
+sacar la cola de "salir" y sacar el aviso al índice de `conectar` (lo
+segundo rompía que sumar la segunda red después de elegir el color la
+pintara igual, y ninguna prueba lo miraba).
+
+### Archivos tocados
+
+- `servidor/colores.js` (nuevo): la validación, el índice y `pintar()`.
+- `servidor/espectadores.js`: `ponerColor`, `quitarColorDe`, `cargarColores`, y el índice al día
+  en `conectar` / `desconectar` / `olvidar` / `podar`.
+- `servidor/chat.js`: `colores.pintar()` en los dos embudos.
+- `servidor/index.js`: `POST /api/espectador/color`, `POST /api/panel/color`, el color y el id
+  propio en `/api/chat/:slug/yo`, y `cargarColores()` al arrancar.
+- `paginas/comun/mensajes.js`, `paginas/comun/base.css`: la corrección de contraste y los dos
+  colores por nombre.
+- `paginas/chat.html`, `paginas/chat/chat.js`, `paginas/chat/chat.css`: el elegidor, el
+  repintado, el botón del creador y las tres mejoras de arriba.
+- `pruebas/fijos/dom-falso.js`: los dos fondos salen de `base.css` de verdad.
+
+### Cómo verlo
+
+`npm run local`, `/chat/<slug>` con el chat abierto y una cuenta conectada: **Mi color**,
+elegir, guardar. El nombre y los mensajes propios que ya estaban tienen que cambiar en el acto.
+Cambiar el tema del sistema a claro: todos los nombres se repintan solos y ninguno queda
+ilegible. En `/chat`, sobre un mensaje de quien eligió color, aparece el botón **color** al lado
+de **bloquear**.
+
+### Qué queda pendiente
+
+- **El creador no elige color para su propia ventana**: no hay ficha de espectador ahí. La
+  salida que ya funciona es conectarse como uno más en su propio `/chat/<slug>`; el pintado es
+  por (red, id), así que le vale en las dos pantallas.
+- **Sin probar en producción**: que el color aparezca en un mensaje que llegó por el webhook de
+  Kick de verdad. El camino está probado con el embudo entero (`chat.recibirDeKick`), pero el
+  webhook real sólo se ve en vivo.
+- **Dos instancias**: el índice de colores, como el Map de `creadores`, es de una sola instancia
+  en Railway.
+- **Cualquier creador puede resetearle el color a cualquier id que haya visto**, también a gente
+  que nunca pasó por su sala (los ids de Kick son numéricos: se pueden barrer). Se pierde un
+  color que se vuelve a elegir en un click y cada intento queda en el log. Si algún día eso deja
+  de alcanzar, la salida es la lista por sala.
+
+### Y la investigación de los emotes de Kick
+
+Aparte, y sin escribir una línea de código: `INVESTIGACION-EMOTES-KICK.md`. No apareció ningún
+endpoint oficial, el pedido de la comunidad cumple nueve meses sin una sola respuesta, y el
+hallazgo nuevo es **quién** usa el endpoint no documentado: 7TV, NipahTV, OBS Blade y multistream
+lo llaman desde el dispositivo de cada persona, donde no hay llaves que revocar. Ninguno desde un
+servidor con app registrada, que es lo que seríamos nosotros. Si Kick revoca las llaves, el chat
+de Kick se apaga para **todos los colegas a la vez** y no hay plan B. La recomendación es no
+scrapear.
+
+---
+
 ## 2026-09-23 — El selector de emotes de la caja, y la traducción por red
 
 **961 pruebas en verde**, con 58 nuevas (`pruebas/emotes-selector.test.js` y

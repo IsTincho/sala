@@ -349,10 +349,96 @@ html, body{
   opacity: 0.35;
 }
 
+/* Y el de sacarle el color propio, con la misma discreción y al lado.
+   Sólo aparece en los mensajes de quien eligió uno. */
 .mensaje:hover .boton-bloquear,
-.boton-bloquear:focus-visible{ opacity: 1; }
+.mensaje:hover .boton-color,
+.boton-bloquear:focus-visible,
+.boton-color:focus-visible{ opacity: 1; }
 
 .boton-bloquear:hover{ color: var(--mal); border-color: var(--mal); }
+
+.boton-color{
+  font: inherit;
+  font-size: 0.7em;
+  background: none;
+  color: var(--texto-tenue);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0 0.35em;
+  cursor: pointer;
+  opacity: 0.35;
+}
+
+.boton-color:hover{ color: var(--texto); border-color: var(--acento); }
+
+/* ---------- el color propio de cada persona ----------
+
+   Cuelga de la barra de "escribís como…" y ocupa el ancho entero de
+   la barra (que es flex y envuelve). Es una sola cosa que elegir: un
+   elegidor, una muestra y dos botones. No hay ventana modal ni
+   pantalla aparte. */
+
+.panel-color{
+  flex: 1 0 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--espacio-2);
+  margin-top: var(--espacio-1);
+  padding: var(--espacio-2);
+  background: var(--fondo);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+}
+
+.fila-color{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--espacio-2);
+}
+
+/* 2.75rem de alto: el mismo blanco para el dedo que las opciones de
+   emotes. El ancho es menor porque es un cuadradito de color, no un
+   blanco de lectura. */
+.campo-color{
+  flex: none;
+  width: 3rem;
+  height: 2.75rem;
+  padding: 0.15rem;
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  cursor: pointer;
+}
+
+/* La muestra usa la MISMA función que pinta los nombres del chat, así
+   que lo que se ve acá —corrección de contraste incluida— es lo que se
+   va a ver allá. */
+.ejemplo-color{
+  flex: 1 1 8rem;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  font-size: 0.9em;
+  overflow: hidden;
+}
+
+.ejemplo-color .usuario{ white-space: nowrap; }
+
+.nota-color{
+  margin: 0;
+  font-size: 0.8em;
+}
+
+.fila-botones-color{
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--espacio-2);
+}
+
+#cerrar-color{ margin-left: auto; }
 
 /* ---------- /chat/<slug>: con que cuenta escribe cada espectador ----------
 

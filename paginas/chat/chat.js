@@ -132,6 +132,14 @@
   const conectarTwitch  = document.getElementById('conectar-twitch');
   const botonSalir      = document.getElementById('boton-salir');
 
+  const botonColor    = document.getElementById('boton-color');
+  const panelColor    = document.getElementById('panel-color');
+  const campoColor    = document.getElementById('campo-color');
+  const ejemploNombre = document.getElementById('ejemplo-nombre');
+  const guardarColor  = document.getElementById('guardar-color');
+  const quitarColor   = document.getElementById('quitar-color');
+  const cerrarColor   = document.getElementById('cerrar-color');
+
   const NOMBRE_RED = { kick: 'Kick', twitch: 'Twitch' };
 
   // ---------- listas de mensajes: una por cada zona de scroll ----------
@@ -188,12 +196,25 @@
   function alClickEnLista(ev) {
     const boton = ev?.target;
     const id = boton?.dataset?.bloquearId;
-    if (!id) return;
-    bloquear({
-      red: boton.dataset.bloquearRed,
-      id,
-      nombre: boton.dataset.bloquearNombre || '',
-    });
+    if (id) {
+      bloquear({
+        red: boton.dataset.bloquearRed,
+        id,
+        nombre: boton.dataset.bloquearNombre || '',
+      });
+      return;
+    }
+    /* El otro botón del mensaje: sacarle el color que eligió. Se
+       escucha en el mismo lugar y por el mismo motivo (el <li> se
+       clona para la columna de su red y un clon no lleva escuchas). */
+    const idColor = boton?.dataset?.colorId;
+    if (idColor) {
+      resetearColor({
+        red: boton.dataset.colorRed,
+        id: idColor,
+        nombre: boton.dataset.colorNombre || '',
+      });
+    }
   }
 
   // El bloqueo va con la cookie del creador y a SU sala: el servidor
@@ -226,6 +247,35 @@
     mandarAlPanel({ desbloquear: { red, id } })
       .then(() => mostrarAviso(`${nombre || id} ya no está bloqueado`, { autoOcultar: true }))
       .catch(e => mostrarAviso('no se pudo desbloquear: ' + e.message));
+  }
+
+  /* Le saca a alguien el color que eligió. NO es un bloqueo: sigue
+     escribiendo igual, y puede volver a elegir uno.
+
+     No tiene "Deshacer", a diferencia de bloquear, y no es un olvido:
+     para devolverlo habría que guardar el color de otra persona para
+     escribírselo después, que es justo lo que no hay que hacer. Si fue
+     sin querer, la persona lo vuelve a elegir en un click.
+
+     El aviso dice que vale en todos los chats porque es verdad: el
+     color es de la persona, no de esta sala. */
+  function resetearColor({ red, id, nombre }) {
+    const quien = nombre || id;
+    fetch('/api/panel/color', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ red, id }),
+    })
+      .then(async r => {
+        const datos = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(datos?.error || 'http ' + r.status);
+        mostrarAviso(
+          `le sacaste el color a ${quien}: desde su próximo mensaje vuelve al de ${NOMBRE_RED[red] ?? red}. ` +
+          'El color es de la persona, así que deja de verse también en el chat de otros creadores.',
+          { autoOcultar: true });
+      })
+      .catch(e => mostrarAviso('no se pudo sacarle el color: ' + e.message));
   }
 
   function estaPegadoAbajo(ul) {
@@ -1056,6 +1106,8 @@
     conectarKick.setAttribute('href', `/oauth/kick/entrar?rol=espectador&destino=${volverAca}`);
     conectarTwitch.setAttribute('href', `/oauth/twitch/entrar?rol=espectador&destino=${volverAca}`);
 
+    prepararColor();
+
     botonSalir.addEventListener('click', () => {
       botonSalir.disabled = true;
       // Salir borra los tokens de las dos redes, no sólo la cookie: lo
@@ -1094,7 +1146,151 @@
     selectDestino.hidden = opciones.length < 2;
   }
 
+  /* ---------- /chat/<slug>: el color propio ----------
+
+     Lo elige una vez y le sirve en el chat de cualquier creador de
+     acá: se guarda en su ficha, no en la de una sala. En kick.com y en
+     twitch.tv sigue saliendo con el color que le da cada plataforma, y
+     el panel lo dice con todas las letras.
+
+     ACÁ NO SE CORRIGE NADA NI SE DECIDE NADA: la corrección de
+     contraste la hace `comun/mensajes.js` (que es la que pinta todos
+     los nombres del chat) y la validación de verdad la hace el
+     servidor. Lo de acá es el elegidor y la vista previa, que usa
+     exactamente la misma función que los mensajes: lo que se ve en la
+     muestra es lo que se va a ver en el chat, correcciones incluidas. */
+
+  let miColor = '';       // '' = el que le da cada plataforma
+  let misIds = {};        // red -> mi id en esa red
+
+  function previsualizar() {
+    const red = misIds.kick ? 'kick' : 'twitch';
+    window.SalaMensajes.pintarNombre(ejemploNombre, { red, color: campoColor.value });
+  }
+
+  /* El primer descendiente con esa clase. La página no usa selectores
+     en ningún otro lado y esto es lo único que hace falta. */
+  function buscarPorClase(nodo, clase) {
+    for (const hijo of nodo.children ?? []) {
+      if (hijo.classList?.contains(clase)) return hijo;
+      const adentro = buscarPorClase(hijo, clase);
+      if (adentro) return adentro;
+    }
+    return null;
+  }
+
+  /* Los mensajes que ya están en pantalla NO se repintan solos cuando
+     alguien cambia de color: cada mensaje salió con el color que esa
+     persona tenía en ese momento y quien lo está mirando no tiene por
+     qué enterarse del cambio hasta el mensaje siguiente.
+
+     La única pantalla donde sí se repinta es la de QUIEN acaba de
+     cambiarlo, y por una razón concreta: si no, elegir un color parece
+     no haber hecho nada hasta que escriba algo.
+
+     Al sacárselo, los suyos vuelven al color de la red (el verde o el
+     violeta); el que le dé la plataforma, si tiene uno, se ve desde su
+     próximo mensaje. Recuperarlo acá significaría guardar en cada
+     mensaje un segundo color que no mira nadie. */
+  function repintarMisMensajes() {
+    for (const info of Object.values(listas)) {
+      for (const li of info.ul.children) {
+        const red = li.dataset?.red;
+        const id = li.dataset?.usuarioId;
+        if (!red || !id || misIds[red] !== id) continue;
+        const nombre = buscarPorClase(li, 'usuario');
+        if (nombre) window.SalaMensajes.pintarNombre(nombre, { red, color: miColor });
+      }
+    }
+  }
+
+  function abrirPanelColor() {
+    panelColor.hidden = false;
+    botonColor.setAttribute('aria-expanded', 'true');
+    if (miColor) campoColor.value = miColor;
+    previsualizar();
+    campoColor.focus();
+  }
+
+  function cerrarPanelColor({ devolverFoco = true } = {}) {
+    if (panelColor.hidden) return;
+    panelColor.hidden = true;
+    botonColor.setAttribute('aria-expanded', 'false');
+    if (devolverFoco) botonColor.focus();
+  }
+
+  let colorEnCurso = false;
+
+  function mandarColor(color) {
+    if (colorEnCurso) return;
+    colorEnCurso = true;
+    guardarColor.disabled = true;
+    quitarColor.disabled = true;
+
+    fetch('/api/espectador/color', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ color }),
+    })
+      .then(async r => {
+        const datos = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(datos?.error || 'http ' + r.status);
+        /* El que vale es el que contestó el servidor, no el que se
+           mandó: es el que quedó guardado. */
+        miColor = typeof datos?.color === 'string' ? datos.color : '';
+        if (miColor) campoColor.value = miColor;
+        previsualizar();
+        repintarMisMensajes();
+        cerrarPanelColor();
+        mostrarAviso(miColor
+          ? 'listo: así se ve tu nombre en el chat de cualquier creador de acá. En kick.com y en twitch.tv seguís con el color de cada plataforma.'
+          : 'listo: volviste al color que te da cada plataforma.',
+        { autoOcultar: true });
+      })
+      .catch(e => mostrarAviso('no se pudo guardar el color: ' + e.message))
+      .finally(() => {
+        colorEnCurso = false;
+        guardarColor.disabled = false;
+        quitarColor.disabled = false;
+      });
+  }
+
+  function prepararColor() {
+    botonColor.addEventListener('click', () => {
+      if (panelColor.hidden) abrirPanelColor();
+      else cerrarPanelColor();
+    });
+    cerrarColor.addEventListener('click', () => cerrarPanelColor());
+    campoColor.addEventListener('input', previsualizar);
+    campoColor.addEventListener('change', previsualizar);
+    campoColor.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape') { ev.preventDefault(); cerrarPanelColor(); }
+    });
+    guardarColor.addEventListener('click', () => mandarColor(campoColor.value));
+    quitarColor.addEventListener('click', () => mandarColor(''));
+  }
+
+  function aplicarColorDeYo(datos) {
+    const conectadas = datos?.conectadas ?? {};
+    misIds = {};
+    for (const red of REDES) {
+      if (conectadas[red]?.usuarioId) misIds[red] = String(conectadas[red].usuarioId);
+    }
+    miColor = typeof datos?.color === 'string' ? datos.color : '';
+
+    /* Con una red conectada alcanza, aunque el creador no la haya
+       abierto para escribir: lo que esa persona escriba en kick.com
+       llega acá igual, y con su color. */
+    const puedeElegir = Boolean(datos?.entrado) && Object.keys(misIds).length > 0;
+    botonColor.hidden = !puedeElegir;
+    if (!puedeElegir) { cerrarPanelColor({ devolverFoco: false }); return; }
+    if (miColor) campoColor.value = miColor;
+    if (!panelColor.hidden) previsualizar();
+  }
+
   function aplicarYo(datos) {
+    aplicarColorDeYo(datos);
     const abiertas = Array.isArray(datos?.redes) ? datos.redes : [];
     const conectadas = datos?.conectadas ?? {};
     const puede = Array.isArray(datos?.puedeEscribir) ? datos.puedeEscribir : [];
@@ -1227,6 +1423,7 @@
       barraConectar.hidden = true;
       cajaEscritura.hidden = true;
       botonEmotes.hidden = true;
+      cerrarPanelColor({ devolverFoco: false });
       /* Y el panel se cierra: un chat cerrado no ofrece sus emotes,
          igual que no ofrece la caja ni cuenta que redes eligio el
          creador. */

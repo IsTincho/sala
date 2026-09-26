@@ -105,7 +105,40 @@
     <span id="texto-conectar" class="texto-conectar"></span>
     <a id="conectar-kick" class="boton-chip chip-kick" href="/oauth/kick/entrar?rol=espectador" hidden>Conectar Kick</a>
     <a id="conectar-twitch" class="boton-chip chip-twitch" href="/oauth/twitch/entrar?rol=espectador" hidden>Conectar Twitch</a>
+    <!-- el color propio: aparece en cuanto la persona conectó alguna
+         red, aunque el creador no la haya abierto para escribir. Su
+         color se ve igual: los mensajes que escriba en kick.com llegan
+         acá con él puesto. -->
+    <button type="button" id="boton-color" class="boton-chip"
+      aria-expanded="false" aria-controls="panel-color" hidden>Mi color</button>
     <button type="button" id="boton-salir" class="boton-chip" hidden>Salir</button>
+
+    <!-- El elegidor, colgado de la barra y no en una ventana aparte:
+         es una sola cosa que elegir. `group` y no `dialog` por lo
+         mismo que el de emotes: no atrapa el Tab, se cierra con
+         Escape y devuelve el foco. -->
+    <div id="panel-color" class="panel-color" hidden role="group" aria-label="Elegir mi color">
+      <div class="fila-color">
+        <!-- `value` acá es sólo dónde arranca el elegidor cuando la
+             persona todavía no eligió nada; si ya eligió, lo pisa el JS. -->
+        <input type="color" id="campo-color" class="campo-color" value="#53fc18"
+          aria-label="Elegí tu color">
+        <span class="ejemplo-color">
+          <span id="ejemplo-nombre" class="usuario">tu nombre</span>
+          <span class="texto-tenue">así se va a ver</span>
+        </span>
+        <button type="button" id="cerrar-color" class="boton-chip" aria-label="Cerrar">×</button>
+      </div>
+      <p class="nota-color texto-tenue">
+        Se ve <strong>sólo acá</strong>: en kick.com y en twitch.tv seguís saliendo con el
+        color que te da cada plataforma. Si el que elegís no se lee sobre el fondo, se ajusta
+        solo al tono más cercano que sí se lea.
+      </p>
+      <div class="fila-botones-color">
+        <button type="button" id="guardar-color" class="boton-enviar">Guardar</button>
+        <button type="button" id="quitar-color" class="boton-chip">Volver al de la plataforma</button>
+      </div>
+    </div>
   </div>
 
   <!-- en /chat es la ventana del creador; en /chat/<slug> aparece

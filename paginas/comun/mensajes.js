@@ -21,7 +21,8 @@
    Expone `window.SalaMensajes`:
      crear(datos, opciones)       -> un <li> listo
      vigilarInsignias(lista)      -> el respaldo a texto de las insignias
-     colorDeUsuario(datos)        -> el color ya validado y aclarado
+     coloresDeUsuario(datos)      -> { claro, oscuro }, ya corregidos
+     pintarNombre(elemento, datos)-> le pone esos dos colores
      recortarTexto(texto, limite)
 
    Se carga con <script src="comun/mensajes.js"> antes del script de
@@ -30,46 +31,162 @@
 (() => {
   const REGEX_COLOR_HEX = /^#[0-9a-f]{6}$/i;
 
+  /* ------------------------------------------------- el color del nombre
+
+     De donde sale: el mensaje trae `color`. Puede ser el que le da la
+     plataforma (Kick o Twitch) o el que la persona eligio EN ESTA
+     PLATAFORMA, que lo pisa; cual de los dos es lo decide el servidor
+     (`servidor/colores.js`) y aca no se nota la diferencia, salvo por
+     `colorPropio`, que solo sirve para el boton del creador.
+
+     Lo que SI se decide aca es que el color se lea. Nadie puede quedar
+     ilegible: si el elegido no contrasta lo suficiente con el fondo, se
+     ajusta al tono mas cercano que si contraste. "Lo suficiente" es la
+     relacion de contraste de WCAG 2.1 (AA para texto normal, 4.5:1),
+     calculada con luminancias relativas de verdad, no a ojo.
+
+     Y SE CALCULAN LOS DOS, el del tema claro y el del oscuro, siempre.
+     El chat tiene los dos temas y los sigue del sistema: si se
+     calculara solo el que esta puesto, cambiar de tema con el chat
+     abierto dejaria todos los nombres que ya estan en pantalla
+     corregidos para el fondo de antes. Salen como dos variables CSS
+     sobre el <span> y el que elige es el @media de base.css, que no
+     necesita que nadie repinte nada. */
+
+  const CONTRASTE_MINIMO = 4.5;
+
+  /* En cuantos pasos se busca la correccion mas chica que alcanza.
+     Cincuenta pasos son saltos de 2%: mas fino no se ve, y mas grueso
+     empieza a lavar colores que se podian salvar con menos. */
+  const PASOS = 50;
+
+  /* Respaldo por si la hoja de estilos no cargo o no tiene las
+     variables. Son los mismos valores de base.css. */
+  const FONDOS_POR_DEFECTO = { oscuro: '#0e1013', claro: '#f5f6f8' };
+
+  function variableCss(nombre) {
+    try {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(nombre);
+      return String(v ?? '').trim();
+    } catch { return ''; }
+  }
+
+  /* Los fondos se leen una vez: no cambian en toda la vida de la
+     pagina (los dos estan declarados fuera del @media a proposito) y
+     preguntarle al navegador por mensaje es pedirle que resuelva
+     estilos en el camino caliente del chat. */
+  let fondos = null;
+  function fondosDeLaPagina() {
+    if (fondos) return fondos;
+    const leer = (nombre, respaldo) => {
+      const v = variableCss(nombre);
+      return REGEX_COLOR_HEX.test(v) ? v : respaldo;
+    };
+    fondos = {
+      oscuro: leer('--fondo-oscuro', FONDOS_POR_DEFECTO.oscuro),
+      claro: leer('--fondo-claro', FONDOS_POR_DEFECTO.claro),
+    };
+    return fondos;
+  }
+
   function obtenerColorDeRed(red) {
     const nombre = red === 'kick' ? '--kick' : '--twitch';
-    const valor = getComputedStyle(document.documentElement).getPropertyValue(nombre).trim();
+    const valor = variableCss(nombre);
     return REGEX_COLOR_HEX.test(valor) ? valor : (red === 'kick' ? '#53fc18' : '#9146ff');
   }
 
-  // luminancia relativa (formula de WCAG) para decidir si un color se
-  // lee sobre el fondo oscuro. Colores como el #0000FF clasico de
-  // Twitch dan una luminancia bajisima y quedan casi negros.
+  const canales = hex => [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+
+  const aHex = ([r, g, b]) =>
+    '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+
+  // luminancia relativa, formula de WCAG 2.1
   function luminanciaRelativa(hex) {
-    const canal = v => {
+    const lineal = v => {
       const c = v / 255;
       return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
     };
-    const r = canal(parseInt(hex.slice(1, 3), 16));
-    const g = canal(parseInt(hex.slice(3, 5), 16));
-    const b = canal(parseInt(hex.slice(5, 7), 16));
+    const [r, g, b] = canales(hex).map(lineal);
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
   }
 
-  // si el color es demasiado oscuro lo mezcla con blanco para subirle
-  // el brillo sin cambiarle el tono.
-  function aclararSiOscuro(hex) {
-    if (luminanciaRelativa(hex) >= 0.18) return hex;
-    const mezclar = v => Math.round(v + (255 - v) * 0.55);
-    const r = mezclar(parseInt(hex.slice(1, 3), 16));
-    const g = mezclar(parseInt(hex.slice(3, 5), 16));
-    const b = mezclar(parseInt(hex.slice(5, 7), 16));
-    return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+  // la relacion de contraste de WCAG entre dos colores: de 1 (el mismo
+  // color) a 21 (negro contra blanco).
+  function contraste(a, b) {
+    const la = luminanciaRelativa(a);
+    const lb = luminanciaRelativa(b);
+    const claro = Math.max(la, lb);
+    const oscuro = Math.min(la, lb);
+    return (claro + 0.05) / (oscuro + 0.05);
   }
 
-  function colorDeUsuario(datos) {
-    const crudo = datos.color;
-    // el color viene de afuera (kick/twitch) y termina en un style: se
-    // valida el formato exacto antes de usarlo, sino se cae al color
-    // de la red.
+  // mezcla el color con blanco (destino 255) o con negro (0). Mezclar
+  // en sRGB le conserva el tono: un violeta mezclado con blanco sigue
+  // siendo violeta, mas lavado.
+  const mezclar = (hex, destino, cuanto) =>
+    aHex(canales(hex).map(v => v + (destino - v) * cuanto));
+
+  /**
+   * El mismo color si ya se lee sobre ese fondo, y si no el tono mas
+   * cercano que si se lee.
+   *
+   * Se mezcla hacia el extremo que mas contraste con el fondo (blanco
+   * sobre tema oscuro, negro sobre tema claro) y se devuelve el primer
+   * paso que llega al minimo: el cambio mas chico que alcanza. Si ni
+   * el extremo alcanza —un fondo gris medio, que no es ninguno de los
+   * dos temas— se devuelve el extremo, que es lo mas legible que hay.
+   */
+  function ajustarAlFondo(hex, fondo) {
+    if (contraste(hex, fondo) >= CONTRASTE_MINIMO) return hex;
+    const destino = contraste('#ffffff', fondo) >= contraste('#000000', fondo) ? 255 : 0;
+    for (let paso = 1; paso <= PASOS; paso++) {
+      const probado = mezclar(hex, destino, paso / PASOS);
+      if (contraste(probado, fondo) >= CONTRASTE_MINIMO) return probado;
+    }
+    return destino === 255 ? '#ffffff' : '#000000';
+  }
+
+  /* El mismo puñado de colores se repite en todos los mensajes de la
+     noche: la correccion se calcula una vez por color. El tope es para
+     que un chat lleno de gente con colores distintos no deje creciendo
+     un Map para siempre. */
+  const TOPE_RECORDADOS = 500;
+  const recordados = new Map();
+
+  /**
+   * Los dos colores con los que se puede pintar este nombre: el del
+   * tema oscuro y el del claro.
+   *
+   * El color viene de afuera y termina en un `style`: se valida la
+   * forma exacta (`#rrggbb`) antes de tocarlo, y lo que no la cumple
+   * no se "arregla", se cae al color de la red. El servidor valida lo
+   * mismo; que las dos puntas lo hagan es a proposito.
+   */
+  function coloresDeUsuario(datos) {
+    const crudo = datos?.color;
     const base = (typeof crudo === 'string' && REGEX_COLOR_HEX.test(crudo))
-      ? crudo
-      : obtenerColorDeRed(datos.red);
-    return aclararSiOscuro(base);
+      ? crudo.toLowerCase()
+      : obtenerColorDeRed(datos?.red);
+
+    const guardado = recordados.get(base);
+    if (guardado) return guardado;
+
+    const { oscuro, claro } = fondosDeLaPagina();
+    const par = { oscuro: ajustarAlFondo(base, oscuro), claro: ajustarAlFondo(base, claro) };
+    if (recordados.size >= TOPE_RECORDADOS) recordados.clear();
+    recordados.set(base, par);
+    return par;
+  }
+
+  /** Le pone a un elemento los dos colores; el CSS elige cual usa. */
+  function pintarNombre(elemento, datos) {
+    const par = coloresDeUsuario(datos);
+    elemento.style.setProperty('--color-usuario-oscuro', par.oscuro);
+    elemento.style.setProperty('--color-usuario-claro', par.claro);
   }
 
   // recorta contando PUNTOS DE CODIGO, no unidades de string: un emoji
@@ -215,6 +332,11 @@
     li.dataset.id = datos.id;
     /* Lo usa el CSS del filtro de la vista mezclada de /chat. */
     li.dataset.red = datos.red === 'kick' ? 'kick' : 'twitch';
+    /* Quien escribio, para poder repintarle el nombre a los mensajes
+       que ya estan en pantalla cuando esa persona cambia su color. Es
+       el mismo id que ya viaja en el mensaje (y que la plataforma
+       publica en cualquier mensaje publico), no un dato nuevo. */
+    if (datos.usuarioId) li.dataset.usuarioId = String(datos.usuarioId);
 
     if (datos.respondeA) {
       const lineaRespuesta = document.createElement('div');
@@ -243,7 +365,7 @@
     const usuarioEl = document.createElement('span');
     usuarioEl.className = 'usuario';
     usuarioEl.textContent = datos.usuario;
-    usuarioEl.style.color = colorDeUsuario(datos);
+    pintarNombre(usuarioEl, datos);
     filaPrincipal.appendChild(usuarioEl);
 
     /* Sin id no hay a quien bloquear: por nombre no sirve, porque los
@@ -261,6 +383,23 @@
       filaPrincipal.appendChild(boton);
     }
 
+    /* Y el de sacarle el color propio, al lado. Aparece SOLO cuando el
+       color es el que la persona eligio (`colorPropio`): en un mensaje
+       pintado con el color que le da la plataforma no hay nada que
+       resetear, y un boton que no hace nada es ruido en cada renglon
+       del chat. */
+    if (opciones.conBloquear && datos.usuarioId && datos.colorPropio) {
+      const boton = document.createElement('button');
+      boton.type = 'button';
+      boton.className = 'boton-color';
+      boton.textContent = 'color';
+      boton.title = `Sacarle a ${datos.usuario} el color que eligió (vuelve al de su plataforma)`;
+      boton.dataset.colorRed = datos.red === 'kick' ? 'kick' : 'twitch';
+      boton.dataset.colorId = String(datos.usuarioId);
+      boton.dataset.colorNombre = String(datos.usuario ?? '');
+      filaPrincipal.appendChild(boton);
+    }
+
     li.appendChild(filaPrincipal);
 
     const textoEl = document.createElement('span');
@@ -271,5 +410,7 @@
     return li;
   }
 
-  window.SalaMensajes = { crear, vigilarInsignias, colorDeUsuario, recortarTexto };
+  window.SalaMensajes = {
+    crear, vigilarInsignias, coloresDeUsuario, pintarNombre, recortarTexto,
+  };
 })();

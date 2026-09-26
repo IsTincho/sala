@@ -16,6 +16,16 @@
   --kick:   #53fc18;
   --twitch: #9146ff;
 
+  /* Los dos fondos, SIEMPRE los dos, en los dos temas. No es una
+     repeticion: el color propio de cada persona se corrige para que se
+     lea sobre el fondo, y el JS tiene que poder calcular las dos
+     correcciones —la del tema claro y la del oscuro— sin importar cual
+     este puesto ahora. El valor de una variable de adentro de un
+     @media no se puede leer desde el otro tema. Ver `colorDeUsuario`
+     en comun/mensajes.js. */
+  --fondo-oscuro: #0e1013;
+  --fondo-claro:  #f5f6f8;
+
   /* paleta oscura (default) */
   --fondo:        #0e1013;
   --fondo-tarjeta:#181b20;
@@ -93,6 +103,27 @@ a{ color: var(--acento); }
   border: 1px solid var(--borde);
   border-radius: var(--radio);
   padding: var(--espacio-4);
+}
+
+/* El nombre de quien escribio, en su color.
+
+   Llegan LOS DOS colores ya corregidos, en dos variables que escribe
+   comun/mensajes.js sobre el propio <span>: el que se lee sobre el
+   fondo oscuro y el que se lee sobre el claro. Elegir cual se usa es
+   cosa del CSS y no del JS, y por eso cambiar el tema del sistema con
+   el chat abierto repinta todos los nombres solo, incluidos los
+   mensajes que ya estaban en pantalla.
+
+   El respaldo es el color del texto: un mensaje sin color (o pintado
+   por una version vieja de la pagina) se lee igual. */
+.usuario{
+  color: var(--color-usuario-oscuro, var(--texto));
+}
+
+@media (prefers-color-scheme: light){
+  .usuario{
+    color: var(--color-usuario-claro, var(--texto));
+  }
 }
 
 /* puntito de estado con tres variantes: bien / regular / mal.

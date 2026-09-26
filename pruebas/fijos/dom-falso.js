@@ -392,11 +392,14 @@ export function abrirPagina({
   const documentElement = buscar(raiz, 'HTML') ?? raiz;
   const cabeza = buscar(raiz, 'HEAD') ?? documentElement;
 
-  /* Las variables de marca salen de la hoja de estilos de verdad: si
-     alguien cambia --kick en base.css, la pagina de este test tambien
-     lo ve. */
+  /* Las variables de marca y los dos fondos salen de la hoja de
+     estilos de verdad: si alguien cambia --kick o --fondo-oscuro en
+     base.css, la pagina de este test tambien lo ve. Los fondos son lo
+     que usa comun/mensajes.js para corregir el contraste de cada
+     color, asi que sin ellos el test mediria contra otro fondo que el
+     navegador. */
   const base = fs.readFileSync(path.join(PAGINAS, 'comun', 'base.css'), 'utf8');
-  for (const nombre of ['--kick', '--twitch']) {
+  for (const nombre of ['--kick', '--twitch', '--fondo-oscuro', '--fondo-claro']) {
     const m = new RegExp(`${nombre}\\s*:\\s*([^;]+);`).exec(base);
     if (m) documentElement.style.setProperty(nombre, m[1].trim());
   }

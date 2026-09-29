@@ -108,8 +108,16 @@ test('el veredicto sale por la salud, que es lo unico que mira la pagina', () =>
 });
 
 test('un evento de Kick que no conocemos no rompe ni ensucia el bus', () => {
-  const r = chat.recibirDeKick(CANAL, eventoKick('channel.followed'), { broadcaster: { channel_slug: CANAL } });
+  /* Era `channel.followed` hasta que los follows pasaron a ser
+     actividad. `kicks.gifted` no lo escucha nadie. */
+  const r = chat.recibirDeKick(CANAL, eventoKick('kicks.gifted'), { broadcaster: { channel_slug: CANAL } });
   assert.equal(r.hecho, 'ignorado');
+  assert.equal(canales.ultimos(CANAL).length, 0);
+});
+
+test('un evento de actividad sin la persona se descarta y no ensucia el bus', () => {
+  const r = chat.recibirDeKick(CANAL, eventoKick('channel.followed'), { broadcaster: { channel_slug: CANAL } });
+  assert.equal(r.hecho, 'actividad descartada');
   assert.equal(canales.ultimos(CANAL).length, 0);
 });
 
@@ -149,7 +157,7 @@ test('la salud tiene la forma que espera la pagina', () => {
      tope de conexiones de ESTE proceso y no por un problema de
      Twitch. Sin ese campo el panel muestra "cortado" y no hay forma
      de distinguir las dos cosas. */
-  assert.deepEqual(Object.keys(s.twitch).sort(), ['estado', 'modo', 'tope', 'ultima', 'vinculado']);
+  assert.deepEqual(Object.keys(s.twitch).sort(), ['estado', 'faltaActividad', 'modo', 'tope', 'ultima', 'vinculado']);
   assert.equal(s.kick.suscripcion, 'desconocida');
   assert.equal(s.twitch.modo, 'ninguno');
   assert.ok(Date.parse(s.ahora));

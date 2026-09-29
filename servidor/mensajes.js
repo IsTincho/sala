@@ -522,6 +522,193 @@ export function deIrc(tags, usuarioIrc, texto) {
   return mensaje;
 }
 
+/* -------------------------------------------------------- actividad
+
+   Canjes de puntos, subs y follows de las dos redes, al mismo formato:
+
+     {
+       tipo: "actividad",
+       red: "kick" | "twitch",
+       id,                          // el del canje o del evento en su red
+       clase: "canje" | "sub" | "resub" | "regalo" | "follow",
+       usuario,                     // nombre publico, nada mas
+       regalo, mensaje, cantidad, meses, costo,
+       hora,                        // ISO
+       publico                      // si puede salir por el bus de la sala
+     }
+
+   `publico` es la unica decision de privacidad de este bloque y se toma
+   aca, al traducir, para que nadie mas tenga que acordarse:
+
+     - Canjes y subs SI. Kick y Twitch ya los muestran en su propio chat
+       a cualquiera que lo este mirando: no se cuenta nada nuevo.
+     - Follows NO. Twitch no los muestra en ningun lado publico, y el bus
+       de una sala lo escucha cualquiera sin login. Un follow va solo a la
+       lista que ven el creador y sus mods (`servidor/actividad.js`).
+
+   Como en los mensajes, solo va el nombre: nada de ids, avatares ni
+   colores. La lista no los necesita y lo que no se guarda no se filtra.
+   Los traductores devuelven null con lo que no entienden o lo que se
+   descarta a proposito (un canje rechazado, una sub regalada suelta). */
+
+const texto80 = v => String(v ?? '').slice(0, 80);
+const texto200 = v => String(v ?? '').slice(0, 200);
+const numeroONull = v => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : null);
+
+function actividad(red, clase, datos) {
+  return {
+    tipo: 'actividad',
+    red,
+    id: String(datos.id ?? ''),
+    clase,
+    usuario: texto80(datos.usuario) || 'anonimo',
+    regalo: texto80(datos.regalo),
+    mensaje: texto200(datos.mensaje),
+    cantidad: numeroONull(datos.cantidad),
+    meses: numeroONull(datos.meses),
+    costo: numeroONull(datos.costo),
+    hora: horaIso(datos.hora),
+    publico: clase !== 'follow',
+  };
+}
+
+/* Los tipos de Kick que traduce `actividadDeKick`. Estan aca y no solo
+   en EVENTOS de kick.js para que el webhook pueda preguntar "¿esto es
+   actividad?" sin conocer la lista de suscripciones. */
+export const TIPOS_ACTIVIDAD_KICK = Object.freeze([
+  'channel.followed',
+  'channel.subscription.new',
+  'channel.subscription.renewal',
+  'channel.subscription.gifts',
+  'channel.reward.redemption.updated',
+]);
+
+/**
+ * Un webhook de actividad de Kick al formato de arriba.
+ * @param {string} tipo   el Kick-Event-Type
+ * @param {object} cuerpo el payload
+ * @param {{hora?:string}} opciones  la hora del header, de respaldo
+ */
+export function actividadDeKick(tipo, cuerpo, { hora } = {}) {
+  if (!cuerpo || typeof cuerpo !== 'object') return null;
+  const cuando = cuerpo.created_at ?? cuerpo.redeemed_at ?? hora;
+  const nombre = u => u?.username ?? '';
+  switch (tipo) {
+    /* Sin la persona no hay nada que contar: un payload al que le falta
+       quien siguio, se suscribio o canjeo se descarta, no sale como
+       "anonimo". */
+    case 'channel.followed':
+      if (!cuerpo.follower) return null;
+      return actividad('kick', 'follow', {
+        id: `follow:${cuerpo.follower?.user_id ?? ''}:${cuando ?? ''}`,
+        usuario: nombre(cuerpo.follower), hora: cuando,
+      });
+    case 'channel.subscription.new':
+    case 'channel.subscription.renewal':
+      if (!cuerpo.subscriber) return null;
+      return actividad('kick', tipo.endsWith('new') ? 'sub' : 'resub', {
+        id: `${tipo}:${cuerpo.subscriber?.user_id ?? ''}:${cuando ?? ''}`,
+        usuario: nombre(cuerpo.subscriber), meses: cuerpo.duration ?? null, hora: cuando,
+      });
+    case 'channel.subscription.gifts': {
+      if (!cuerpo.gifter) return null;
+      const receptores = Array.isArray(cuerpo.giftees) ? cuerpo.giftees : [];
+      return actividad('kick', 'regalo', {
+        id: `regalo:${cuerpo.gifter?.user_id ?? ''}:${cuando ?? ''}`,
+        usuario: cuerpo.gifter?.is_anonymous ? 'anonimo' : nombre(cuerpo.gifter),
+        cantidad: receptores.length || 1, hora: cuando,
+      });
+    }
+    case 'channel.reward.redemption.updated': {
+      /* Solo se descarta lo RECHAZADO. Segun como este configurada la
+         recompensa, Kick puede mandar solo `pending` y nunca `accepted`:
+         exigir `accepted` perdia canjes reales (pasó en CosasStream). El
+         pending y el accepted del mismo canje traen el mismo `id`, y el
+         dedupe de chat.js se queda con el primero. */
+      if (String(cuerpo.status ?? '').toLowerCase() === 'rejected') return null;
+      if (!cuerpo.reward && !cuerpo.reward_title) return null;
+      const r = cuerpo.reward ?? {};
+      return actividad('kick', 'canje', {
+        id: cuerpo.id ?? '',
+        usuario: nombre(cuerpo.redeemer ?? cuerpo.user),
+        regalo: r.title ?? cuerpo.reward_title ?? '',
+        mensaje: cuerpo.user_input ?? '',
+        costo: r.cost ?? null,
+        hora: cuando,
+      });
+    }
+    default:
+      return null;
+  }
+}
+
+/* Nombres para las recompensas de fabrica de Twitch, que no traen
+   titulo sino un `type`. Una que no este aca sale con el type crudo. */
+const CANJES_DE_FABRICA = Object.assign(Object.create(null), {
+  single_message_bypass_sub_mode: 'Mensaje en modo solo subs',
+  send_highlighted_message: 'Mensaje resaltado',
+  random_sub_emote_unlock: 'Desbloquear un emote al azar',
+  chosen_sub_emote_unlock: 'Desbloquear un emote',
+  chosen_modified_sub_emote_unlock: 'Emote modificado',
+  message_effect: 'Efecto en el mensaje',
+  gigantify_an_emote: 'Emote gigante',
+  celebration: 'Celebracion',
+});
+
+/**
+ * Una notificacion de actividad de EventSub al formato de arriba.
+ * @param {string} tipo      metadata.subscription_type
+ * @param {object} evento    payload.event
+ * @param {object} metadata  la de la trama (trae la hora)
+ */
+export function actividadDeTwitch(tipo, evento, metadata = {}) {
+  if (!evento || typeof evento !== 'object') return null;
+  const nombre = (anonimo = false) =>
+    (anonimo ? 'anonimo' : (evento.user_name ?? evento.user_login ?? ''));
+  const hora = evento.redeemed_at ?? evento.followed_at ?? metadata?.message_timestamp;
+  /* Los eventos de sub no traen id propio: el de la trama sirve igual
+     para el dedupe, porque Twitch reenvia con el mismo message_id. */
+  const idTrama = String(metadata?.message_id ?? '');
+  switch (tipo) {
+    case 'channel.follow':
+      return actividad('twitch', 'follow', { id: idTrama, usuario: nombre(), hora });
+    /* channel.subscribe llega tambien una vez POR CADA sub regalada
+       (is_gift), ademas del regalo de quien regalo. Sin este corte, un
+       regalo de 20 subs serian 21 lineas. */
+    case 'channel.subscribe':
+      if (evento.is_gift) return null;
+      return actividad('twitch', 'sub', { id: idTrama, usuario: nombre(), meses: 1, hora });
+    case 'channel.subscription.message':
+      return actividad('twitch', 'resub', {
+        id: idTrama, usuario: nombre(),
+        meses: evento.cumulative_months ?? evento.duration_months ?? null,
+        mensaje: evento.message?.text ?? '', hora,
+      });
+    case 'channel.subscription.gift':
+      return actividad('twitch', 'regalo', {
+        id: idTrama, usuario: nombre(evento.is_anonymous), cantidad: evento.total ?? 1, hora,
+      });
+    case 'channel.channel_points_custom_reward_redemption.add':
+      if (String(evento.status ?? '').toLowerCase() === 'canceled') return null;
+      return actividad('twitch', 'canje', {
+        id: evento.id ?? idTrama, usuario: nombre(),
+        regalo: evento.reward?.title ?? '', mensaje: evento.user_input ?? '',
+        costo: evento.reward?.cost ?? null, hora,
+      });
+    case 'channel.channel_points_automatic_reward_redemption.add': {
+      const clase = String(evento.reward?.type ?? '');
+      return actividad('twitch', 'canje', {
+        id: evento.id ?? idTrama, usuario: nombre(),
+        regalo: CANJES_DE_FABRICA[clase] ?? clase,
+        mensaje: evento.message?.text ?? evento.user_input ?? '',
+        costo: evento.reward?.channel_points ?? evento.reward?.cost ?? null, hora,
+      });
+    }
+    default:
+      return null;
+  }
+}
+
 /* ------------------------------------------------------------ horas */
 
 /**

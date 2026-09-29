@@ -51,6 +51,9 @@ const vinculos = await import('../servidor/vinculos.js');
 const { escuchar } = await import('./fijos/bus-falso.js');
 
 const CANAL = 'istincho';
+/* Todo lo que se suscribe: el chat y la actividad. "Esta todo puesto"
+   quiere decir las dos listas; la actividad va en un pedido aparte. */
+const TODOS = [...kick.EVENTOS, ...kick.EVENTOS_ACTIVIDAD];
 const USUARIO = '4242';
 const esperar = ms => new Promise(ok => setTimeout(ok, ms));
 
@@ -62,6 +65,7 @@ let llamadas = [];
 let suscripciones = [];      // lo que Kick dice que ya existe
 let enVivo = false;          // lo que /channels dice de stream.is_live
 let falla = null;            // ruta que tiene que contestar mal, o null
+let rechazaActividad = false; // Kick rechaza el pedido de canjes, subs y follows
 
 globalThis.fetch = async (recurso, opciones = {}) => {
   const url = String(recurso);
@@ -81,6 +85,9 @@ globalThis.fetch = async (recurso, opciones = {}) => {
 
   if (url.includes('/events/subscriptions')) {
     if (metodo === 'POST') {
+      if (rechazaActividad && cuerpo.events.some(e => e.name === 'channel.followed')) {
+        return responder(400, { error: 'evento no permitido' });
+      }
       /* Kick crea las que le pidas y las devuelve; a partir de ahi
          aparecen en el listado. */
       for (const e of cuerpo.events) suscripciones.push({ id: `s-${e.name}`, event: e.name, version: e.version });
@@ -231,7 +238,7 @@ test('suscribirEventos crea solo lo que falta', async () => {
 });
 
 test('suscribirEventos no toca nada si ya estan las dos', async () => {
-  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
+  suscripciones = TODOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
   const r = await kick.suscribirEventos('token-kick', USUARIO, '');
 
@@ -253,7 +260,7 @@ test('sin vinculo con Kick no se pide nada y se dice que no esta vinculado', asy
 
 test('con las dos suscripciones puestas, la verificacion no resuscribe', async () => {
   await guardarVinculoKick();
-  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
+  suscripciones = TODOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
   const r = await chat.verificarKick(CANAL);
 
@@ -274,9 +281,28 @@ test('si falta una suscripcion, la verificacion la vuelve a crear', async () => 
 
   assert.deepEqual(r, { vinculado: true, resuscrito: true });
   const creaciones = pedidosA('/events/subscriptions').filter(l => l.metodo === 'POST');
-  assert.equal(creaciones.length, 1, 'tiene que haber creado las suscripciones que faltaban');
-  assert.deepEqual(creaciones[0].cuerpo.events, kick.EVENTOS);
+  assert.equal(creaciones.length, 2, 'las del chat y, aparte, las de la actividad');
+  assert.deepEqual(creaciones[0].cuerpo.events, kick.EVENTOS, 'el chat primero y solo');
+  assert.deepEqual(creaciones[1].cuerpo.events, kick.EVENTOS_ACTIVIDAD);
   assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa');
+});
+
+test('si Kick rechaza la actividad, el chat queda suscripto igual', async () => {
+  /* La actividad (canjes, subs, follows) va en OTRO pedido justamente
+     para esto: Kick crea las de un pedido todas o ninguna, y un evento
+     que rechazara no se puede llevar puesto el chat. */
+  await guardarVinculoKick();
+  suscripciones = [];
+  rechazaActividad = true;
+  try {
+    const r = await chat.verificarKick(CANAL);
+    assert.deepEqual(r, { vinculado: true, resuscrito: true });
+    assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa');
+    assert.ok(kick.EVENTOS.every(e => suscripciones.some(x => x.event === e.name)),
+      'las del chat quedaron creadas');
+  } finally {
+    rechazaActividad = false;
+  }
 });
 
 test('la version de una suscripcion se compara como numero, venga como venga', async () => {
@@ -287,7 +313,7 @@ test('la version de una suscripcion se compara como numero, venga como venga', a
      de los otros tests usa numeros, asi que ese caso no lo mira
      nadie. */
   await guardarVinculoKick();
-  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: String(e.version) }));
+  suscripciones = TODOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: String(e.version) }));
 
   const r = await chat.verificarKick(CANAL);
 
@@ -298,7 +324,7 @@ test('la version de una suscripcion se compara como numero, venga como venga', a
 
 test('resuscribir a mano crea las suscripciones aunque parezca que esta todo bien', async () => {
   await guardarVinculoKick();
-  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
+  suscripciones = TODOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
   const r = await chat.resuscribirKick(CANAL);
 
@@ -369,7 +395,7 @@ test('al arrancar, si hay token de Twitch guardado, se reconecta solo', async ()
      alguien entre al panel a tocar un boton. */
   await guardarVinculoKick();
   await guardarVinculoTwitch();
-  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
+  suscripciones = TODOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
   await chat.arrancar({ base: 'https://sala.example' });
 
@@ -401,7 +427,7 @@ test('la verificacion se repite cada cinco minutos, y arrancar dos veces no la d
   assert.equal(chat.CADA_VERIFICACION, 5 * 60 * 1000);
 
   await guardarVinculoKick();
-  suscripciones = kick.EVENTOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
+  suscripciones = TODOS.map((e, i) => ({ id: `s${i}`, event: e.name, version: e.version }));
 
   t.mock.timers.enable({ apis: ['setInterval'] });
 

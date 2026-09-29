@@ -174,6 +174,16 @@ Está construido. Sin esto, `/chat/<slug>` se sigue leyendo igual; lo que no and
 
 - [ ] **24. Decidir si los términos suben a Versión 2.** El texto de `/terminos` cambió de fondo: ahora dice qué se guarda de cada espectador por red y las tres formas de borrarlo. **La versión quedó en 1 a propósito**, porque subirla es una decisión tuya y tiene una consecuencia: hay que cambiar `TERMINOS_VERSION` en `servidor/creadores.js` **y** el `terminos=1` del link de `/crear` (`paginas/crear.html`), o el alta deja de funcionar. A los creadores que ya están no los afecta: los términos sólo se piden en el alta.
 
+## Bloque 7 — Canjes, subs y follows en el chat (2026-09-29)
+
+Está construido. Kick no pide nada: las suscripciones nuevas se crean solas en la vuelta de los cinco minutos (o con **Resuscribir Kick** en `/panel`). Twitch sí:
+
+- [ ] **25. Volver a vincular Twitch, fuera de cámara.** `/panel` → **Volver a vincular Twitch**. Twitch ahora pide tres permisos más, todos de lectura: seguidores (`moderator:read:followers`), suscripciones (`channel:read:subscriptions`) y canjes de puntos (`channel:read:redemptions`). Mientras no lo hagas, el chat de Twitch anda igual; lo único que falta es la actividad de Twitch, y el panel lo dice con esas palabras.
+
+- [ ] **26. Que tus mods escriban una vez.** Quién es mod lo dice la insignia de moderador de Kick o de Twitch en sus mensajes. Para ver el botón **Actividad** en `/chat/<tu-slug>`, cada mod tiene que conectar ahí la misma cuenta con la que modera (Conectar Kick o Conectar Twitch) y haber escrito al menos una vez en tu chat con la insignia puesta. Si le sacás el rol, en cuanto escriba sin la insignia deja de verlo.
+
+- [ ] **27. Decidir si `/terminos` lo menciona.** La lista de actividad guarda el **nombre público** de quien canjeó, se suscribió o siguió (los últimos 150 por sala), y para reconocer a los mods se guarda su **id de Kick o de Twitch** (vence a los 30 días sin verlo). No se agregó al texto de los términos: es tu decisión, igual que la de la versión (tarea 24).
+
 ---
 
 ## Datos públicos (se pueden escribir acá)

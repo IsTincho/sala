@@ -63,7 +63,7 @@ const BASE = process.env.MONGODB_DB  ?? process.env.MONGO_DB  ?? 'sala';
 /* Las unicas colecciones que existen. La lista esta para que un typo
    (`sesion` en vez de `sesiones`) explote al escribir y no cree una
    coleccion fantasma que despues nadie lee. */
-export const COLECCIONES = ['creadores', 'tokens', 'sesiones', 'videos', 'reloj', 'subidas', 'espectadores'];
+export const COLECCIONES = ['creadores', 'tokens', 'sesiones', 'videos', 'reloj', 'subidas', 'espectadores', 'actividad'];
 
 let conexion = null;              // promesa de la base, para no abrir dos
 let modo     = URI ? 'mongo' : 'archivo';

@@ -819,3 +819,74 @@ select:focus-visible{
   color: var(--texto-tenue);
   white-space: nowrap;
 }
+
+/* ---------- actividad: canjes, subs y follows ----------
+   En la lista del chat es un renglon mas, con un filo de color a la
+   izquierda para distinguirlo de un mensaje sin robarle lugar a la
+   conversacion. */
+.mensaje-actividad{
+  border-left: 3px solid var(--acento);
+  background: color-mix(in srgb, var(--acento) 7%, transparent);
+}
+.mensaje-actividad.actividad-sub,
+.mensaje-actividad.actividad-resub,
+.mensaje-actividad.actividad-regalo{
+  border-left-color: var(--regular);
+  background: color-mix(in srgb, var(--regular) 8%, transparent);
+}
+.mensaje-actividad.actividad-follow{ border-left-color: var(--texto-tenue); }
+.actividad-frase{ color: var(--texto-tenue); }
+.actividad-frase .usuario{ color: var(--texto); font-weight: 700; }
+.actividad-objeto{ color: var(--texto); }
+.actividad-mensaje{
+  display: block;
+  margin-top: 2px;
+  font-style: italic;
+  color: var(--texto-tenue);
+  overflow-wrap: anywhere;
+}
+
+.panel-actividad{
+  position: fixed;
+  z-index: 30;
+  top: calc(var(--chat-alto-barra) + var(--espacio-2));
+  right: var(--espacio-2);
+  width: min(26rem, calc(100vw - 2 * var(--espacio-2)));
+  max-height: calc(100vh - var(--chat-alto-barra) - 2 * var(--espacio-3));
+  display: flex; flex-direction: column;
+  gap: var(--espacio-2);
+  padding: var(--espacio-3);
+  background: var(--fondo-tarjeta);
+  color: var(--texto);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.panel-actividad[hidden]{ display: none; }
+.cabeza-actividad{ display: flex; align-items: center; gap: var(--espacio-2); flex-wrap: wrap; }
+.cabeza-actividad .texto-tenue{ flex: 1; font-size: .85em; }
+.pestanas-actividad{ display: flex; flex-wrap: wrap; gap: var(--espacio-1); }
+.lista-actividad{
+  list-style: none; margin: 0; padding: 0;
+  overflow-y: auto; min-height: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.item-actividad{
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--espacio-2);
+  padding: 6px 8px;
+  border-left: 3px solid var(--acento);
+  background: var(--fondo);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.item-actividad.actividad-sub,
+.item-actividad.actividad-resub,
+.item-actividad.actividad-regalo{ border-left-color: var(--regular); }
+.item-actividad.actividad-follow{ border-left-color: var(--texto-tenue); }
+.item-actividad .hora-actividad{ color: var(--texto-tenue); font-size: .85em; white-space: nowrap; }
+.item-actividad .actividad-frase,
+.item-actividad .actividad-mensaje{ grid-column: 2; }
+.item-actividad .chip-red{ margin-right: 4px; }
+.nota-actividad:empty{ display: none; }

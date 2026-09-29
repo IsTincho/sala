@@ -41,6 +41,11 @@
       <button type="button" id="boton-vista" class="boton-chip" aria-pressed="false">Vista: mezclada</button>
       <button type="button" id="boton-letra" class="boton-chip" aria-pressed="false">Letra: normal</button>
       <button type="button" id="boton-filtro" class="boton-chip" aria-pressed="false">Filtro: todas</button>
+      <!-- canjes, subs y follows recientes: sólo el creador y sus mods.
+           Lo prende el JS cuando el servidor dice que esta persona lo
+           puede ver (en /chat/<slug>, `veActividad` de /yo). -->
+      <button type="button" id="boton-actividad" class="boton-chip"
+        aria-expanded="false" aria-controls="panel-actividad" hidden>Actividad</button>
     </div>
     <!-- la salud es de la cuenta del creador: en /chat/<slug> no se muestra -->
     <div class="barra-salud" id="barra-salud" role="status" aria-live="polite">
@@ -61,6 +66,25 @@
   <section id="pantalla-cerrado" class="pantalla-cerrado" hidden aria-live="polite">
     <p id="titulo-cerrado" class="titulo-cerrado">Este chat está cerrado</p>
     <p id="texto-cerrado" class="texto-tenue">El creador todavía no lo abrió a su comunidad.</p>
+  </section>
+
+  <!-- La lista de actividad. `group` y no `dialog`, como los otros
+       paneles: no atrapa el Tab, se cierra con Escape y devuelve el foco. -->
+  <section id="panel-actividad" class="panel-actividad" hidden role="group" aria-label="Actividad reciente">
+    <div class="cabeza-actividad">
+      <strong>Actividad</strong>
+      <span class="texto-tenue">canjes, subs y follows de las dos redes</span>
+      <button type="button" id="refrescar-actividad" class="boton-chip" aria-label="Volver a pedir">↻</button>
+      <button type="button" id="cerrar-actividad" class="boton-chip" aria-label="Cerrar la actividad">×</button>
+    </div>
+    <div class="pestanas-actividad" id="pestanas-actividad">
+      <button type="button" class="boton-chip" data-filtro="todo" aria-pressed="true">Todo</button>
+      <button type="button" class="boton-chip" data-filtro="canje" aria-pressed="false">Canjes</button>
+      <button type="button" class="boton-chip" data-filtro="sub" aria-pressed="false">Subs</button>
+      <button type="button" class="boton-chip" data-filtro="follow" aria-pressed="false">Follows</button>
+    </div>
+    <ol id="lista-actividad" class="lista-actividad"></ol>
+    <p id="nota-actividad" class="texto-tenue nota-actividad" role="status"></p>
   </section>
 
   <main class="area-mensajes" id="area-mensajes">

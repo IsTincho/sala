@@ -24,6 +24,8 @@
      coloresDeUsuario(datos)      -> { claro, oscuro }, ya corregidos
      pintarNombre(elemento, datos)-> le pone esos dos colores
      recortarTexto(texto, limite)
+     crearActividad(datos)        -> un <li> de canje, sub o follow
+     escribirFrase(nodo, datos)   -> la frase de la actividad, en un nodo
 
    Se carga con <script src="comun/mensajes.js"> antes del script de
    la pagina, igual que comun/bus.js.
@@ -415,7 +417,93 @@
     return li;
   }
 
+  /* ------------------------------------------------------ la actividad
+
+     Canjes, subs y follows, contados en una frase. La usan la linea que
+     entra en el chat y la lista del boton "Actividad", asi las dos dicen
+     lo mismo con las mismas palabras. Devuelve partes y no HTML: quien
+     la pinta decide el markup y nadie arma texto de terceros a mano. */
+
+  const cifra = n => Number(n ?? 0).toLocaleString('es-AR');
+
+  function fraseActividad(datos) {
+    const n = Number(datos.cantidad ?? 0);
+    const meses = Number(datos.meses ?? 0);
+    const f = { accion: '', objeto: '', detalle: '', mensaje: String(datos.mensaje ?? '') };
+    switch (datos.clase) {
+      case 'canje':
+        f.accion = 'canjeó';
+        f.objeto = datos.regalo || 'una recompensa';
+        if (Number(datos.costo) > 0) f.detalle = `${cifra(datos.costo)} pts`;
+        break;
+      case 'follow':
+        f.accion = 'empezó a seguir';
+        break;
+      case 'sub':
+        f.accion = 'se suscribió';
+        if (meses > 1) f.detalle = `${meses} meses`;
+        break;
+      case 'resub':
+        f.accion = 'renovó la sub';
+        if (meses > 0) f.detalle = `${meses} ${meses === 1 ? 'mes' : 'meses'}`;
+        break;
+      case 'regalo':
+        f.accion = 'regaló';
+        f.objeto = `${cifra(n)} ${n === 1 ? 'sub' : 'subs'}`;
+        break;
+      default:
+        f.accion = String(datos.clase ?? '');
+    }
+    return f;
+  }
+
+  /** Arma la frase dentro de `contenedor`, con textContent. */
+  function escribirFrase(contenedor, datos) {
+    const f = fraseActividad(datos);
+    const quien = document.createElement('span');
+    quien.className = 'usuario';
+    quien.textContent = datos.usuario ?? '';
+    contenedor.append(quien, ` ${f.accion}`);
+    if (f.objeto) {
+      const objeto = document.createElement('strong');
+      objeto.className = 'actividad-objeto';
+      objeto.textContent = f.objeto;
+      contenedor.append(' ', objeto);
+    }
+    if (f.detalle) contenedor.append(` · ${f.detalle}`);
+    return f;
+  }
+
+  /** Un <li> de actividad para la lista del chat, con la misma forma que un mensaje. */
+  function crearActividad(datos) {
+    const li = document.createElement('li');
+    li.className = `mensaje mensaje-actividad actividad-${String(datos.clase ?? '')}`;
+    li.dataset.red = datos.red === 'kick' ? 'kick' : 'twitch';
+
+    const fila = document.createElement('div');
+    fila.className = 'mensaje-linea';
+    const chipRed = document.createElement('span');
+    chipRed.className = 'chip-red ' + (datos.red === 'kick' ? 'chip-red-kick' : 'chip-red-twitch');
+    chipRed.textContent = datos.red === 'kick' ? 'Kick' : 'Twitch';
+    fila.appendChild(chipRed);
+
+    const frase = document.createElement('span');
+    frase.className = 'actividad-frase';
+    const f = escribirFrase(frase, datos);
+    fila.appendChild(frase);
+    li.appendChild(fila);
+
+    if (f.mensaje) {
+      const cita = document.createElement('q');
+      cita.className = 'actividad-mensaje';
+      cita.textContent = recortarTexto(f.mensaje, 200);
+      li.appendChild(cita);
+    }
+    return li;
+  }
+
   window.SalaMensajes = {
     crear, vigilarInsignias, coloresDeUsuario, pintarNombre, recortarTexto,
+    crearActividad, escribirFrase, fraseActividad,
   };
 })();

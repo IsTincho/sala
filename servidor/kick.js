@@ -428,6 +428,43 @@ export const EVENTOS = [
   { name: 'livestream.status.updated', version: 1 },
 ];
 
+/* Canjes de puntos, subs y follows, para la lista del creador y sus
+   mods. Van APARTE de EVENTOS y en otro pedido a proposito: Kick crea
+   las suscripciones de un pedido todas o ninguna, y un evento de estos
+   que Kick rechazara no puede llevarse puesto el chat. Los nombres y
+   versiones son los que CosasStream usa en produccion desde antes. */
+export const EVENTOS_ACTIVIDAD = [
+  { name: 'channel.followed', version: 1 },
+  { name: 'channel.subscription.new', version: 1 },
+  { name: 'channel.subscription.renewal', version: 1 },
+  { name: 'channel.subscription.gifts', version: 1 },
+  { name: 'channel.reward.redemption.updated', version: 1 },
+];
+
+/**
+ * Crea las suscripciones de actividad que falten, contra la lista que
+ * quien llama ya pidio (asi la verificacion de cada cinco minutos no
+ * gasta un pedido de mas). Tira si Kick rechaza: quien llama decide
+ * que eso no rompa nada.
+ */
+export async function suscribirActividad(token, broadcasterUserId, actuales = []) {
+  const faltan = EVENTOS_ACTIVIDAD.filter(
+    e => !actuales.some(s => s.event === e.name && Number(s.version) === e.version),
+  );
+  if (!faltan.length) return { creadas: 0 };
+  await pedir('/events/subscriptions', {
+    token,
+    metodo: 'POST',
+    cuerpo: {
+      broadcaster_user_id: Number(broadcasterUserId),
+      method: 'webhook',
+      events: faltan,
+    },
+  });
+  console.log(`[kick] suscripto a ${faltan.length} eventos de actividad del canal ${broadcasterUserId}`);
+  return { creadas: faltan.length };
+}
+
 export async function listarSuscripciones(token, broadcasterUserId) {
   const q = broadcasterUserId
     ? `?broadcaster_user_id=${encodeURIComponent(broadcasterUserId)}`

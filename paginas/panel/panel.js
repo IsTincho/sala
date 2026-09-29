@@ -230,6 +230,15 @@
         'Kick sigue andando igual, que es lo que la Sala necesita.'));
     }
 
+    /* El chat anda igual; lo que falta son los canjes, subs y follows
+       de Twitch en la lista de actividad. Se arregla volviendo a
+       vincular, que pide los permisos nuevos. */
+    if (twitch.faltaActividad) {
+      tarjetaEstado.appendChild(filaRed('regular',
+        'Twitch: falta volver a vincular para ver canjes, subs y follows en el chat. ' +
+        'El chat de Twitch sigue andando igual.'));
+    }
+
     linkTwitch.classList.remove('apagado');
     linkTwitch.removeAttribute('aria-disabled');
     linkKick.textContent = 'Volver a entrar con Kick';

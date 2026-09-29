@@ -334,7 +334,7 @@ test('un cuerpo de pagina con comillas y & se escapa entero', async () => {
     'los cinco tienen que salir escapados, y el & primero');
 });
 
-test('/oauth/twitch/entrar manda a id.twitch.tv con state y los scopes del chat', async () => {
+test('/oauth/twitch/entrar manda a id.twitch.tv con state y los scopes del chat y la actividad', async () => {
   const r = await fetch(`${raiz}/oauth/twitch/entrar`, { redirect: 'manual' });
   assert.equal(r.status, 302);
 
@@ -342,7 +342,12 @@ test('/oauth/twitch/entrar manda a id.twitch.tv con state y los scopes del chat'
   assert.equal(destino.origin, 'https://id.twitch.tv');
   assert.equal(destino.searchParams.get('response_type'), 'code');
   assert.equal(destino.searchParams.get('redirect_uri'), 'https://sala.example/oauth/twitch/volver');
-  assert.deepEqual(destino.searchParams.get('scope').split(' '), ['user:read:chat', 'user:write:chat']);
+  /* Los tres ultimos son los de canjes, subs y follows: todos de
+     lectura. Un vinculo sin ellos sigue teniendo chat. */
+  assert.deepEqual(destino.searchParams.get('scope').split(' '), [
+    'user:read:chat', 'user:write:chat',
+    'moderator:read:followers', 'channel:read:subscriptions', 'channel:read:redemptions',
+  ]);
   assert.ok(destino.searchParams.get('state'), 'el state es lo unico que ata el callback');
 });
 

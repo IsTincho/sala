@@ -76,7 +76,18 @@ const URL_TOKEN      = 'https://id.twitch.tv/oauth2/token';
 const URL_HELIX       = 'https://api.twitch.tv/helix';
 export const URL_EVENTSUB = 'wss://eventsub.wss.twitch.tv/ws';
 
-const SCOPES_DEFECTO = ['user:read:chat', 'user:write:chat'];
+/* La actividad del canal (canjes, subs y follows) para la lista del
+   creador y sus mods. Van aparte del chat a proposito: un vinculo
+   viejo no los tiene, y lo unico que tiene que pasar ahi es que falte
+   la actividad de Twitch. El chat no puede caerse por esto: ver
+   `TIPOS_ACTIVIDAD` y como los suscribe chat.js. Todos de lectura. */
+export const SCOPES_ACTIVIDAD = Object.freeze([
+  'moderator:read:followers',     // channel.follow v2
+  'channel:read:subscriptions',   // subscribe, subscription.message, subscription.gift
+  'channel:read:redemptions',     // canjes de puntos, propios y de fabrica
+]);
+
+const SCOPES_DEFECTO = ['user:read:chat', 'user:write:chat', ...SCOPES_ACTIVIDAD];
 
 /* Lo minimo que necesita un ESPECTADOR: escribir. Leer el chat de una
    sala entra por el token del creador (una sola conexion EventSub para
@@ -274,6 +285,67 @@ export async function suscribirChat({ accessToken, sessionId, broadcasterId, usu
     throw new Error(`twitch eventsub/subscriptions respondio ${resp.status}`);
   }
   return resp.json();
+}
+
+/* Los eventos de actividad y el permiso que pide cada uno. La version
+   va como string, como pide Helix. follow v2 exige moderador ademas de
+   canal: el creador es moderador de su propio canal, asi que van los
+   dos con su id. La automatica va en v2: la v1 esta deprecada. */
+export const TIPOS_ACTIVIDAD = Object.freeze([
+  { tipo: 'channel.follow', version: '2', scope: 'moderator:read:followers',
+    condicion: id => ({ broadcaster_user_id: id, moderator_user_id: id }) },
+  { tipo: 'channel.subscribe', version: '1', scope: 'channel:read:subscriptions',
+    condicion: id => ({ broadcaster_user_id: id }) },
+  { tipo: 'channel.subscription.message', version: '1', scope: 'channel:read:subscriptions',
+    condicion: id => ({ broadcaster_user_id: id }) },
+  { tipo: 'channel.subscription.gift', version: '1', scope: 'channel:read:subscriptions',
+    condicion: id => ({ broadcaster_user_id: id }) },
+  { tipo: 'channel.channel_points_custom_reward_redemption.add', version: '1',
+    scope: 'channel:read:redemptions', condicion: id => ({ broadcaster_user_id: id }) },
+  { tipo: 'channel.channel_points_automatic_reward_redemption.add', version: '2',
+    scope: 'channel:read:redemptions', condicion: id => ({ broadcaster_user_id: id }) },
+]);
+
+/** Que permisos de actividad le faltan a un vinculo, por sus scopes guardados. */
+export function faltanScopesActividad(scopes) {
+  const tiene = Array.isArray(scopes) ? scopes : String(scopes ?? '').split(/\s+/).filter(Boolean);
+  return SCOPES_ACTIVIDAD.filter(x => !tiene.includes(x));
+}
+
+/**
+ * Suscribe los eventos de actividad que el vinculo tiene permiso de
+ * leer, en una sesion de EventSub ya suscripta al chat.
+ *
+ * NUNCA TIRA. Esta es la diferencia con `suscribirChat`: si el chat no
+ * se puede suscribir la sesion no sirve y hay que reconectar, pero si
+ * falla un follow o un canje, el chat tiene que seguir andando igual.
+ * Devuelve que salio y que no, para el log.
+ */
+export async function suscribirActividad({ accessToken, sessionId, broadcasterId, scopes }) {
+  const faltan = new Set(faltanScopesActividad(scopes));
+  const resultado = { ok: [], sinPermiso: [], fallaron: [] };
+  await Promise.all(TIPOS_ACTIVIDAD.map(async def => {
+    if (faltan.has(def.scope)) { resultado.sinPermiso.push(def.tipo); return; }
+    try {
+      const resp = await fetch(`${URL_HELIX}/eventsub/subscriptions`, {
+        method: 'POST',
+        headers: { ...cabecerasHelix(accessToken), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: def.tipo,
+          version: def.version,
+          condition: def.condicion(broadcasterId),
+          transport: { method: 'websocket', session_id: sessionId },
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      /* 409: ya existia en esta sesion, que para lo que importa es "esta" */
+      if (resp.ok || resp.status === 409) resultado.ok.push(def.tipo);
+      else resultado.fallaron.push(`${def.tipo} (HTTP ${resp.status})`);
+    } catch (e) {
+      resultado.fallaron.push(`${def.tipo} (${e?.name ?? 'Error'})`);
+    }
+  }));
+  return resultado;
 }
 
 /* ------------------------ lo publico de Helix: insignias y emotes

@@ -25,6 +25,7 @@
      /api/chat/:slug/abierto  si el chat de esa sala esta abierto
      /api/chat/:slug/emotes   los emotes que ofrece el selector de la caja
      /api/chat/:slug/yo       que redes conecto quien pregunta
+     /api/chat/:slug/actividad canjes, subs y follows: solo el creador y sus mods
      /api/chat/:slug/enviar   el mensaje de un espectador a Kick y/o Twitch
      /api/espectador/salir    borra los tokens de las dos redes
      /api/estado              como esta el servidor
@@ -67,6 +68,7 @@ import nodeCrypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import * as actividad from './actividad.js';
 import * as almacen from './almacen.js';
 import * as canales from './canales.js';
 import * as chat from './chat.js';
@@ -2631,9 +2633,14 @@ async function apiChatYo(url, req, res, p) {
      mismo criterio que `bloqueado` en la hermana de /api/sala: todas
      las respuestas de esta ruta tienen las mismas claves, asi que la
      pagina no tiene que preguntarse si el campo existe. */
+  /* Si ve el boton de la actividad. Va en TODAS las respuestas, como
+     `bloqueado`: el creador que mira su propio chat sin cuenta de
+     espectador tambien lo tiene que ver. Lo decide la misma funcion que
+     protege la ruta, asi que el boton y la lista no pueden discrepar. */
   const nadie = {
     entrado: false, abierto: c.activo, redes: abiertas, conectadas: {},
     color: '', bloqueado: [], puedeEscribir: [],
+    veActividad: await puedeVerActividad(req, slug),
   };
 
   const suyo = await sesion.leer(req, 'espectador');
@@ -2677,7 +2684,54 @@ async function apiChatYo(url, req, res, p) {
     bloqueado,
     puedeEscribir: abiertas.filter(red =>
       v[red] && espectadores.puedeEscribirEn(v, red) && !bloqueado.includes(red)),
+    veActividad: nadie.veActividad,
   });
+}
+
+/* --------------------------------------------- la actividad del canal
+
+   Canjes, subs y follows de las dos redes, para el creador y sus mods.
+   Los canjes y las subs ya salen por el bus para todos (son publicos
+   en las dos plataformas); lo que esta ruta agrega es la LISTA, con lo
+   que paso antes de abrir el chat, y los follows, que no son publicos.
+
+   Quien es mod no lo dice nadie de aca: lo dice la insignia de
+   moderador de Kick o de Twitch, vista por el servidor en los mensajes
+   de esa persona (servidor/actividad.js). Se cruza con las cuentas con
+   las que entro como espectador. */
+
+/** Si quien pide puede ver la actividad de esta sala. */
+async function puedeVerActividad(req, slug) {
+  const dueno = await sesion.leer(req, 'dueno');
+  if (dueno && String(dueno.slug ?? '').toLowerCase() === slug) return true;
+
+  const suyo = await sesion.leer(req, 'espectador');
+  if (!suyo) return false;
+  const v = await espectadores.leer(suyo.usuario).catch(() => null);
+  if (!v) return false;
+  const cuentas = espectadores.redesDe(v).map(red => ({ red, usuarioId: v[red].usuarioId }));
+  return actividad.esMod(slug, cuentas);
+}
+
+const clasesDelPedido = url => (url.searchParams.get('clase') ?? '')
+  .split(',').map(x => x.trim()).filter(Boolean).slice(0, 10);
+
+async function apiChatActividad(url, req, res, p) {
+  const slug = creadores.normalizar(p.slug);
+  if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
+  if (!await puedeVerActividad(req, slug)) {
+    return json(res, 403, { error: 'la actividad la ven el creador y sus mods' });
+  }
+  return json(res, 200, {
+    items: await actividad.ver(slug, { clases: clasesDelPedido(url), n: url.searchParams.get('n') }),
+  });
+}
+
+/** La misma lista para la ventana del creador (/chat), con el slug de su sesion. */
+async function apiChatActividadDelCreador(url, req, res) {
+  return conCreador(req, res, async (slug) => json(res, 200, {
+    items: await actividad.ver(slug, { clases: clasesDelPedido(url), n: url.searchParams.get('n') }),
+  }));
 }
 
 /**
@@ -2999,6 +3053,7 @@ const RUTAS = [
   ['GET',    '/api/hora',              apiHora],
   ['GET',    '/api/chat/salud',        apiChatSalud],
   ['GET',    '/api/chat/emotes',       apiChatEmotesDelCreador],
+  ['GET',    '/api/chat/actividad',    apiChatActividadDelCreador],
   ['POST',   '/api/chat/enviar',       apiChatEnviar],
   ['POST',   '/api/chat/resuscribir',  apiChatResuscribir],
   ['GET',    '/api/panel',             apiPanel],
@@ -3012,6 +3067,7 @@ const RUTAS = [
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
   ['GET',    '/api/chat/:slug/emotes',  apiChatEmotes],
   ['GET',    '/api/chat/:slug/yo',      apiChatYo],
+  ['GET',    '/api/chat/:slug/actividad', apiChatActividad],
   ['POST',   '/api/chat/:slug/enviar',  apiChatEnviarEspectador],
   ['POST',   '/api/espectador/salir',   apiEspectadorSalir],
   ['POST',   '/api/espectador/color',   apiEspectadorColor],

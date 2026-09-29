@@ -139,6 +139,14 @@
   const quitarColor   = document.getElementById('quitar-color');
   const cerrarColor   = document.getElementById('cerrar-color');
 
+  const botonActividad     = document.getElementById('boton-actividad');
+  const panelActividad     = document.getElementById('panel-actividad');
+  const listaActividad     = document.getElementById('lista-actividad');
+  const notaActividad      = document.getElementById('nota-actividad');
+  const pestanasActividad  = document.getElementById('pestanas-actividad');
+  const refrescarActividad = document.getElementById('refrescar-actividad');
+  const cerrarActividad    = document.getElementById('cerrar-actividad');
+
   const NOMBRE_RED = { kick: 'Kick', twitch: 'Twitch' };
 
   // ---------- listas de mensajes: una por cada zona de scroll ----------
@@ -353,6 +361,147 @@
     agregarMensajeALista(listas.mezclada, li);
     agregarMensajeALista(datos.red === 'kick' ? listas.kick : listas.twitch, li.cloneNode(true));
   }
+
+  // ---------- actividad: canjes, subs y follows ----------
+
+  // Un canje o una sub entra como un renglón más, en la lista mezclada
+  // y en la de su red, igual que un mensaje. Los follows no llegan por
+  // acá: no son públicos, y los ve sólo quien abre la lista de abajo.
+  function manejarActividad(datos) {
+    const li = window.SalaMensajes.crearActividad(datos);
+    agregarMensajeALista(listas.mezclada, li);
+    agregarMensajeALista(datos.red === 'kick' ? listas.kick : listas.twitch, li.cloneNode(true));
+    // con la lista abierta, lo nuevo también tiene que aparecer ahí
+    if (!panelActividad.hidden) programarPedidoActividad();
+  }
+
+  // La lista del botón "Actividad". La pide al servidor, que es el que
+  // decide quién la ve (el creador y sus mods): la página sólo muestra
+  // el botón cuando /yo dice que sí, y si igual contesta que no, lo dice.
+  const GRUPOS_ACTIVIDAD = { canje: ['canje'], sub: ['sub', 'resub', 'regalo'], follow: ['follow'] };
+  const CADA_ACTIVIDAD = 30000;   // los follows no avisan por el bus
+  let itemsActividad = [];
+  let filtroActividad = 'todo';
+  let relojActividad = null;
+  let pedidoActividadPendiente = null;
+
+  const urlActividad = () => (modoPublico
+    ? `/api/chat/${encodeURIComponent(slugPublico)}/actividad?n=100`
+    : '/api/chat/actividad?n=100');
+
+  function horaCorta(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const hoy = new Date().toDateString() === d.toDateString();
+    const h = d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    return hoy ? h : `${d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' })} ${h}`;
+  }
+
+  function itemActividad(datos) {
+    const li = document.createElement('li');
+    li.className = `item-actividad actividad-${String(datos.clase ?? '')}`;
+    const hora = document.createElement('span');
+    hora.className = 'hora-actividad';
+    hora.textContent = horaCorta(datos.hora);
+    li.appendChild(hora);
+
+    const frase = document.createElement('span');
+    frase.className = 'actividad-frase';
+    const chip = document.createElement('span');
+    chip.className = 'chip-red ' + (datos.red === 'kick' ? 'chip-red-kick' : 'chip-red-twitch');
+    chip.textContent = NOMBRE_RED[datos.red] ?? '';
+    frase.appendChild(chip);
+    const f = window.SalaMensajes.escribirFrase(frase, datos);
+    li.appendChild(frase);
+
+    if (f.mensaje) {
+      const cita = document.createElement('q');
+      cita.className = 'actividad-mensaje';
+      cita.textContent = f.mensaje;
+      li.appendChild(cita);
+    }
+    return li;
+  }
+
+  function pintarActividad() {
+    for (const b of pestanasActividad.children) {
+      b.setAttribute('aria-pressed', String(b.dataset.filtro === filtroActividad));
+    }
+    const clases = GRUPOS_ACTIVIDAD[filtroActividad];
+    const visibles = clases ? itemsActividad.filter(x => clases.includes(x.clase)) : itemsActividad;
+    listaActividad.textContent = '';
+    visibles.forEach(x => listaActividad.appendChild(itemActividad(x)));
+    if (!notaActividad.dataset.error) {
+      notaActividad.textContent = visibles.length ? '' : 'Todavía no pasó nada acá.';
+    }
+  }
+
+  function pedirActividad() {
+    return fetch(urlActividad(), { credentials: 'same-origin', cache: 'no-store' })
+      .then(r => {
+        if (r.status === 401 || r.status === 403) {
+          throw new Error('La actividad la ven el creador y sus mods. Si sos mod, conectá la cuenta ' +
+                          'con la que moderás y escribí algo en el chat.');
+        }
+        if (!r.ok) throw new Error('No se pudo pedir la actividad.');
+        return r.json();
+      })
+      .then(datos => {
+        itemsActividad = Array.isArray(datos?.items) ? datos.items : [];
+        delete notaActividad.dataset.error;
+      })
+      .catch(e => {
+        notaActividad.dataset.error = '1';
+        notaActividad.textContent = e.message;
+      })
+      .finally(pintarActividad);
+  }
+
+  // Agrupado: en un tren de subs llegan varias por segundo.
+  function programarPedidoActividad() {
+    clearTimeout(pedidoActividadPendiente);
+    pedidoActividadPendiente = setTimeout(pedirActividad, 600);
+  }
+
+  function abrirActividad() {
+    panelActividad.hidden = false;
+    botonActividad.setAttribute('aria-expanded', 'true');
+    pedirActividad();
+    clearInterval(relojActividad);
+    relojActividad = setInterval(pedirActividad, CADA_ACTIVIDAD);
+  }
+
+  function cerrarPanelActividad({ devolverFoco = true } = {}) {
+    if (panelActividad.hidden) return;
+    panelActividad.hidden = true;
+    botonActividad.setAttribute('aria-expanded', 'false');
+    clearInterval(relojActividad);
+    relojActividad = null;
+    if (devolverFoco) botonActividad.focus?.();
+  }
+
+  function mostrarBotonActividad(si) {
+    botonActividad.hidden = !si;
+    if (!si) cerrarPanelActividad({ devolverFoco: false });
+  }
+
+  botonActividad.addEventListener('click', () => {
+    if (panelActividad.hidden) abrirActividad();
+    else cerrarPanelActividad();
+  });
+  cerrarActividad.addEventListener('click', () => cerrarPanelActividad());
+  refrescarActividad.addEventListener('click', () => pedirActividad());
+  pestanasActividad.addEventListener('click', ev => {
+    const filtro = ev.target?.dataset?.filtro;
+    if (!filtro) return;
+    filtroActividad = filtro;
+    pintarActividad();
+  });
+  // Escape se escucha en el panel y no en el documento, como los otros
+  // paneles: con el foco adentro cierra, y afuera no le roba la tecla a nadie.
+  panelActividad.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault?.(); cerrarPanelActividad(); }
+  });
 
   // ---------- vista: mezclada/columnas, letra, filtro ----------
 
@@ -1297,6 +1446,7 @@
 
   function aplicarYo(datos) {
     aplicarColorDeYo(datos);
+    mostrarBotonActividad(Boolean(datos?.veActividad));
     const abiertas = Array.isArray(datos?.redes) ? datos.redes : [];
     const conectadas = datos?.conectadas ?? {};
     const puede = Array.isArray(datos?.puedeEscribir) ? datos.puedeEscribir : [];
@@ -1378,6 +1528,7 @@
     vaciarListas();
     conexionBus = window.Sala.conectar(slugPublico, (tipo, datos) => {
       if (tipo === 'chat') return manejarMensajeChat(datos);
+      if (tipo === 'actividad') return manejarActividad(datos);
       if (tipo === 'chat-abierto') return aplicarAbierto(datos);
       // cuántos están leyendo. Un número y nada más: quiénes, nunca.
       if (tipo === 'presencia') return mostrarConectados(datos?.conectados);
@@ -1491,6 +1642,7 @@
     }
     window.Sala.conectar(slug, (tipo, datos) => {
       if (tipo === 'chat') manejarMensajeChat(datos);
+      if (tipo === 'actividad') manejarActividad(datos);
     });
   }
 
@@ -1531,6 +1683,9 @@
        En modo demo no: ahi no se manda nada y la lista saldria de un
        pedido de verdad, que es lo unico que la demo no hace. */
     if (!modoPublico && !modoDemo) botonEmotes.hidden = false;
+    /* La actividad, igual: en /chat es la ventana del creador y su
+       cookie la habilita. En /chat/<slug> la prende `aplicarYo`. */
+    if (!modoPublico && !modoDemo) mostrarBotonActividad(true);
     registrarServiceWorker(modoPublico ? '/chat/' + slugPublico : '/chat');
 
     if (modoDemo) {

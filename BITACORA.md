@@ -4,6 +4,75 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-29 — Canjes, subs y follows en el chat, y la lista para el creador y sus mods
+
+**1.086 pruebas en verde**, con 16 nuevas (`pruebas/actividad.test.js` y una en
+`pruebas/chat-suscripciones.test.js`). Los 14 cancelados de `pruebas/insignias.test.js` ya
+estaban antes de este cambio.
+
+### Lo que se agrega
+
+- En el chat entran como un renglón más los **canjes de puntos y las subs** (nuevas, resubs y
+  regaladas) de Kick y de Twitch, con el chip de la red.
+- El creador y sus mods tienen un botón **Actividad** arriba: la lista de lo último que pasó
+  en las dos redes, **follows incluidos**, filtrable por Canjes / Subs / Follows, que se
+  actualiza sola mientras está abierta.
+
+### Las decisiones, y por qué
+
+**Canjes y subs para todos; follows sólo en la lista.** Kick y Twitch ya muestran canjes y
+subs en su propio chat, así que sacarlos por el bus no cuenta nada nuevo. Los follows de
+Twitch no son públicos en ningún lado, y el bus de una sala lo escucha cualquiera sin login.
+La marca (`publico`) la pone el traductor y la saca `chat.recibirActividad` antes de difundir:
+no es un dato para el navegador.
+
+**Quién es mod lo dice la insignia, vista por el servidor.** Sala no tenía mods y no hacía
+falta inventar una lista: la insignia `moderator` llega en cada mensaje por el webhook
+firmado de Kick y por EventSub/IRC, no desde el navegador. Se recuerda por red + id (el mismo
+número en la otra red es otra persona), se guarda en el almacén (un deploy no le saca el rol a
+nadie), vence a los 30 días sin verlo y se borra en cuanto esa persona escribe sin la
+insignia. La contra, asumida: un mod tiene que haber escrito una vez con la insignia.
+
+**Nada de esto puede tirar el chat.** En Twitch, la suscripción del chat sigue siendo la
+única que decide si la conexión sirve; la actividad se suscribe después, *si se puede*, y
+nunca tira (`twitch.suscribirActividad`). Si se metía en el mismo paso, un vínculo viejo sin
+los permisos nuevos tiraba el chat de Twitch entero. En Kick va en **otro pedido**, porque
+Kick crea las suscripciones de un pedido todas o ninguna. Los nombres de los eventos de Kick
+son los que CosasStream usa en producción.
+
+**El canje pendiente cuenta.** Se descarta sólo el rechazado (Kick) o cancelado (Twitch):
+según cómo esté configurada la recompensa, Kick puede mandar sólo `pending` y nunca
+`accepted`. El pending y el accepted del mismo canje son uno solo por el dedupe.
+
+**La frase se arma en un lugar** (`SalaMensajes.escribirFrase`), y la usan el renglón del chat
+y la lista: dicen lo mismo con las mismas palabras. Todo por `textContent`.
+
+### Archivos tocados
+
+Nuevos: `servidor/actividad.js`, `pruebas/actividad.test.js`.
+Editados: `servidor/{mensajes,chat,twitch,kick,almacen,index}.js`,
+`paginas/{chat.html,chat/chat.js,chat/chat.css,comun/mensajes.js,panel/panel.js}`,
+`pruebas/{chat,chat-suscripciones,servidor}.test.js`, `TAREAS-DUENO.md` (bloque 7).
+
+### Cómo verlo funcionando
+
+Con `MODO=local`, abrí `/chat/<slug>` con la sesión del creador y mandá:
+
+```bash
+curl -X POST "localhost:8778/api/prueba/webhook?tipo=channel.reward.redemption.updated&canal=istincho" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"c1","status":"pending","redeemer":{"username":"Jaskier"},"reward":{"title":"Pedir un tema","cost":1000}}'
+```
+
+### Pendiente
+
+- **Sin verificar contra las plataformas de verdad:** que Kick acepte los cinco eventos nuevos
+  con el token del creador (en CosasStream andan con el token de app) y la forma real del
+  evento de recompensas de fábrica de Twitch (v2).
+- Los canjes de Twitch no disparan nada en la Sala: acá no hay efectos, sólo se muestran.
+
+---
+
 ## 2026-09-25 — El color propio de cada persona, y la pantalla más fácil de leer
 
 **1.083 pruebas en verde**, con 58 nuevas (`pruebas/colores.test.js`,

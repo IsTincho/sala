@@ -91,6 +91,7 @@
    necesita, entra por webhook y no gasta una conexion.
    ============================================================ */
 
+import * as actividad from './actividad.js';
 import * as canales from './canales.js';
 import * as colores from './colores.js';
 import * as emotes from './emotes.js';
@@ -331,13 +332,27 @@ export async function verificarKick(slug) {
 
   if (!falta.length) {
     c.kick.suscripcion = 'activa';
+    await asegurarActividadKick(c, v, actuales);
     return { vinculado: true, resuscrito: false };
   }
 
   console.warn(`[chat] ${c.slug}: faltaban ${falta.length} suscripciones de Kick: se vuelven a crear`);
   await kick.suscribirEventos(v.accessToken, v.usuarioId, urlBase ? `${urlBase}/kick/webhook` : '');
   c.kick.suscripcion = 'activa';
+  await asegurarActividadKick(c, v, actuales);
   return { vinculado: true, resuscrito: true };
+}
+
+/* Los canjes, subs y follows de Kick. Van despues del chat y no tiran:
+   si Kick los rechaza, se dice en el log y el chat sigue igual. La
+   suscripcion del chat es la que decide si la sala anda; esta es un
+   agregado. Se reintenta sola en la vuelta de los cinco minutos. */
+async function asegurarActividadKick(c, v, actuales) {
+  try {
+    await kick.suscribirActividad(v.accessToken, v.usuarioId, actuales);
+  } catch (e) {
+    console.warn(`[chat] ${c.slug}: no se pudo suscribir la actividad de Kick:`, e.message);
+  }
 }
 
 /**
@@ -377,6 +392,8 @@ export async function resuscribirKick(slug) {
   if (!v) throw new Error('no hay vinculo con Kick');
   await kick.suscribirEventos(v.accessToken, v.usuarioId, urlBase ? `${urlBase}/kick/webhook` : '');
   c.kick.suscripcion = 'activa';
+  const actuales = await kick.listarSuscripciones(v.accessToken, v.usuarioId).catch(() => []);
+  await asegurarActividadKick(c, v, actuales);
   return { ok: true };
 }
 
@@ -411,8 +428,16 @@ export function recibirDeKick(slug, evento, cuerpo) {
        plataforma. Va en los DOS embudos, como `emotes.resolver`: el
        color es de la persona y no de la red. */
     colores.pintar(mensaje);
+    /* Quien es mod lo dice la insignia de cada mensaje: ver actividad.js */
+    actividad.mirarInsignias(c.slug, mensaje);
     canales.recordar(c.slug, mensaje);
     return { hecho: 'chat', mensaje };
+  }
+
+  if (mensajes.TIPOS_ACTIVIDAD_KICK.includes(evento?.tipo)) {
+    const a = mensajes.actividadDeKick(evento.tipo, cuerpo, { hora: evento.cuando });
+    if (!a) return { hecho: 'actividad descartada' };
+    return { hecho: recibirActividad(c.slug, a) ? 'actividad' : 'actividad repetida' };
   }
 
   if (evento?.tipo === 'livestream.status.updated') {
@@ -447,6 +472,10 @@ export async function conectarTwitch(slug) {
     return { vinculado: false };
   }
   c.twitch.vinculado = true;
+  /* Un vinculo de antes de que se pidieran los permisos de la
+     actividad (canjes, subs, follows). El chat anda igual; el panel lo
+     dice para que se sepa que falta volver a vincular. */
+  c.twitch.faltaActividad = twitch.faltanScopesActividad(v.scopes).length > 0;
   /* Sin vinculo, `emotes.js` no tiene id que preguntarle a 7TV y lo
      anota como "este creador no tiene esa red", que vence a la hora.
      Vincular Twitch es justo el momento en que ese "no" dejo de ser
@@ -493,9 +522,35 @@ export async function conectarTwitch(slug) {
         broadcasterId: actual.usuarioId,
         usuarioId: actual.usuarioId,
       });
+      /* La actividad va DESPUES del chat y no puede tirar: si falla un
+         follow o un canje (el caso comun es un vinculo de antes de que
+         se pidieran esos permisos), el chat sigue andando igual. Si
+         tirara, la conexion entera se daria por fallida y se caeria el
+         chat de Twitch por un adorno. */
+      const r = await twitch.suscribirActividad({
+        accessToken: actual.accessToken,
+        sessionId,
+        broadcasterId: actual.usuarioId,
+        scopes: actual.scopes,
+      }).catch(e => ({ ok: [], sinPermiso: [], fallaron: [e?.name ?? 'Error'] }));
+      if (r.sinPermiso.length) {
+        console.warn(`[chat] ${c.slug}: sin permiso para la actividad de Twitch ` +
+                     `(${r.sinPermiso.length} eventos): hay que volver a vincular Twitch desde /panel`);
+      }
+      if (r.fallaron.length) {
+        console.warn(`[chat] ${c.slug}: fallo la actividad de Twitch: ${r.fallaron.join(', ')}`);
+      }
     },
     alMensaje: (evento, metadata) => {
-      recibirDeTwitch(c.slug, mensajes.deTwitch(evento, metadata));
+      /* Por la misma conexion llegan el chat y la actividad. Sin tipo
+         (las pruebas viejas, o una trama rara) se trata como chat, que
+         es lo que era antes de que hubiera otra cosa. */
+      const tipo = metadata?.subscription_type ?? 'channel.chat.message';
+      if (tipo === 'channel.chat.message') {
+        recibirDeTwitch(c.slug, mensajes.deTwitch(evento, metadata));
+        return;
+      }
+      recibirActividad(c.slug, mensajes.actividadDeTwitch(tipo, evento, metadata));
     },
     alEstado: (nuevo) => {
       /* alEstado tambien avisa cosas que no son estados de conexion
@@ -547,7 +602,37 @@ export function recibirDeTwitch(slug, mensaje) {
   emotes.resolver(mensaje, c.slug);
   insignias.resolver(mensaje, c.slug);
   colores.pintar(mensaje);
+  actividad.mirarInsignias(c.slug, mensaje);
   canales.recordar(c.slug, mensaje);
+  return true;
+}
+
+/* ------------------------------------------------------- actividad */
+
+/**
+ * Un canje, sub o follow de cualquiera de las dos redes, ya traducido
+ * (`mensajes.actividadDe*`). Se anota en la lista del creador y, si es
+ * `publico`, sale tambien por el bus de la sala como una linea mas del
+ * chat. Los follows no: ver el encabezado de la actividad en mensajes.js.
+ *
+ * El dedupe usa el mismo anillo que los mensajes de Twitch, con un
+ * prefijo: Kick manda el mismo canje como `pending` y despues como
+ * `accepted`, y reintenta los webhooks con otro message id.
+ *
+ * Devuelve si era nuevo.
+ */
+export function recibirActividad(slug, a) {
+  if (!a) return false;
+  const c = canalDeChat(slug);
+  if (a.id) {
+    const clave = `act:${a.red}:${a.clase}:${a.id}`;
+    if (c.vistos.has(clave)) return false;
+    c.vistos.add(clave);
+    if (c.vistos.size > TOPE_VISTOS) c.vistos.delete(c.vistos.values().next().value);
+  }
+  actividad.anotar(c.slug, a);
+  const { publico, ...paraElBus } = a;
+  if (publico) canales.recordar(c.slug, paraElBus);
   return true;
 }
 
@@ -734,7 +819,7 @@ function estadoDeError(e) {
 
 const SIN_NADA = {
   kick: { vinculado: false, ultima: null, suscripcion: 'desconocida', vivo: false, sospechoso: false },
-  twitch: { vinculado: false, ultima: null, estado: 'cortado', modo: 'ninguno', tope: false },
+  twitch: { vinculado: false, ultima: null, estado: 'cortado', modo: 'ninguno', tope: false, faltaActividad: false },
 };
 
 /**
@@ -779,6 +864,8 @@ export function salud(slug, ahora = Date.now()) {
          por un problema del creador. Sin esto, su panel diria
          "cortado" y no habria forma de distinguirlo de Twitch caido. */
       tope: Boolean(c.twitch.tope),
+      /* Si al vinculo le faltan los permisos de canjes, subs y follows */
+      faltaActividad: Boolean(c.twitch.vinculado && c.twitch.faltaActividad),
     },
     ahora: new Date(ahora).toISOString(),
   };

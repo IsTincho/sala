@@ -254,6 +254,8 @@ test('el espectador y el dueño piden scopes distintos', async () => {
 
   const dueno = await scopesDe('dueno');
   assert.ok(dueno.includes('events:subscribe'), 'el dueño ademas suscribe eventos');
+  assert.ok(dueno.includes('channel:rewards:read'), 'y lee los canjes para la lista de actividad');
+  assert.ok(!espectador.includes('channel:rewards:read'), 'al espectador no se le piden los canjes de nadie');
 });
 
 test('dos logins seguidos no comparten el desafio', async () => {

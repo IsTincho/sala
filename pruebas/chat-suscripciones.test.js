@@ -300,6 +300,13 @@ test('si Kick rechaza la actividad, el chat queda suscripto igual', async () => 
     assert.equal(chat.salud(CANAL).kick.suscripcion, 'activa');
     assert.ok(kick.EVENTOS.every(e => suscripciones.some(x => x.event === e.name)),
       'las del chat quedaron creadas');
+    /* Y de a una: el follow que Kick rechaza no se lleva puestos los
+       canjes ni las subs, y el motivo queda para mostrarlo. */
+    const escucha = chat.estadoActividad(CANAL).kick;
+    assert.deepEqual(escucha.fallaron.map(f => f.evento), ['channel.followed']);
+    assert.match(escucha.fallaron[0].motivo, /400/);
+    assert.ok(escucha.ok.includes('channel.reward.redemption.updated'));
+    assert.ok(suscripciones.some(x => x.event === 'channel.reward.redemption.updated'));
   } finally {
     rechazaActividad = false;
   }

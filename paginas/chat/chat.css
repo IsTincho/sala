@@ -890,3 +890,11 @@ select:focus-visible{
 .item-actividad .actividad-mensaje{ grid-column: 2; }
 .item-actividad .chip-red{ margin-right: 4px; }
 .nota-actividad:empty{ display: none; }
+.escucha-actividad{
+  list-style: none; margin: 0; padding: 6px 8px;
+  font-size: .85em;
+  border: 1px dashed var(--borde);
+  border-radius: 4px;
+}
+.escucha-actividad[hidden]{ display: none; }
+.escucha-actividad .mal{ color: var(--mal); }

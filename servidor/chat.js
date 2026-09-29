@@ -148,6 +148,10 @@ const nuevoCanalDeChat = slug => ({
   slug,
   kick: { ultima: null, suscripcion: 'desconocida', vivo: false, vinculado: false },
   twitch: { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false, tope: false },
+  /* Que eventos de actividad acepto cada red y cuales no, con el
+     motivo. Es lo que dice el panel: sin esto, "no llega ningun canje"
+     no se distingue de "nadie canjeo nada". null = todavia no se sabe. */
+  actividad: { kick: null, twitch: null },
   conexionTwitch: null,
   conexionIrc: null,
   vistos: new Set(),
@@ -349,8 +353,13 @@ export async function verificarKick(slug) {
    agregado. Se reintenta sola en la vuelta de los cinco minutos. */
 async function asegurarActividadKick(c, v, actuales) {
   try {
-    await kick.suscribirActividad(v.accessToken, v.usuarioId, actuales);
+    const r = await kick.suscribirActividad(v.accessToken, v.usuarioId, actuales);
+    c.actividad.kick = { ok: r.ok, fallaron: r.fallaron, sinPermiso: [] };
+    for (const f of r.fallaron) {
+      console.warn(`[chat] ${c.slug}: Kick no acepto ${f.evento}: ${f.motivo}`);
+    }
   } catch (e) {
+    c.actividad.kick = { ok: [], fallaron: [{ evento: 'todos', motivo: String(e?.message ?? e).slice(0, 160) }], sinPermiso: [] };
     console.warn(`[chat] ${c.slug}: no se pudo suscribir la actividad de Kick:`, e.message);
   }
 }
@@ -533,6 +542,11 @@ export async function conectarTwitch(slug) {
         broadcasterId: actual.usuarioId,
         scopes: actual.scopes,
       }).catch(e => ({ ok: [], sinPermiso: [], fallaron: [e?.name ?? 'Error'] }));
+      c.actividad.twitch = {
+        ok: r.ok,
+        sinPermiso: r.sinPermiso,
+        fallaron: r.fallaron.map(x => ({ evento: x, motivo: '' })),
+      };
       if (r.sinPermiso.length) {
         console.warn(`[chat] ${c.slug}: sin permiso para la actividad de Twitch ` +
                      `(${r.sinPermiso.length} eventos): hay que volver a vincular Twitch desde /panel`);
@@ -581,6 +595,7 @@ export async function desvincularTwitch(slug) {
   if (c.conexionTwitch) { c.conexionTwitch.cerrar(); c.conexionTwitch = null; }
   if (c.conexionIrc) { c.conexionIrc.cerrar(); c.conexionIrc = null; }
   c.twitch = { ultima: null, estado: 'cortado', modo: 'ninguno', vinculado: false, tope: false };
+  c.actividad.twitch = null;
   await vinculos.olvidar(c.slug, 'twitch');
   return { ok: true };
 }
@@ -608,6 +623,20 @@ export function recibirDeTwitch(slug, mensaje) {
 }
 
 /* ------------------------------------------------------- actividad */
+
+/**
+ * Que eventos de actividad esta escuchando cada red de esta sala, y
+ * por que no los que faltan. Solo para el creador: lo muestra la lista
+ * de Actividad para que "no llega nada" tenga explicacion.
+ */
+export function estadoActividad(slug) {
+  const c = canalSiHay(slug);
+  const deRed = r => (r ? { ok: [...r.ok], sinPermiso: [...r.sinPermiso], fallaron: r.fallaron.map(f => ({ ...f })) } : null);
+  return {
+    kick: { vinculado: Boolean(c?.kick.vinculado), ...(deRed(c?.actividad.kick) ?? { desconocido: true }) },
+    twitch: { vinculado: Boolean(c?.twitch.vinculado), ...(deRed(c?.actividad.twitch) ?? { desconocido: true }) },
+  };
+}
 
 /**
  * Un canje, sub o follow de cualquiera de las dos redes, ya traducido

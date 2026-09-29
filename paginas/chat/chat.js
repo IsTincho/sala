@@ -143,6 +143,7 @@
   const panelActividad     = document.getElementById('panel-actividad');
   const listaActividad     = document.getElementById('lista-actividad');
   const notaActividad      = document.getElementById('nota-actividad');
+  const escuchaActividad   = document.getElementById('escucha-actividad');
   const pestanasActividad  = document.getElementById('pestanas-actividad');
   const refrescarActividad = document.getElementById('refrescar-actividad');
   const cerrarActividad    = document.getElementById('cerrar-actividad');
@@ -436,6 +437,41 @@
     }
   }
 
+  // Qué está escuchando cada red, en palabras. Llega sólo para el
+  // creador (el servidor no se lo manda a los mods): es lo que explica
+  // por qué no aparece nada, en vez de dejar la duda de si nadie canjeó.
+  const QUE_ES = [
+    [/reward|channel_points/, 'canjes'],
+    [/subscri/, 'subs'],
+    [/follow/, 'follows'],
+  ];
+  const queEs = evento => (QUE_ES.find(([re]) => re.test(evento)) ?? [null, evento])[1];
+  const juntar = eventos => [...new Set(eventos.map(queEs))].join(', ');
+
+  function lineaEscucha(nombre, e) {
+    const li = document.createElement('li');
+    if (!e?.vinculado) { li.textContent = `${nombre}: no está vinculado.`; return li; }
+    if (e.desconocido) {
+      li.textContent = `${nombre}: todavía no se sabe (se revisa sola cada 5 minutos).`;
+      return li;
+    }
+    const partes = [];
+    if (e.ok.length) partes.push(`escuchando ${juntar(e.ok)}`);
+    if (e.sinPermiso.length) partes.push(`sin permiso para ${juntar(e.sinPermiso)}: volvé a vincular ${nombre} desde el panel`);
+    for (const f of e.fallaron) partes.push(`no acepta ${queEs(f.evento)}${f.motivo ? ` (${f.motivo})` : ''}`);
+    li.textContent = `${nombre}: ${partes.join(' · ') || 'nada'}.`;
+    if (e.sinPermiso.length || e.fallaron.length) li.className = 'mal';
+    return li;
+  }
+
+  function pintarEscucha(escucha) {
+    escuchaActividad.hidden = !escucha;
+    if (!escucha) return;
+    escuchaActividad.textContent = '';
+    escuchaActividad.appendChild(lineaEscucha('Kick', escucha.kick));
+    escuchaActividad.appendChild(lineaEscucha('Twitch', escucha.twitch));
+  }
+
   function pedirActividad() {
     return fetch(urlActividad(), { credentials: 'same-origin', cache: 'no-store' })
       .then(r => {
@@ -448,6 +484,7 @@
       })
       .then(datos => {
         itemsActividad = Array.isArray(datos?.items) ? datos.items : [];
+        pintarEscucha(datos?.escucha ?? null);
         delete notaActividad.dataset.error;
       })
       .catch(e => {

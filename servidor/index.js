@@ -2722,8 +2722,13 @@ async function apiChatActividad(url, req, res, p) {
   if (!await puedeVerActividad(req, slug)) {
     return json(res, 403, { error: 'la actividad la ven el creador y sus mods' });
   }
+  /* Que eventos escucha cada red va SOLO para el creador: son los
+     motivos de rechazo de su cuenta, no algo que un mod necesite. */
+  const dueno = await sesion.leer(req, 'dueno');
+  const esSuya = dueno && String(dueno.slug ?? '').toLowerCase() === slug;
   return json(res, 200, {
     items: await actividad.ver(slug, { clases: clasesDelPedido(url), n: url.searchParams.get('n') }),
+    ...(esSuya ? { escucha: chat.estadoActividad(slug) } : {}),
   });
 }
 
@@ -2731,6 +2736,7 @@ async function apiChatActividad(url, req, res, p) {
 async function apiChatActividadDelCreador(url, req, res) {
   return conCreador(req, res, async (slug) => json(res, 200, {
     items: await actividad.ver(slug, { clases: clasesDelPedido(url), n: url.searchParams.get('n') }),
+    escucha: chat.estadoActividad(slug),
   }));
 }
 

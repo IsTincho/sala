@@ -44,9 +44,12 @@ export const hayCredenciales = () => Boolean(CLIENT_ID && CLIENT_SECRET);
    devuelve el slug del canal, sale de /channels, y sin el slug no se
    puede saber de que sala es esta persona ni si es el dueño del
    servicio. Sin ese scope el alta no puede funcionar. */
+/* `channel:rewards:read` es por los canjes de puntos de la lista de
+   actividad. Es de lectura, y un login viejo sin el sigue andando: lo
+   unico que puede faltar son los canjes de Kick. */
 export const SCOPES = {
-  dueno: ['user:read', 'channel:read', 'chat:write', 'events:subscribe'],
-  creador: ['user:read', 'channel:read', 'chat:write', 'events:subscribe'],
+  dueno: ['user:read', 'channel:read', 'chat:write', 'events:subscribe', 'channel:rewards:read'],
+  creador: ['user:read', 'channel:read', 'chat:write', 'events:subscribe', 'channel:rewards:read'],
   espectador: ['user:read', 'chat:write'],
 };
 
@@ -448,22 +451,44 @@ export const EVENTOS_ACTIVIDAD = [
  * que eso no rompa nada.
  */
 export async function suscribirActividad(token, broadcasterUserId, actuales = []) {
-  const faltan = EVENTOS_ACTIVIDAD.filter(
-    e => !actuales.some(s => s.event === e.name && Number(s.version) === e.version),
-  );
-  if (!faltan.length) return { creadas: 0 };
-  await pedir('/events/subscriptions', {
+  const yaEstan = EVENTOS_ACTIVIDAD.filter(
+    e => actuales.some(s => s.event === e.name && Number(s.version) === e.version),
+  ).map(e => e.name);
+  const faltan = EVENTOS_ACTIVIDAD.filter(e => !yaEstan.includes(e.name));
+  if (!faltan.length) return { ok: yaEstan, fallaron: [] };
+
+  const crear = events => pedir('/events/subscriptions', {
     token,
     metodo: 'POST',
-    cuerpo: {
-      broadcaster_user_id: Number(broadcasterUserId),
-      method: 'webhook',
-      events: faltan,
-    },
+    cuerpo: { broadcaster_user_id: Number(broadcasterUserId), method: 'webhook', events },
   });
-  console.log(`[kick] suscripto a ${faltan.length} eventos de actividad del canal ${broadcasterUserId}`);
-  return { creadas: faltan.length };
+
+  try {
+    await crear(faltan);
+    console.log(`[kick] suscripto a ${faltan.length} eventos de actividad del canal ${broadcasterUserId}`);
+    return { ok: [...yaEstan, ...faltan.map(e => e.name)], fallaron: [] };
+  } catch (e) {
+    if (faltan.length === 1) {
+      return { ok: yaEstan, fallaron: [{ evento: faltan[0].name, motivo: resumirError(e) }] };
+    }
+  }
+
+  /* Todas o ninguna: si Kick rechaza una (un permiso que el token no
+     tiene, un evento que no habilita para este canal), el pedido junto
+     se cae entero. De a una, lo que se puede queda andando y lo que no
+     queda anotado con su motivo, que es lo que muestra el panel. */
+  const ok = [...yaEstan];
+  const fallaron = [];
+  for (const e of faltan) {
+    try { await crear([e]); ok.push(e.name); }
+    catch (err) { fallaron.push({ evento: e.name, motivo: resumirError(err) }); }
+  }
+  return { ok, fallaron };
 }
+
+/* El motivo de un rechazo, corto y sin nada del pedido: el mensaje de
+   `pedir` trae el cuerpo que contesto Kick, nunca el token. */
+const resumirError = e => String(e?.message ?? e ?? '').replace(/\s+/g, ' ').slice(0, 160);
 
 export async function listarSuscripciones(token, broadcasterUserId) {
   const q = broadcasterUserId

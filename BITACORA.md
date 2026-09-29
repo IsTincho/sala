@@ -64,6 +64,21 @@ curl -X POST "localhost:8778/api/prueba/webhook?tipo=channel.reward.redemption.u
   -d '{"id":"c1","status":"pending","redeemer":{"username":"Jaskier"},"reward":{"title":"Pedir un tema","cost":1000}}'
 ```
 
+### Después del primer deploy: "no veo los eventos"
+
+El dueño revinculó Twitch y no vio nada, y desde afuera no había forma de saber si era "nadie
+canjeó" o "Kick/Twitch rechazó la suscripción": las dos se ven igual. Tres cambios:
+
+- **La lista de Actividad le dice al creador qué escucha cada red** (`escucha`, sólo en su
+  respuesta, nunca en la de un mod): "Kick: escuchando canjes, subs, follows", o "no acepta
+  canjes (motivo)", o "sin permiso: volvé a vincular".
+- **Kick de a una si el pedido junto falla.** Kick crea las de un pedido todas o ninguna: un
+  solo evento rechazado dejaba sin subs ni follows. Ahora lo que se puede queda andando y lo
+  que no queda anotado con el motivo que dio Kick.
+- **El login del creador con Kick pide `channel:rewards:read`**, por si Kick lo exige para
+  suscribirse a los canjes con token de usuario (CosasStream se suscribe con token de app y
+  no lo sabemos seguro: la documentación de Kick no se pudo consultar desde acá).
+
 ### Pendiente
 
 - **Sin verificar contra las plataformas de verdad:** que Kick acepte los cinco eventos nuevos

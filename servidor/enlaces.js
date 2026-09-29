@@ -250,7 +250,79 @@ async function vistaDeYoutube(url) {
   };
 }
 
+/* ---------------------------------------------- los medios de un tweet
+
+   El oEmbed de Twitter trae el texto y el autor, pero de la foto o el
+   GIF manda solo un "pic.twitter.com/..." pegado al texto. Los medios
+   salen de `cdn.syndication.twimg.com/tweet-result`, que es de donde
+   saca los datos el propio widget de insercion de Twitter.
+
+   OJO: ese endpoint NO esta documentado. Es de Twitter y no de un
+   tercero (no pasa nada por fxtwitter ni parecidos), pero puede cambiar
+   sin aviso. Por eso va primero y con respaldo: si falla o contesta
+   algo que no se entiende, la tarjeta sale como antes, del oEmbed, con
+   el texto y sin medios. El `token` es el calculo que hace el widget a
+   partir del id; sin el, el endpoint contesta vacio. */
+
+const idDeTweet = url => /\/status\/(\d+)/.exec(new URL(url).pathname)?.[1] ?? '';
+const tokenDeTweet = id => ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+const deTwimg = s => {
+  try {
+    const u = new URL(String(s ?? ''));
+    return u.protocol === 'https:' && /(^|\.)twimg\.com$/.test(u.hostname) ? u.href : '';
+  } catch { return ''; }
+};
+
+/* De un video, el mp4 mas liviano que se vea bien: en un chat no hace
+   falta el de 1080p, y un GIF de Twitter trae una sola variante. */
+function mp4De(medio) {
+  const variantes = (medio?.video_info?.variants ?? [])
+    .filter(v => v?.content_type === 'video/mp4' && deTwimg(v.url));
+  if (!variantes.length) return '';
+  const orden = variantes.slice().sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
+  const bueno = orden.filter(v => (v.bitrate ?? 0) <= 2_200_000).pop() ?? orden[0];
+  return deTwimg(bueno.url);
+}
+
+/** Los medios de un tweet ya parseado: hasta cuatro, solo de twimg.com. */
+export function mediosDeTweet(d) {
+  const lista = Array.isArray(d?.mediaDetails) ? d.mediaDetails : [];
+  return lista.map(m => {
+    const poster = deTwimg(m?.media_url_https);
+    if (m?.type === 'photo') return poster ? { tipo: 'imagen', url: poster, poster: '' } : null;
+    if (m?.type === 'animated_gif' || m?.type === 'video') {
+      const url = mp4De(m);
+      return url ? { tipo: m.type === 'video' ? 'video' : 'gif', url, poster } : null;
+    }
+    return null;
+  }).filter(Boolean).slice(0, 4);
+}
+
+async function vistaDeTwitterConMedios(url) {
+  const id = idDeTweet(url);
+  if (!id) return null;
+  const r = await pedir(`https://cdn.syndication.twimg.com/tweet-result?lang=es&id=${id}&token=${tokenDeTweet(id)}`);
+  const d = JSON.parse(r.cuerpo);
+  if (!d || d.__typename === 'TweetTombstone' || typeof d.text !== 'string') return null;
+  /* El texto trae al final los t.co de los medios y de los links: con
+     los medios a la vista, sobran. */
+  const texto = d.text.replace(/(\s*https:\/\/t\.co\/\w+)+\s*$/, '');
+  const nombre = recortar(d.user?.name ?? '', 80);
+  const usuario = recortar(d.user?.screen_name ?? '', 40);
+  return {
+    tipo: 'tweet', url, sitio: usuario ? `X · @${usuario}` : 'X',
+    titulo: nombre, descripcion: recortar(texto, 280),
+    imagen: '', autor: nombre,
+    medios: mediosDeTweet(d),
+  };
+}
+
 async function vistaDeTwitter(url) {
+  try {
+    const conMedios = await vistaDeTwitterConMedios(url);
+    if (conMedios) return conMedios;
+  } catch { /* se cae al oEmbed, que es la via documentada */ }
+
   /* El oEmbed de Twitter solo entiende twitter.com, aunque el link sea de x.com */
   const deTwitter = url.replace(/^https?:\/\/(www\.|mobile\.)?x\.com\//i, 'https://twitter.com/');
   const r = await pedir(`https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=${encodeURIComponent(deTwitter)}`);

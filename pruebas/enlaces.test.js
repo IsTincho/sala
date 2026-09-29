@@ -115,8 +115,57 @@ test('un tweet de x.com sale con su texto, sin el html que arma Twitter', async 
   assert.equal(v.tipo, 'tweet');
   assert.equal(v.titulo, 'Kick');
   assert.equal(v.descripcion, 'nuevo link y & mas');
-  assert.match(decodeURIComponent(pedidos[0]), /url=https:\/\/twitter\.com\/KickStreaming\/status\/123/,
-    'el oEmbed de Twitter solo entiende twitter.com');
+  assert.match(pedidos[0], /cdn\.syndication\.twimg\.com\/tweet-result\?.*id=123/, 'primero los medios');
+  assert.match(decodeURIComponent(pedidos[1]), /url=https:\/\/twitter\.com\/KickStreaming\/status\/123/,
+    'si esa via no contesta algo que se entienda, el oEmbed; que solo entiende twitter.com');
+});
+
+test('un tweet con GIF, foto y video trae sus medios, solo de twimg.com y sin los t.co del final', async () => {
+  const pedidos = [];
+  enlaces.fijarPedidor(async url => {
+    pedidos.push(url);
+    return { cuerpo: JSON.stringify({
+      __typename: 'Tweet',
+      text: "e jarvi' que camiseta https://t.co/wZsyi725ww",
+      user: { name: 'sebaaa', screen_name: 'sebaaguii' },
+      mediaDetails: [
+        { type: 'animated_gif', media_url_https: 'https://pbs.twimg.com/tweet_video_thumb/a.jpg',
+          video_info: { variants: [{ content_type: 'video/mp4', bitrate: 0, url: 'https://video.twimg.com/tweet_video/a.mp4' }] } },
+        { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/b.jpg' },
+        { type: 'video', media_url_https: 'https://pbs.twimg.com/c.jpg', video_info: { variants: [
+          { content_type: 'application/x-mpegURL', url: 'https://video.twimg.com/c.m3u8' },
+          { content_type: 'video/mp4', bitrate: 256000, url: 'https://video.twimg.com/c-chico.mp4' },
+          { content_type: 'video/mp4', bitrate: 2176000, url: 'https://video.twimg.com/c-medio.mp4' },
+          { content_type: 'video/mp4', bitrate: 10368000, url: 'https://video.twimg.com/c-enorme.mp4' },
+        ] } },
+        { type: 'photo', media_url_https: 'https://malicioso.com/d.jpg' },
+      ],
+    }) };
+  });
+  const v = await enlaces.vistaPrevia('https://x.com/sebaaguii/status/2103631863860371523?s=20');
+  assert.equal(pedidos.length, 1, 'con los medios alcanza: no hace falta el oEmbed');
+  assert.match(pedidos[0], /token=[0-9a-z]+/);
+  assert.equal(v.titulo, 'sebaaa');
+  assert.equal(v.sitio, 'X · @sebaaguii');
+  assert.equal(v.descripcion, "e jarvi' que camiseta");
+  assert.deepEqual(v.medios, [
+    { tipo: 'gif', url: 'https://video.twimg.com/tweet_video/a.mp4', poster: 'https://pbs.twimg.com/tweet_video_thumb/a.jpg' },
+    { tipo: 'imagen', url: 'https://pbs.twimg.com/media/b.jpg', poster: '' },
+    { tipo: 'video', url: 'https://video.twimg.com/c-medio.mp4', poster: 'https://pbs.twimg.com/c.jpg' },
+  ], 'el video de calidad razonable y no el enorme; la foto de otro dominio, afuera');
+});
+
+test('un tweet borrado cae al oEmbed', async () => {
+  let veces = 0;
+  enlaces.fijarPedidor(async url => {
+    veces++;
+    if (url.includes('syndication')) return { cuerpo: JSON.stringify({ __typename: 'TweetTombstone' }) };
+    return { cuerpo: JSON.stringify({ author_name: 'Alguien', html: '<blockquote><p>texto</p></blockquote>' }) };
+  });
+  const v = await enlaces.vistaPrevia('https://twitter.com/a/status/9');
+  assert.equal(veces, 2);
+  assert.equal(v.descripcion, 'texto');
+  assert.equal(v.medios, undefined);
 });
 
 test('si falla, no hay vista y no tira; y no se vuelve a pedir enseguida', async () => {
@@ -206,4 +255,24 @@ test('la tarjeta se pinta con texto y descarta un link que no es http', () => {
   S.agregarVistas(li, [{ url: 'https://otra.com', titulo: 'otra' }]);
   assert.equal(todos(li, 'A').filter(a => String(a.className).includes('vista-enlace')).length, 1,
     'una sola vez por mensaje: el evento puede llegar despues de que el mensaje ya la traia');
+});
+
+test('en la pagina, el GIF arranca solo y mudo, el video espera el play, y los dos quedan fuera del link', () => {
+  const S = renderizador();
+  const li = S.crear(mensajeCon('https://x.com/a/status/1', {
+    enlaces: [{ tipo: 'tweet', url: 'https://x.com/a/status/1', sitio: 'X', titulo: 'a', descripcion: 'b', medios: [
+      { tipo: 'gif', url: 'https://video.twimg.com/a.mp4', poster: 'https://pbs.twimg.com/a.jpg' },
+      { tipo: 'video', url: 'https://video.twimg.com/b.mp4', poster: 'https://pbs.twimg.com/b.jpg' },
+      { tipo: 'imagen', url: 'javascript:alert(1)' },
+    ] }],
+  }));
+  const [gif, video] = todos(li, 'VIDEO');
+  assert.equal(todos(li, 'VIDEO').length, 2);
+  assert.equal(gif.autoplay && gif.loop && gif.muted, true);
+  assert.equal(video.autoplay, undefined);
+  assert.equal(video.controls, true);
+  assert.equal(video.preload, 'none', 'un video no se baja hasta que alguien le da play');
+  const dentroDeUnLink = todos(li, 'A').some(a => todos(a, 'VIDEO').length);
+  assert.equal(dentroDeUnLink, false, 'tocar play no puede abrir la publicacion');
+  assert.equal(todos(li, 'IMG').filter(i => String(i.src).startsWith('javascript')).length, 0);
 });

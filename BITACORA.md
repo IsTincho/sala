@@ -40,6 +40,22 @@ etiqueta de texto, como hasta ahora.
   con las mismas reglas; 5 s y 512 KB de tope; cuatro pedidos en vuelo; caché de 6 h (10 min
   para lo que falló); dos links por mensaje. `VISTA_PREVIA=0` lo apaga sin tocar código.
 
+### Los GIF, fotos y videos de los tweets
+
+Primera prueba en vivo: la tarjeta del tweet salía con el texto y un `pic.twitter.com/...`, sin
+el GIF. El oEmbed de Twitter no trae medios. Ahora se piden primero a
+`cdn.syndication.twimg.com/tweet-result`, que es de donde saca los datos el propio widget de
+inserción de Twitter. **No está documentado**: es de Twitter y no de un tercero, pero puede
+cambiar sin aviso, así que va con respaldo. Si falla o contesta algo raro (un tweet borrado), la
+tarjeta sale del oEmbed como antes: con texto y sin medios.
+
+- Solo URLs `https` de `twimg.com`; hasta cuatro medios; del video, el mp4 más liviano que se
+  vea bien (≤ 2,2 Mbps), no el de 1080p.
+- **El GIF es un mp4 mudo en loop que arranca solo**, como en Twitter. **El video lleva
+  controles y `preload="none"`**: el chat no descarga videos por su cuenta.
+- Los medios van **afuera** del link de la tarjeta: con el video adentro de un `<a>`, tocar
+  play abría el tweet.
+
 ### Pendiente
 
 - **Sin probar contra las redes de verdad**: desde el entorno donde se hizo no hay salida a

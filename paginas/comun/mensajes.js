@@ -268,7 +268,62 @@
       cuerpo.appendChild(parte);
     }
     a.appendChild(cuerpo);
-    return a;
+
+    const medios = (Array.isArray(v.medios) ? v.medios : []).map(crearMedio).filter(Boolean);
+    if (!medios.length) return a;
+    /* Los medios van AFUERA del link: un <video> con controles adentro
+       de un <a> abre la publicacion cada vez que alguien toca play. */
+    const tarjeta = document.createElement('div');
+    tarjeta.className = 'vista-con-medios';
+    const fila = document.createElement('div');
+    fila.className = `vista-medios vista-medios-${medios.length}`;
+    medios.forEach(m => fila.appendChild(m));
+    tarjeta.appendChild(a);
+    tarjeta.appendChild(fila);
+    return tarjeta;
+  }
+
+  /* Una foto, un GIF o un video de la publicacion. Las URLs las arma
+     el servidor (solo de twimg.com); igual se exige https.
+
+     En Twitter un GIF es un video mp4 corto: se muestra como tal, mudo,
+     en loop y arrancando solo, que es como se ve alla. Un video de
+     verdad lleva controles y no baja nada hasta que alguien le da play:
+     el chat no puede ponerse a descargar videos solo. */
+  function crearMedio(m) {
+    const url = typeof m?.url === 'string' && m.url.startsWith('https://') ? m.url : '';
+    if (!url) return null;
+    const poster = typeof m.poster === 'string' && m.poster.startsWith('https://') ? m.poster : '';
+    if (m.tipo === 'imagen') {
+      const img = document.createElement('img');
+      img.className = 'vista-medio';
+      img.src = url;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      return img;
+    }
+    if (m.tipo !== 'gif' && m.tipo !== 'video') return null;
+    const video = document.createElement('video');
+    video.className = 'vista-medio';
+    video.src = url;
+    if (poster) video.poster = poster;
+    video.playsInline = true;
+    video.muted = true;
+    if (m.tipo === 'gif') {
+      video.autoplay = true;
+      video.loop = true;
+      video.preload = 'auto';
+      /* el atributo ademas de la propiedad: sin `muted` en el HTML, varios
+         navegadores no dejan arrancar solo a un video */
+      video.setAttribute?.('muted', '');
+      video.setAttribute?.('autoplay', '');
+      video.setAttribute?.('loop', '');
+    } else {
+      video.controls = true;
+      video.preload = 'none';
+    }
+    return video;
   }
 
   /** Le agrega a un <li> de mensaje las tarjetas de sus links, una sola vez. */
@@ -385,7 +440,10 @@
       if (!img || img.tagName !== 'IMG') return;
       /* La imagen de una vista previa que no carga (se borro el post,
          el CDN la vencio) se saca: la tarjeta sigue con su texto. */
-      if (img.classList.contains('vista-imagen')) { img.parentElement?.removeChild(img); return; }
+      if (img.classList.contains('vista-imagen') || img.classList.contains('vista-medio')) {
+        img.parentElement?.removeChild(img);
+        return;
+      }
       if (!img.classList.contains('insignia')) return;
       const padre = img.parentElement;
       // ya lo cambio otro, o el mensaje ya salio de la lista

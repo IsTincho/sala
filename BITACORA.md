@@ -4,6 +4,50 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-29 — Insignias de Kick con dibujo propio, y los links clickeables con vista previa
+
+**1.103 pruebas en verde**, 14 nuevas (`pruebas/enlaces.test.js` y dos en
+`pruebas/insignias.test.js`). Los 14 cancelados de `insignias.test.js` son los de antes.
+
+### Insignias de Kick: un set propio
+
+El dueño lo pidió (el 23/09 había rechazado reusar el pixel art del repo hermano). Diez SVG en
+`paginas/comun/insignias/kick/`: streamer, moderador, VIP, OG, fundador, sub, regala subs,
+verificado, staff y sidekick. Cuadrado redondeado de color y el ícono en blanco, **dibujado con
+trazos y sin texto** (una fuente que falta cambia el dibujo según la máquina). No son las
+imágenes de Kick ni se bajan de Kick.
+
+`insignias.js` casa el tipo con su archivo contra una **lista explícita**: un tipo que llega del
+webhook no puede convertirse en un camino de archivo. Un tipo nuevo que invente Kick sale con su
+etiqueta de texto, como hasta ahora.
+
+### Links: clickeables siempre, y con vista previa armada por el servidor
+
+- **Clickeables**, en otra pestaña, con `noopener noreferrer`. Solo `http`/`https`: un
+  `javascript:` escrito en el chat se queda como texto.
+- **La vista previa la arma el servidor, una vez, y no el navegador de cada uno.** La
+  alternativa era meter los scripts de inserción de Twitter e Instagram en la página: código de
+  terceros con su rastreo corriendo en el chat de cada espectador. Acá la página recibe datos
+  planos (sitio, título, texto, imagen) y los pinta con `textContent`.
+- **YouTube y X por su oEmbed público** (título y autor de verdad; de X, el texto del tweet).
+  **El resto por Open Graph** (Instagram, TikTok, cualquier página). Imágenes solo `https`.
+- **El mensaje no espera a la vista previa**: sale al toque, y la tarjeta llega después como
+  un evento `enlace` con la `red` del mensaje, para que pase por el mismo filtro. Se pega
+  además al mensaje del buffer: quien entra tarde la recibe adentro.
+- **Las defensas, porque el servidor abre URLs que escribe cualquiera:** sin IPs privadas ni
+  metadatos de la nube, **chequeado en el `lookup` del socket** (el mismo resultado con el que
+  conecta, así no hay DNS rebinding); puertos 80/443; tres redirecciones como mucho, cada una
+  con las mismas reglas; 5 s y 512 KB de tope; cuatro pedidos en vuelo; caché de 6 h (10 min
+  para lo que falló); dos links por mensaje. `VISTA_PREVIA=0` lo apaga sin tocar código.
+
+### Pendiente
+
+- **Sin probar contra las redes de verdad**: desde el entorno donde se hizo no hay salida a
+  YouTube, X ni Instagram. Lo más dudoso es Instagram: a veces le contesta un muro de login a
+  quien no es un navegador con sesión, y ahí el link queda sin tarjeta (sigue siendo clickeable).
+
+---
+
 ## 2026-09-29 — Canjes, subs y follows en el chat, y la lista para el creador y sus mods
 
 **1.086 pruebas en verde**, con 16 nuevas (`pruebas/actividad.test.js` y una en

@@ -357,9 +357,9 @@ test('una URL que no es del CDN de Twitch se descarta', async () => {
   assert.deepEqual(urls(m), ['', '', '', url2x('mod-de-verdad')]);
 });
 
-/* ======================================= Kick no pide nada y no inventa */
+/* ================================ Kick: el set propio, sin pedir nada */
 
-test('un mensaje de Kick sale con su etiqueta de texto y sin pedir nada', async () => {
+test('un mensaje de Kick sale con el set propio y sin pedir nada', async () => {
   arrancarDeCero();
   identidades.set('istincho', '4242');
   porCanal.set('4242', [juego('subscriber', { 0: 'sub-del-canal' })]);
@@ -368,16 +368,35 @@ test('un mensaje de Kick sale con su etiqueta de texto y sin pedir nada', async 
     { type: 'broadcaster', text: 'Broadcaster' },
     { type: 'moderator', text: 'Moderator' },
     { type: 'verified', text: 'Verified channel' },
+    { type: 'algo_nuevo_de_kick', text: 'Nuevo' },
+    { type: '../../servidor/index', text: 'Travieso' },
   ]), 'istincho');
   await insignias.reposo();
 
-  /* Kick no publica las imagenes de sus insignias por ninguna API
-     documentada, y el dueño no quiere iconos inventados (2026-09-23).
-     Se quedan como estaban: con su nombre. */
-  assert.deepEqual(urls(m), ['', '', '']);
+  /* Kick no publica las imagenes de sus insignias: las de aca son un
+     set propio que el dueño pidio (2026-09-29). Un tipo sin dibujo sale
+     con su nombre, y un tipo no puede convertirse en un camino. */
+  assert.deepEqual(urls(m), [
+    '/comun/insignias/kick/broadcaster.svg',
+    '/comun/insignias/kick/moderator.svg',
+    '/comun/insignias/kick/verified.svg',
+    '', '',
+  ]);
   assert.deepEqual(m.insignias.map(i => i.texto),
-    ['Broadcaster', 'Moderator', 'Verified channel']);
+    ['Broadcaster', 'Moderator', 'Verified channel', 'Nuevo', 'Travieso'],
+    'el nombre se queda: es el alt y el respaldo si la imagen no carga');
   assert.deepEqual(pedidos, [], 'un mensaje de Kick no puede generar un pedido a Twitch');
+});
+
+test('cada dibujo del set de Kick existe como archivo', async () => {
+  const fsp = await import('node:fs/promises');
+  const { fileURLToPath } = await import('node:url');
+  const raiz = fileURLToPath(new URL('../paginas', import.meta.url));
+  for (const tipo of ['broadcaster', 'moderator', 'vip', 'og', 'founder', 'subscriber',
+                      'sub_gifter', 'verified', 'staff', 'sidekick']) {
+    const svg = await fsp.readFile(raiz + insignias.urlInsigniaKick(tipo), 'utf8');
+    assert.match(svg, /^<svg [^>]*viewBox="0 0 36 36"/, `${tipo}.svg`);
+  }
 });
 
 test('un creador sin Twitch vinculado no le pide nada a Helix', async () => {

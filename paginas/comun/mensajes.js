@@ -26,6 +26,7 @@
      recortarTexto(texto, limite)
      crearActividad(datos)        -> un <li> de canje, sub o follow
      escribirFrase(nodo, datos)   -> la frase de la actividad, en un nodo
+     agregarVistas(li, enlaces)   -> las tarjetas de los links de un mensaje
 
    Se carga con <script src="comun/mensajes.js"> antes del script de
    la pagina, igual que comun/bus.js.
@@ -209,12 +210,83 @@
   // cortar sobre [...texto], nunca sobre el string crudo, porque un
   // emoji antes de un emote desalinea los indices si se usan unidades
   // UTF-16.
+  /* ------------------------------------------------------ los links
+
+     Un link del texto sale clickeable, en otra pestaña. Solo con
+     http/https: un `javascript:` o un `data:` escritos en el chat se
+     quedan como texto. La regla es la misma que usa el servidor para
+     buscar la vista previa (servidor/enlaces.js). */
+  const RE_ENLACE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+  const RE_COLA = /[),.;:!?'"\]}]+$/;
+
+  function enlace(href, texto, clase) {
+    const a = document.createElement('a');
+    a.className = clase;
+    a.href = href;
+    a.target = '_blank';
+    /* noopener: la pagina de afuera no puede tocar esta pestaña.
+       noreferrer: no se entera de que venis del chat. nofollow ugc:
+       es contenido de terceros. */
+    a.rel = 'noopener noreferrer nofollow ugc';
+    if (texto !== undefined) a.textContent = texto;
+    return a;
+  }
+
+  function agregarTextoConEnlaces(contenedor, texto) {
+    let desde = 0;
+    for (const m of texto.matchAll(RE_ENLACE)) {
+      const url = m[0].replace(RE_COLA, '');
+      if (m.index > desde) contenedor.appendChild(document.createTextNode(texto.slice(desde, m.index)));
+      contenedor.appendChild(enlace(url, url, 'enlace'));
+      desde = m.index + url.length;
+    }
+    if (desde < texto.length) contenedor.appendChild(document.createTextNode(texto.slice(desde)));
+  }
+
+  /* La tarjeta de un link: la arma el servidor (titulo, texto, imagen)
+     y aca solo se pinta, todo con textContent. Es un link entero: se
+     toca en cualquier lado y abre la publicacion. */
+  function crearVistaPrevia(v) {
+    if (!v || !/^https?:\/\//i.test(String(v.url ?? ''))) return null;
+    const a = enlace(v.url, undefined, `vista-enlace vista-${String(v.tipo ?? 'pagina')}`);
+    if (typeof v.imagen === 'string' && v.imagen.startsWith('https://')) {
+      const img = document.createElement('img');
+      img.className = 'vista-imagen';
+      img.src = v.imagen;
+      img.alt = '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      a.appendChild(img);
+    }
+    const cuerpo = document.createElement('span');
+    cuerpo.className = 'vista-cuerpo';
+    for (const [clase, valor] of [['vista-sitio', v.sitio], ['vista-titulo', v.titulo], ['vista-descripcion', v.descripcion]]) {
+      if (!valor) continue;
+      const parte = document.createElement('span');
+      parte.className = clase;
+      parte.textContent = String(valor);
+      cuerpo.appendChild(parte);
+    }
+    a.appendChild(cuerpo);
+    return a;
+  }
+
+  /** Le agrega a un <li> de mensaje las tarjetas de sus links, una sola vez. */
+  function agregarVistas(li, enlaces) {
+    if (!li || !Array.isArray(enlaces) || !enlaces.length || li.dataset.conVistas) return;
+    li.dataset.conVistas = '1';
+    const caja = document.createElement('div');
+    caja.className = 'vistas-enlace';
+    enlaces.map(crearVistaPrevia).filter(Boolean).forEach(t => caja.appendChild(t));
+    li.appendChild(caja);
+  }
+
   function agregarTextoConEmotes(contenedor, texto, emotes) {
     const puntos = [...texto];
     let cursor = 0;
     (emotes || []).forEach(emote => {
       if (emote.inicio > cursor) {
-        contenedor.appendChild(document.createTextNode(puntos.slice(cursor, emote.inicio).join('')));
+        agregarTextoConEnlaces(contenedor, puntos.slice(cursor, emote.inicio).join(''));
       }
       const alt = puntos.slice(emote.inicio, emote.fin).join('');
       const img = document.createElement('img');
@@ -227,7 +299,7 @@
       cursor = emote.fin;
     });
     if (cursor < puntos.length) {
-      contenedor.appendChild(document.createTextNode(puntos.slice(cursor).join('')));
+      agregarTextoConEnlaces(contenedor, puntos.slice(cursor).join(''));
     }
   }
 
@@ -311,6 +383,9 @@
     lista.addEventListener('error', ev => {
       const img = ev.target;
       if (!img || img.tagName !== 'IMG') return;
+      /* La imagen de una vista previa que no carga (se borro el post,
+         el CDN la vencio) se saca: la tarjeta sigue con su texto. */
+      if (img.classList.contains('vista-imagen')) { img.parentElement?.removeChild(img); return; }
       if (!img.classList.contains('insignia')) return;
       const padre = img.parentElement;
       // ya lo cambio otro, o el mensaje ya salio de la lista
@@ -413,6 +488,10 @@
     textoEl.className = 'texto-mensaje';
     agregarTextoConEmotes(textoEl, datos.texto ?? '', datos.emotes);
     li.appendChild(textoEl);
+    /* Si la vista previa ya estaba cuando el mensaje llego (quien entra
+       tarde lo recibe del buffer con `enlaces` adentro). Si no, la agrega
+       la pagina cuando llega el evento `enlace`. */
+    agregarVistas(li, datos.enlaces);
 
     return li;
   }
@@ -504,6 +583,6 @@
 
   window.SalaMensajes = {
     crear, vigilarInsignias, coloresDeUsuario, pintarNombre, recortarTexto,
-    crearActividad, escribirFrase, fraseActividad,
+    crearActividad, escribirFrase, fraseActividad, agregarVistas,
   };
 })();

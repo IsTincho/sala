@@ -898,3 +898,43 @@ select:focus-visible{
 }
 .escucha-actividad[hidden]{ display: none; }
 .escucha-actividad .mal{ color: var(--mal); }
+
+/* ---------- links y su vista previa ---------- */
+.texto-mensaje a.enlace{
+  color: var(--acento);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+.vistas-enlace{ display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.vista-enlace{
+  display: flex;
+  gap: 10px;
+  max-width: 34rem;
+  padding: 8px;
+  color: var(--texto);
+  text-decoration: none;
+  background: var(--fondo-tarjeta);
+  border: 1px solid var(--borde);
+  border-left: 3px solid var(--acento);
+  border-radius: 6px;
+}
+.vista-enlace:hover{ background: var(--chat-fila-hover); }
+.vista-tweet{ border-left-color: #1d9bf0; }
+.vista-video{ border-left-color: #ff0033; }
+.vista-imagen{
+  flex: none;
+  width: 96px; height: 72px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--fondo);
+}
+.vista-video .vista-imagen{ width: 128px; }
+.vista-cuerpo{ display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vista-sitio{ font-size: .75em; color: var(--texto-tenue); text-transform: uppercase; letter-spacing: .04em; }
+.vista-titulo{ font-weight: 700; overflow-wrap: anywhere; }
+.vista-descripcion{
+  font-size: .9em;
+  color: var(--texto-tenue);
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}

@@ -95,6 +95,7 @@ import * as actividad from './actividad.js';
 import * as canales from './canales.js';
 import * as colores from './colores.js';
 import * as emotes from './emotes.js';
+import * as enlaces from './enlaces.js';
 import { numeroDeEntorno } from './entorno.js';
 import * as envio from './envio.js';
 import * as insignias from './insignias.js';
@@ -426,13 +427,9 @@ export function recibirDeKick(slug, evento, cuerpo) {
     if (!mensaje) return { hecho: 'payload raro' };
     c.kick.ultima = new Date();
     emotes.resolver(mensaje, c.slug);
-    /* ACA NO VA `insignias.resolver()`, y no es un olvido: Kick no
-       publica las imagenes de sus insignias por ninguna API
-       documentada, asi que no hay nada que resolver y la llamada seria
-       una linea muerta que ninguna prueba puede vigilar.
-       EL DIA QUE KICK LAS PUBLIQUE hay que volver a ponerla, o las
-       insignias se van a ver por el camino de Twitch y no por este.
-       Esta anotado tambien arriba de `resolver()` en insignias.js. */
+    /* Kick no publica las imagenes de sus insignias: las de aca son un
+       set propio (ver el encabezado de insignias.js). */
+    insignias.resolver(mensaje, c.slug);
     /* El color propio de quien escribio, si eligio uno en esta
        plataforma. Va en los DOS embudos, como `emotes.resolver`: el
        color es de la persona y no de la red. */
@@ -440,6 +437,7 @@ export function recibirDeKick(slug, evento, cuerpo) {
     /* Quien es mod lo dice la insignia de cada mensaje: ver actividad.js */
     actividad.mirarInsignias(c.slug, mensaje);
     canales.recordar(c.slug, mensaje);
+    adjuntarEnlaces(c.slug, mensaje);
     return { hecho: 'chat', mensaje };
   }
 
@@ -619,7 +617,37 @@ export function recibirDeTwitch(slug, mensaje) {
   colores.pintar(mensaje);
   actividad.mirarInsignias(c.slug, mensaje);
   canales.recordar(c.slug, mensaje);
+  adjuntarEnlaces(c.slug, mensaje);
   return true;
+}
+
+/* --------------------------------------------------------- links */
+
+/* Se pueden apagar (VISTA_PREVIA=0) sin tocar codigo: el servidor sale
+   a pedir paginas de terceros, y el dia que eso moleste tiene que poder
+   cortarse de una. Los links siguen siendo clickeables igual. */
+const VISTA_PREVIA = (process.env.VISTA_PREVIA ?? '1') !== '0';
+
+/**
+ * La vista previa de los links de un mensaje (un tweet, un video, un
+ * post). El mensaje YA SALIO: esto no lo puede demorar. Cuando la vista
+ * esta, se le pega al mensaje guardado en el buffer (quien llegue
+ * tarde la recibe adentro del mensaje) y se difunde aparte para los que
+ * ya lo tienen en pantalla, con la `red` del mensaje para que pase por
+ * el mismo filtro que el.
+ */
+function adjuntarEnlaces(slug, mensaje) {
+  if (!VISTA_PREVIA || !mensaje?.id) return;
+  const urls = enlaces.enlacesDe(mensaje.texto);
+  if (!urls.length) return;
+  Promise.all(urls.map(u => enlaces.vistaPrevia(u)))
+    .then(vistas => {
+      const buenas = vistas.filter(Boolean);
+      if (!buenas.length) return;
+      mensaje.enlaces = buenas;
+      canales.difundir(slug, { tipo: 'enlace', red: mensaje.red, mensajeId: mensaje.id, enlaces: buenas });
+    })
+    .catch(() => { /* vistaPrevia no tira; esto es por las dudas */ });
 }
 
 /* ------------------------------------------------------- actividad */

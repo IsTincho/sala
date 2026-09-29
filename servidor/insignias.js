@@ -1,5 +1,5 @@
 /* ============================================================
-   La IMAGEN de cada insignia del chat. Hoy: solo Twitch.
+   La IMAGEN de cada insignia del chat: las de Twitch y un set propio para Kick.
 
    El formato unico ya traia el nombre de la insignia ("Broadcaster",
    "Moderator", "Verified channel") y la pagina lo dibujaba como una
@@ -28,28 +28,20 @@
    not access undocumented Program Materials ... without Kick's prior
    written permission", citado en INVESTIGACION-EMOTES.md).
 
-   Se probo el plan B —dibujos propios, como los que tiene el repo
-   hermano para su overlay— y EL DUEÑO LO RECHAZO (2026-09-23): no
-   quiere iconos inventados en su chat. Asi que las insignias de Kick
-   se quedan como estan, con su etiqueta de texto, hasta que haya una
-   fuente oficial o hasta que alguien diseñe un set aparte y el dueño
-   lo apruebe.
+   Se probo primero reusar los dibujos del repo hermano (pixel art de
+   su overlay) y el dueño los rechazo (2026-09-23). El 2026-09-29 pidio
+   un SET PROPIO, diseñado para este chat: `paginas/comun/insignias/kick/`,
+   un SVG por tipo, servidos por este mismo servidor. No son las
+   imagenes de Kick ni se bajan de Kick: son iconos nuestros con el
+   significado de cada insignia.
 
-   POR ESO ACA NO HAY NINGUNA RAMA PARA KICK. No es un olvido ni un
-   "todavia no": las insignias de Kick salen con `url: ''`, que es lo
-   que la pagina lee como "mostrame el texto", y `chat.js` ni siquiera
-   llama a `resolver()` en el embudo de Kick — seria una linea muerta
-   que ninguna prueba puede vigilar.
+   La rama de Kick de `conImagenes()` no pide nada a nadie ni cachea:
+   el tipo que tiene dibujo se casa con su archivo y listo. El que no
+   tiene (uno nuevo que invente Kick) sale con `url: ''`, o sea con la
+   etiqueta de texto de siempre.
 
-   EL DIA QUE KICK PUBLIQUE UN ENDPOINT hay que hacer DOS cosas, y con
-   una sola las insignias se ven por una red y no por la otra:
-
-     1. agregar la rama de Kick en `conImagenes()`, aca abajo, y
-     2. volver a poner `insignias.resolver(mensaje, c.slug)` en
-        `recibirDeKick`, en chat.js, donde quedo el comentario.
-
-   El resto —la cache, los tres vencimientos, el respaldo a texto— ya
-   esta y no distingue redes.
+   EL DIA QUE KICK PUBLIQUE UN ENDPOINT de insignias, la rama de Kick
+   es el unico lugar que hay que cambiar.
 
    ---------------------------------------------------------------
    POR QUE ESTO ES OTRO MODULO Y NO UN PEDAZO DE emotes.js
@@ -453,6 +445,23 @@ export function resolver(mensaje, slug) {
   }
 }
 
+/* Los tipos de Kick que tienen dibujo en el set propio. La lista es
+   explicita y no "lo que haya en la carpeta": un tipo que llega del
+   webhook no puede convertirse en un camino de archivo. */
+const DIBUJOS_KICK = new Set([
+  'broadcaster', 'moderator', 'vip', 'og', 'founder', 'subscriber',
+  'sub_gifter', 'verified', 'staff', 'sidekick',
+]);
+export const urlInsigniaKick = tipo => `/comun/insignias/kick/${tipo}.svg`;
+
+function conImagenesDeKick(mensaje, lista) {
+  for (const b of lista) {
+    const tipo = String(b?.tipo ?? '').toLowerCase();
+    if (DIBUJOS_KICK.has(tipo) && !b.url) b.url = urlInsigniaKick(tipo);
+  }
+  return mensaje;
+}
+
 function conImagenes(mensaje, slug) {
   if (!mensaje || mensaje.tipo !== 'chat') return mensaje;
   const lista = Array.isArray(mensaje.insignias) ? mensaje.insignias : [];
@@ -461,9 +470,7 @@ function conImagenes(mensaje, slug) {
      pedido a Helix. */
   if (!lista.length) return mensaje;
 
-  /* Kick sale intacto: sus insignias se quedan con `url: ''` y la
-     pagina muestra la etiqueta de texto. Ver el bloque de arriba: no
-     hay imagen oficial y el dueño no quiere iconos inventados. */
+  if (mensaje.red === 'kick') return conImagenesDeKick(mensaje, lista);
   if (mensaje.red !== 'twitch' || !ACTIVO_TWITCH) return mensaje;
 
   const delCanal = tabla(slug);

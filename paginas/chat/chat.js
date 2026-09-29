@@ -363,6 +363,20 @@
     agregarMensajeALista(datos.red === 'kick' ? listas.kick : listas.twitch, li.cloneNode(true));
   }
 
+  // ---------- la vista previa de un link, que llega después ----------
+
+  // El mensaje sale al toque y la tarjeta del link llega un rato
+  // después, cuando el servidor la armó. Se busca el mensaje en las
+  // tres listas (está en la mezclada y en la de su red) y se le agrega.
+  function manejarEnlace(datos) {
+    for (const info of Object.values(listas)) {
+      const li = [...info.ul.children].find(n => n.dataset?.id === String(datos?.mensajeId ?? ''));
+      if (!li) continue;
+      window.SalaMensajes.agregarVistas(li, datos.enlaces);
+      if (!info.pausado) info.ul.scrollTop = info.ul.scrollHeight;
+    }
+  }
+
   // ---------- actividad: canjes, subs y follows ----------
 
   // Un canje, una sub o un follow entra como un renglón más, en la
@@ -1567,6 +1581,7 @@
     conexionBus = window.Sala.conectar(slugPublico, (tipo, datos) => {
       if (tipo === 'chat') return manejarMensajeChat(datos);
       if (tipo === 'actividad') return manejarActividad(datos);
+      if (tipo === 'enlace') return manejarEnlace(datos);
       if (tipo === 'chat-abierto') return aplicarAbierto(datos);
       // cuántos están leyendo. Un número y nada más: quiénes, nunca.
       if (tipo === 'presencia') return mostrarConectados(datos?.conectados);
@@ -1681,6 +1696,7 @@
     window.Sala.conectar(slug, (tipo, datos) => {
       if (tipo === 'chat') manejarMensajeChat(datos);
       if (tipo === 'actividad') manejarActividad(datos);
+      if (tipo === 'enlace') manejarEnlace(datos);
     });
   }
 

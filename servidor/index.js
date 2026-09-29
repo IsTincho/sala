@@ -2342,6 +2342,12 @@ async function eventos(url, req, res, p) {
      no se". */
   if (!esSuDueno) await creadores.chatAbierto(slug);
 
+  /* Los follows viajan por este bus marcados como privados y solo le
+     llegan a quien puede ver la lista de actividad: el dueño de esta
+     sala y sus mods. Se decide al conectar; un mod al que le sacan el
+     rol deja de recibirlos cuando reconecta. */
+  const vePrivado = esSuDueno || await puedeVerActividad(req, slug);
+
   /* El pedido se murio mientras se resolvia todo lo de arriba: no hay a
      quien suscribir. Ver el comentario del principio. */
   if (cerrado || res.writableEnded) return res;
@@ -2358,6 +2364,7 @@ async function eventos(url, req, res, p) {
   canales.suscribir(slug, req, res, {
     redes: esSuDueno ? pide : () => recortar(redesPublicas(slug), pide),
     conReloj: veElReloj,
+    privado: vePrivado,
   });
 
   anotarPresencia(slug);

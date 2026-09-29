@@ -365,9 +365,10 @@
 
   // ---------- actividad: canjes, subs y follows ----------
 
-  // Un canje o una sub entra como un renglón más, en la lista mezclada
-  // y en la de su red, igual que un mensaje. Los follows no llegan por
-  // acá: no son públicos, y los ve sólo quien abre la lista de abajo.
+  // Un canje, una sub o un follow entra como un renglón más, en la
+  // lista mezclada y en la de su red, igual que un mensaje. Los follows
+  // le llegan sólo al creador y a sus mods: el servidor no se los manda
+  // a nadie más (en Twitch no son públicos).
   function manejarActividad(datos) {
     const li = window.SalaMensajes.crearActividad(datos);
     agregarMensajeALista(listas.mezclada, li);

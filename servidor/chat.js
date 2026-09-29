@@ -640,9 +640,11 @@ export function estadoActividad(slug) {
 
 /**
  * Un canje, sub o follow de cualquiera de las dos redes, ya traducido
- * (`mensajes.actividadDe*`). Se anota en la lista del creador y, si es
- * `publico`, sale tambien por el bus de la sala como una linea mas del
- * chat. Los follows no: ver el encabezado de la actividad en mensajes.js.
+ * (`mensajes.actividadDe*`). Se anota en la lista del creador y sale
+ * por el bus de la sala como una linea mas del chat. Lo que no es
+ * `publico` (los follows) sale marcado `privado`, y `canales.js` solo
+ * se lo entrega a las conexiones del creador y sus mods. Ver el
+ * encabezado de la actividad en mensajes.js.
  *
  * El dedupe usa el mismo anillo que los mensajes de Twitch, con un
  * prefijo: Kick manda el mismo canje como `pending` y despues como
@@ -661,7 +663,7 @@ export function recibirActividad(slug, a) {
   }
   actividad.anotar(c.slug, a);
   const { publico, ...paraElBus } = a;
-  if (publico) canales.recordar(c.slug, paraElBus);
+  canales.recordar(c.slug, publico ? paraElBus : { ...paraElBus, privado: true });
   return true;
 }
 

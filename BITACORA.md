@@ -79,6 +79,18 @@ canjeó" o "Kick/Twitch rechazó la suscripción": las dos se ven igual. Tres ca
   suscribirse a los canjes con token de usuario (CosasStream se suscribe con token de app y
   no lo sabemos seguro: la documentación de Kick no se pudo consultar desde acá).
 
+### Los follows también en el chat, sólo para el creador y sus mods
+
+Pedido del dueño. Los follows ahora salen por el bus marcados `privado: true`, y
+`canales.js` sólo se los entrega a las conexiones que la ruta marcó con `privado` (el dueño de
+esa sala y sus mods, lo mismo que decide `puedeVerActividad`). El corte va en `leDaEl`, al
+lado del de la red, por el mismo motivo: filtrarlo en el navegador sería mandarlo igual por el
+cable a cualquiera. El buffer de los últimos 200 pasa por el mismo filtro. Un mod al que le
+sacan el rol deja de recibirlos cuando reconecta; la lista, al toque.
+
+Probado con dos conexiones SSE de verdad (creador y anónimo) y un canje de control: al
+anónimo le llega el control y nunca el follow.
+
 ### Pendiente
 
 - **Sin verificar contra las plataformas de verdad:** que Kick acepte los cinco eventos nuevos

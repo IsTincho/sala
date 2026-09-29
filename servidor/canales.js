@@ -147,7 +147,14 @@ function escribir(res, id, tipo, datos) {
    abierto. */
 const redesDe = suyo => (typeof suyo?.redes === 'function' ? suyo.redes() : suyo?.redes);
 
+/* Y aparte de la red, lo PRIVADO: un evento con `privado: true` (hoy,
+   los follows de la actividad) sale solo a las conexiones que la ruta
+   marco como del creador de esa sala o de sus mods. En Twitch un follow
+   no es publico, y este bus lo escucha cualquiera sin login: el corte
+   va aca por el mismo motivo que el de la red, porque filtrarlo en el
+   navegador seria mandarlo igual por el cable. */
 const leDaEl = (opciones, evento) => {
+  if (evento?.privado === true && opciones?.privado !== true) return false;
   const red = evento?.red;
   if (typeof red !== 'string') return true;
   const redes = redesDe(opciones);
@@ -230,6 +237,8 @@ export function suscribir(slug, req, res, opciones = {}) {
   const suyo = {
     redes: typeof opciones.redes === 'function' ? opciones.redes
       : Array.isArray(opciones.redes) ? [...opciones.redes] : null,
+    /* `=== true` y no truthy: lo privado se abre solo con un si explicito */
+    privado: opciones.privado === true,
   };
 
   res.writeHead(200, {

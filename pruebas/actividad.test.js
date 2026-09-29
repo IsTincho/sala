@@ -107,13 +107,23 @@ test('un canje sale por el bus una sola vez y sin la marca de publico', () => {
   assert.equal('publico' in nuevos[0], false, 'es una decision del servidor, no un dato para el navegador');
 });
 
-test('un follow va a la lista y NO al bus', async () => {
+test('un follow va a la lista y al bus, pero marcado privado', async () => {
   const antes = deLaSala().length;
   chat.recibirActividad(SALA, mensajes.actividadDeKick('channel.followed',
     { follower: { username: 'Triss', user_id: 44 }, created_at: new Date().toISOString() }));
-  assert.equal(deLaSala().length, antes, 'el bus de la sala lo escucha cualquiera');
+  const nuevos = deLaSala().slice(antes);
+  assert.equal(nuevos.length, 1);
+  assert.equal(nuevos[0].privado, true,
+    'el bus de la sala lo escucha cualquiera: sin la marca, el follow saldria para todos');
   const lista = await actividad.ver(SALA, { clases: ['follow'] });
   assert.equal(lista[0].usuario, 'Triss');
+});
+
+test('un canje NO sale marcado privado', () => {
+  const antes = deLaSala().length;
+  chat.recibirActividad(SALA, mensajes.actividadDeKick('channel.reward.redemption.updated',
+    { id: 'pub1', redeemer: { username: 'Zoltan' }, reward: { title: 'Hidratate' } }));
+  assert.equal(deLaSala().slice(antes)[0].privado, undefined);
 });
 
 test('el mismo canje de Kick como pending y despues accepted es uno solo', () => {
@@ -239,4 +249,66 @@ test('un espectador la ve solo si su cuenta tiene la insignia de mod en ESTA sal
   assert.ok(r.datos.items.length > 0);
   assert.ok(r.datos.items.every(x => x.clase === 'canje'), 'el filtro por clase se respeta');
   assert.equal((await pedir(`/api/chat/${SALA}/yo`, mod)).datos.veActividad, true);
+});
+
+/* ------------------------------------ el follow por el cable, de verdad */
+
+/** Abre /eventos/:slug y junta lo que llega. */
+function abrirSse(cookie = '') {
+  const eventos = [];
+  const req = http.get({
+    host: '127.0.0.1', port: servidor.address().port, path: `/eventos/${SALA}`,
+    headers: cookie ? { Cookie: cookie } : {},
+  }, res => {
+    let pendiente = '';
+    res.setEncoding('utf8');
+    res.on('data', t => {
+      pendiente += t;
+      let corte;
+      while ((corte = pendiente.indexOf('\n\n')) >= 0) {
+        const bloque = pendiente.slice(0, corte);
+        pendiente = pendiente.slice(corte + 2);
+        const datos = bloque.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('');
+        if (datos) eventos.push(JSON.parse(datos));
+      }
+    });
+  });
+  const esperar = async (condicion, que) => {
+    const limite = Date.now() + 3000;
+    while (Date.now() < limite) {
+      if (eventos.some(condicion)) return;
+      await new Promise(ok => setTimeout(ok, 15));
+    }
+    throw new Error(`no llego ${que}`);
+  };
+  return { eventos, esperar, cerrar: () => req.destroy() };
+}
+
+test('el follow le llega al creador por el bus, y a un anonimo no', async () => {
+  const dueno = `${sesion.COOKIES.dueno}=` +
+    await sesion.crear({ tipo: 'dueno', usuario: '99', nombre: 'IsTincho', slug: SALA });
+  const suyo = abrirSse(dueno);
+  const anonimo = abrirSse();
+  try {
+    await suyo.esperar(e => e.tipo === 'estado', 'el estado del creador');
+    await anonimo.esperar(e => e.tipo === 'estado', 'el estado del anonimo');
+
+    /* Los dos de KICK: con el chat cerrado, al publico le llega solo
+       Kick, asi que con uno de Twitch el anonimo no lo veria por la red
+       y esta prueba no diria nada de lo privado. */
+    chat.recibirActividad(SALA, mensajes.actividadDeKick('channel.followed',
+      { follower: { username: 'Regis', user_id: 77 }, created_at: new Date().toISOString() }));
+    /* Un canje despues, de control: los eventos de una conexion salen en
+       orden, asi que si al anonimo le llego el canje y el follow no, el
+       follow no le va a llegar nunca. */
+    chat.recibirActividad(SALA, mensajes.actividadDeKick('channel.reward.redemption.updated',
+      { id: 'sse-control-1', redeemer: { username: 'Control' }, reward: { title: 'Control' } }));
+
+    await suyo.esperar(e => e.usuario === 'Regis', 'el follow al creador');
+    await anonimo.esperar(e => e.usuario === 'Control', 'el canje de control al anonimo');
+    assert.equal(anonimo.eventos.some(e => e.usuario === 'Regis'), false, 'el anonimo no ve follows');
+  } finally {
+    suyo.cerrar();
+    anonimo.cerrar();
+  }
 });

@@ -276,3 +276,75 @@ test('en la pagina, el GIF arranca solo y mudo, el video espera el play, y los d
   assert.equal(dentroDeUnLink, false, 'tocar play no puede abrir la publicacion');
   assert.equal(todos(li, 'IMG').filter(i => String(i.src).startsWith('javascript')).length, 0);
 });
+
+/* ---------------------------------------------------------- Instagram */
+
+const INSERCION_IG = `<html><body><div class="Embed">
+  <div class="Header"><a class="HeaderLink"><span class="UsernameText">istincho</span></a></div>
+  <div class="EmbeddedMedia"><img class="EmbeddedMediaImage" alt="setup"
+    src="https://scontent-eze1-1.cdninstagram.com/v/t51/abc.jpg?stp=dst&amp;_nc_ht=x"></div>
+  <div class="Caption"><a class="CaptionUsername" href="#">istincho</a> setup nuevo para el <br>stream
+    <div class="CaptionComments">Ver los 4 comentarios</div></div>
+</div></body></html>`;
+
+test('un post de Instagram sale con su foto, el usuario y el texto, de la pagina de insercion', async () => {
+  const pedidos = [];
+  enlaces.fijarPedidor(async url => { pedidos.push(url); return { cuerpo: INSERCION_IG }; });
+  const v = await enlaces.vistaPrevia('https://www.instagram.com/p/Cabc123_-x/?igsh=xyz');
+  assert.equal(pedidos[0], 'https://www.instagram.com/p/Cabc123_-x/embed/captioned/');
+  assert.equal(v.tipo, 'instagram');
+  assert.equal(v.sitio, 'Instagram · @istincho');
+  assert.equal(v.descripcion, 'setup nuevo para el stream');
+  assert.deepEqual(v.medios, [{
+    tipo: 'imagen', url: 'https://scontent-eze1-1.cdninstagram.com/v/t51/abc.jpg?stp=dst&_nc_ht=x', poster: '',
+  }]);
+});
+
+test('los reels y los links con el usuario adelante tambien se reconocen', async () => {
+  const pedidos = [];
+  enlaces.fijarPedidor(async url => { pedidos.push(url); return { cuerpo: INSERCION_IG }; });
+  await enlaces.vistaPrevia('https://instagram.com/reel/DEF456abc/');
+  await enlaces.vistaPrevia('https://www.instagram.com/istincho/p/GHI789abc/');
+  assert.deepEqual(pedidos, [
+    'https://www.instagram.com/p/DEF456abc/embed/captioned/',
+    'https://www.instagram.com/p/GHI789abc/embed/captioned/',
+  ]);
+});
+
+test('si Instagram no contesta, la tarjeta sale igual y ofrece cargar la insercion', async () => {
+  enlaces.fijarPedidor(async () => { throw new Error('muro de login'); });
+  const v = await enlaces.vistaPrevia('https://www.instagram.com/p/Cabc123/');
+  assert.equal(v.tipo, 'instagram');
+  assert.deepEqual(v.medios, []);
+  assert.equal(v.insertar, 'https://www.instagram.com/p/Cabc123/embed/captioned/');
+});
+
+test('una foto que no es del CDN de Instagram no se muestra', () => {
+  const v = enlaces.vistaDeInsercionInstagram('https://www.instagram.com/p/x/', 'x',
+    '<img class="EmbeddedMediaImage" src="https://malicioso.com/a.jpg">');
+  assert.deepEqual(v.medios, []);
+});
+
+test('en la pagina, "Ver el post aca" carga la insercion recien al tocarlo, y solo de instagram.com', () => {
+  const p = abrirPagina({ antes: ['comun/mensajes.js'], script: 'comun/mensajes.js' });
+  const S = p.ventana.SalaMensajes;
+  const lista = p.documento.createElement('ol');
+  S.vigilarInsignias(lista);
+  const li = S.crear(mensajeCon('https://www.instagram.com/p/Cabc123/', {
+    enlaces: [
+      { tipo: 'instagram', url: 'https://www.instagram.com/p/Cabc123/', titulo: 'Post', medios: [],
+        insertar: 'https://www.instagram.com/p/Cabc123/embed/captioned/' },
+      { tipo: 'instagram', url: 'https://www.instagram.com/p/Otro/', titulo: 'Trampa', medios: [],
+        insertar: 'https://malicioso.com/p/x/embed/' },
+    ],
+  }));
+  lista.appendChild(li);
+  assert.equal(todos(li, 'IFRAME').length, 0, 'nada de Instagram hasta que alguien lo pida');
+  const botones = todos(li, 'BUTTON').filter(b => String(b.className).includes('boton-insertar'));
+  assert.equal(botones.length, 1, 'una insercion que no es de instagram.com ni se ofrece');
+  botones[0].disparar('click');
+  const [marco] = todos(li, 'IFRAME');
+  assert.ok(marco, 'al tocar aparece la insercion');
+  assert.equal(marco.src, 'https://www.instagram.com/p/Cabc123/embed/captioned/');
+  assert.doesNotMatch(String(marco.getAttribute?.('sandbox') ?? ''), /allow-top-navigation/);
+});

@@ -338,9 +338,70 @@ async function vistaDeTwitter(url) {
   };
 }
 
+/* ---------------------------------------------------------- Instagram
+
+   Instagram no tiene oEmbed abierto (el de Meta pide una app revisada y
+   ya no trae la foto) y a quien no esta logueado le contesta, casi
+   siempre, la pantalla de "inicia sesion": sus metas Open Graph no
+   sirven.
+
+   Lo que si contesta es la PAGINA DE INSERCION del post
+   (`/p/<codigo>/embed/captioned/`), que es la que Instagram arma para
+   que otros sitios muestren sus posts. De ahi sale la foto, el usuario
+   y el texto. No esta documentada como API: si cambia, la tarjeta sale
+   igual, sin foto, con `insertar` —el boton "Ver el post aca" de la
+   pagina carga esa misma insercion en un iframe, solo si alguien lo
+   toca—. */
+
+const codigoDeInstagram = u => (/(^|\.)instagram\.com$/.test(u.hostname)
+  ? /\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{5,40})/.exec(u.pathname)?.[1] ?? ''
+  : '');
+
+export const urlInsercionInstagram = codigo =>
+  `https://www.instagram.com/p/${codigo}/embed/captioned/`;
+
+const deInstagramCdn = s => {
+  try {
+    const u = new URL(desescapar(String(s ?? '')));
+    return u.protocol === 'https:' && /(^|\.)(cdninstagram\.com|fbcdn\.net)$/.test(u.hostname) ? u.href : '';
+  } catch { return ''; }
+};
+const sinEtiquetas = h => desescapar(String(h ?? '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' '));
+
+/** Lo que se puede sacar de la pagina de insercion de un post. */
+export function vistaDeInsercionInstagram(url, codigo, html) {
+  const h = String(html ?? '');
+  const etiquetaImg = /<img[^>]*class="[^"]*EmbeddedMediaImage[^"]*"[^>]*>/i.exec(h)?.[0] ?? '';
+  const imagen = deInstagramCdn(/\ssrc="([^"]+)"/i.exec(etiquetaImg)?.[1]);
+  const usuario = recortar(sinEtiquetas(/class="[^"]*UsernameText[^"]*"[^>]*>([\s\S]*?)<\//i.exec(h)?.[1]), 40);
+  const bloque = /class="[^"]*Caption(?!Username|Comments)[^"]*"[^>]*>([\s\S]*?)<div[^>]*class="[^"]*CaptionComments/i.exec(h)?.[1] ?? '';
+  let texto = recortar(sinEtiquetas(bloque.replace(/<a[^>]*CaptionUsername[\s\S]*?<\/a>/i, '')), 280);
+  if (usuario && texto.startsWith(usuario)) texto = texto.slice(usuario.length).trim();
+  return {
+    tipo: 'instagram', url, sitio: usuario ? `Instagram · @${usuario}` : 'Instagram',
+    titulo: usuario ? `Post de @${usuario}` : 'Post de Instagram', descripcion: texto,
+    imagen: '', autor: usuario,
+    medios: imagen ? [{ tipo: 'imagen', url: imagen, poster: '' }] : [],
+    insertar: urlInsercionInstagram(codigo),
+  };
+}
+
+async function vistaDeInstagram(url, codigo) {
+  try {
+    const r = await pedir(urlInsercionInstagram(codigo));
+    return vistaDeInsercionInstagram(url, codigo, r.cuerpo);
+  } catch {
+    /* Ni la insercion contesto: la tarjeta sale igual, con el boton
+       para cargarla aca. El link de un post siempre merece su tarjeta. */
+    return vistaDeInsercionInstagram(url, codigo, '');
+  }
+}
+
 async function armar(url) {
   const u = new URL(url);
   if (esYoutube(u)) return vistaDeYoutube(url);
+  const codigoIg = codigoDeInstagram(u);
+  if (codigoIg) return vistaDeInstagram(url, codigoIg);
   if (esTwitter(u)) {
     /* Si el oEmbed falla (Twitter lo apaga cada tanto), la pagina en
        si no sirve: sin JavaScript no muestra nada. Se deja sin vista. */

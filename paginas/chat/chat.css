@@ -930,7 +930,7 @@ select:focus-visible{
 }
 .vista-video .vista-imagen{ width: 128px; }
 .vista-cuerpo{ display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.vista-sitio{ font-size: .75em; color: var(--texto-tenue); text-transform: uppercase; letter-spacing: .04em; }
+.vista-sitio{ font-size: .78em; color: var(--texto-tenue); }
 .vista-titulo{ font-weight: 700; overflow-wrap: anywhere; }
 .vista-descripcion{
   font-size: .9em;
@@ -953,4 +953,15 @@ select:focus-visible{
 }
 .vista-medios-2 .vista-medio, .vista-medios-3 .vista-medio, .vista-medios-4 .vista-medio{
   height: 9rem; object-fit: cover;
+}
+
+.vista-instagram{ border-left-color: #e1306c; }
+.boton-insertar{ align-self: flex-start; }
+.vista-insercion{
+  width: 100%;
+  max-width: 26rem;
+  height: 34rem;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
 }

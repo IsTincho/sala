@@ -270,6 +270,24 @@
     a.appendChild(cuerpo);
 
     const medios = (Array.isArray(v.medios) ? v.medios : []).map(crearMedio).filter(Boolean);
+    const insertar = urlInsertable(v.insertar);
+    if (!medios.length && insertar) {
+      /* No hubo foto (Instagram cambio su pagina, o no contesto): se
+         ofrece cargar la insercion oficial aca. Solo si alguien toca:
+         un iframe de Instagram para cada persona que mira el chat seria
+         meter su codigo y su rastreo en todas las pestañas. El click lo
+         atiende `vigilarInsignias` desde la lista (ver ahi por que). */
+      const tarjeta = document.createElement('div');
+      tarjeta.className = 'vista-con-medios';
+      const boton = document.createElement('button');
+      boton.type = 'button';
+      boton.className = 'boton-chip boton-insertar';
+      boton.textContent = 'Ver el post acá';
+      boton.dataset.insertar = insertar;
+      tarjeta.appendChild(a);
+      tarjeta.appendChild(boton);
+      return tarjeta;
+    }
     if (!medios.length) return a;
     /* Los medios van AFUERA del link: un <video> con controles adentro
        de un <a> abre la publicacion cada vez que alguien toca play. */
@@ -281,6 +299,29 @@
     tarjeta.appendChild(a);
     tarjeta.appendChild(fila);
     return tarjeta;
+  }
+
+  /* Solo se inserta lo que viene de Instagram, y por https: el servidor
+     arma esta URL, pero un iframe no se abre a donde diga un mensaje. */
+  function urlInsertable(texto) {
+    try {
+      const u = new URL(String(texto ?? ''));
+      return u.protocol === 'https:' && u.hostname === 'www.instagram.com' &&
+        /^\/p\/[A-Za-z0-9_-]+\/embed\/(captioned\/)?$/.test(u.pathname) ? u.href : '';
+    } catch { return ''; }
+  }
+
+  function crearInsercion(url) {
+    const marco = document.createElement('iframe');
+    marco.className = 'vista-insercion';
+    marco.src = url;
+    marco.title = 'Post de Instagram';
+    marco.loading = 'lazy';
+    marco.referrerPolicy = 'no-referrer';
+    /* Lo minimo para que la insercion ande. Sin `allow-top-navigation`:
+       desde adentro no puede llevarse la pestaña del chat. */
+    marco.setAttribute?.('sandbox', 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+    return marco;
   }
 
   /* Una foto, un GIF o un video de la publicacion. Las URLs las arma
@@ -435,6 +476,16 @@
   function vigilarInsignias(lista) {
     if (!lista || lista.dataset.insigniasVigiladas) return;
     lista.dataset.insigniasVigiladas = '1';
+    /* El "Ver el post aca" de Instagram, por el mismo motivo que el
+       respaldo de las insignias: /chat clona el <li> para la columna de
+       su red y el clon no se lleva las escuchas de sus botones. */
+    lista.addEventListener('click', ev => {
+      const boton = ev.target;
+      if (!boton?.classList?.contains('boton-insertar')) return;
+      const url = urlInsertable(boton.dataset.insertar);
+      if (!url || !boton.parentElement) return;
+      boton.parentElement.replaceChild(crearInsercion(url), boton);
+    }, true);
     lista.addEventListener('error', ev => {
       const img = ev.target;
       if (!img || img.tagName !== 'IMG') return;

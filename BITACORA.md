@@ -56,8 +56,28 @@ tarjeta sale del oEmbed como antes: con texto y sin medios.
 - Los medios van **afuera** del link de la tarjeta: con el video adentro de un `<a>`, tocar
   play abría el tweet.
 
+### Los posts de Instagram
+
+Instagram no tiene oEmbed abierto (el de Meta pide una app revisada y ya no trae la foto) y a quien
+no está logueado le contesta el muro de "iniciá sesión", así que las metas Open Graph no sirven.
+Dos capas:
+
+- **La página de inserción del post** (`/p/<código>/embed/captioned/`), la que Instagram arma
+  para que otros sitios muestren sus posts: de ahí salen la foto, el usuario y el texto. Sirve para
+  `/p/`, `/reel/`, `/tv/` y los links con el usuario adelante. **No está documentada**; solo se
+  aceptan fotos `https` de `cdninstagram.com` o `fbcdn.net`.
+- **Si eso falla**, la tarjeta sale igual con **"Ver el post acá"**, que carga la inserción oficial
+  en un iframe **recién cuando alguien lo toca**: un iframe de Instagram en cada pestaña del chat
+  sería meter su código y su rastreo en todas. El iframe solo se abre a
+  `www.instagram.com/p/<código>/embed/`, lleva `sandbox` sin `allow-top-navigation` (desde adentro
+  no se puede llevar la pestaña del chat) y el click se atiende desde la lista, por los clones de
+  la vista en columnas.
+
 ### Pendiente
 
+- **La página de la Sala (`/sala/<slug>`) no tiene los estilos de las tarjetas**: viven en
+  `chat/chat.css`. Hoy la Sala está apagada; el día que se prenda, mover ese bloque a
+  `comun/base.css`.
 - **Sin probar contra las redes de verdad**: desde el entorno donde se hizo no hay salida a
   YouTube, X ni Instagram. Lo más dudoso es Instagram: a veces le contesta un muro de login a
   quien no es un navegador con sesión, y ahí el link queda sin tarjeta (sigue siendo clickeable).

@@ -325,7 +325,8 @@ test('tres insignias seguidas se dibujan como tres imagenes, en orden y antes de
      abajo ni que se cuele en el medio. */
   const fila = p.el('lista-mezclada').children[0].children[0];
   const clases = fila.children.map(c => c.tagName === 'IMG' ? 'img' : c.className.split(' ')[0]);
-  assert.deepEqual(clases, ['chip-red', 'img', 'img', 'img', 'usuario', 'boton-bloquear']);
+  /* los botones del creador van juntos en `acciones-mensaje`, al final */
+  assert.deepEqual(clases, ['chip-red', 'img', 'img', 'img', 'usuario', 'acciones-mensaje']);
 
   p.cerrar();
 });
@@ -408,7 +409,7 @@ test('si la imagen no carga aparece la etiqueta EN SU LUGAR, no un hueco', async
      terminaria despues del nombre de usuario. */
   const fila = p.el('lista-mezclada').children[0].children[0];
   const clases = fila.children.map(c => c.tagName === 'IMG' ? 'img' : c.className.split(' ')[0]);
-  assert.deepEqual(clases, ['chip-red', 'chip-insignia', 'img', 'usuario', 'boton-bloquear']);
+  assert.deepEqual(clases, ['chip-red', 'chip-insignia', 'img', 'usuario', 'acciones-mensaje']);
 
   p.cerrar();
 });

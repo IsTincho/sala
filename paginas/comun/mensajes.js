@@ -585,6 +585,12 @@
     /* Sin id no hay a quien bloquear: por nombre no sirve, porque los
        nombres se cambian. Un mensaje viejo del buffer, de antes de que
        el id viajara, simplemente no trae el boton. */
+    /* Los botones del creador (bloquear, sacar el color) van juntos en
+       un costado del renglon y aparecen al pasar el mouse, como en Kick:
+       en cada mensaje ocupaban lugar y cortaban la frase. Con foco de
+       teclado tambien se ven (chat.css). */
+    const acciones = document.createElement('span');
+    acciones.className = 'acciones-mensaje';
     if (opciones.conBloquear && datos.usuarioId) {
       const boton = document.createElement('button');
       boton.type = 'button';
@@ -594,7 +600,7 @@
       boton.dataset.bloquearRed = datos.red === 'kick' ? 'kick' : 'twitch';
       boton.dataset.bloquearId = String(datos.usuarioId);
       boton.dataset.bloquearNombre = String(datos.usuario ?? '');
-      filaPrincipal.appendChild(boton);
+      acciones.appendChild(boton);
     }
 
     /* Y el de sacarle el color propio, al lado. Aparece SOLO cuando el
@@ -611,8 +617,10 @@
       boton.dataset.colorRed = datos.red === 'kick' ? 'kick' : 'twitch';
       boton.dataset.colorId = String(datos.usuarioId);
       boton.dataset.colorNombre = String(datos.usuario ?? '');
-      filaPrincipal.appendChild(boton);
+      acciones.appendChild(boton);
     }
+
+    if (acciones.children.length) filaPrincipal.appendChild(acciones);
 
     li.appendChild(filaPrincipal);
 

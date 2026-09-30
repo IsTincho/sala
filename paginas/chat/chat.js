@@ -110,6 +110,7 @@
   const botonEnviar       = document.getElementById('boton-enviar');
 
   const botonEmotes    = document.getElementById('boton-emotes');
+  const filaRecientes  = document.getElementById('emotes-recientes');
   const panelEmotes    = document.getElementById('panel-emotes');
   const buscarEmote    = document.getElementById('buscar-emote');
   const cerrarEmotes   = document.getElementById('cerrar-emotes');
@@ -768,6 +769,7 @@
        de lo que ya esta escrito: un emote de Kick puesto con "Kick"
        elegido pasa a ser un problema en cuanto se elige "las dos". */
     if (emotesAbiertos) pintarEmotes();
+    pintarRecientes();
     revisarAvisoEmotes();
   });
 
@@ -907,6 +909,7 @@
         if (modoPublico && Array.isArray(datos?.reconectar) && datos.reconectar.length) consultarYo();
 
         if (r.status === 200) {
+          anotarRecientes(emotesDelTexto(texto));
           campoTexto.value = '';
           ajustarAlturaCampo();
           actualizarContadorCaracteres();
@@ -1186,9 +1189,91 @@
     revisarAvisoEmotes();
   }
 
+  // ---------- emotes recientes ----------
+
+  // Los últimos emotes que usó esta persona, arriba de la caja, como en
+  // Kick. Viven en SU navegador (localStorage) y por canal: los de 7TV
+  // de un creador no sirven en la sala de otro. No viajan a ningún lado.
+  //
+  // Se guarda el emote entero (nombre, url, marca, redes) y no sólo el
+  // nombre: así la fila se pinta al abrir la página, sin esperar a que
+  // alguien abra el selector y se baje el catálogo.
+  const TOPE_RECIENTES = 16;
+  const claveRecientes = () => `sala:emotes-recientes:${modoPublico ? slugPublico : 'propio'}`;
+
+  // Lo que sale de localStorage lo pudo escribir cualquiera (una
+  // extensión, otra pestaña vieja): se revisa antes de pintarlo.
+  const recienteValido = e => e && typeof e.marca === 'string' && e.marca.length > 0 && e.marca.length <= 120 &&
+    typeof e.nombre === 'string' && typeof e.url === 'string' && e.url.startsWith('https://') &&
+    Array.isArray(e.redes) && e.redes.every(r => REDES.includes(r));
+
+  function leerRecientes() {
+    try {
+      const lista = JSON.parse(localStorage.getItem(claveRecientes()) ?? '[]');
+      return Array.isArray(lista) ? lista.filter(recienteValido).slice(0, TOPE_RECIENTES) : [];
+    } catch { return []; }   // sin localStorage (modo privado, file://) no hay recientes, y listo
+  }
+
+  let recientes = leerRecientes();
+
+  function anotarRecientes(emotes) {
+    const nuevos = emotes.filter(recienteValido)
+      .map(({ nombre, url, marca, fuente, redes }) => ({ nombre, url, marca, fuente, redes: [...redes] }));
+    if (!nuevos.length) return;
+    const marcas = new Set(nuevos.map(e => e.marca));
+    recientes = [...nuevos, ...recientes.filter(e => !marcas.has(e.marca))].slice(0, TOPE_RECIENTES);
+    try { localStorage.setItem(claveRecientes(), JSON.stringify(recientes)); } catch { /* no es critico */ }
+    pintarRecientes();
+  }
+
+  // Los emotes de un mensaje que salió: lo que se eligió del selector y
+  // también lo escrito a mano. Se busca por marca y por nombre contra
+  // el catálogo, así que sólo cuenta si el catálogo ya se bajó.
+  function emotesDelTexto(texto) {
+    if (!catalogoEmotes.length) return [];
+    const palabras = String(texto).split(/\s+/).filter(Boolean);
+    const vistos = [];
+    for (const p of palabras.reverse()) {
+      const e = catalogoEmotes.find(x => x.marca === p || x.nombre === p);
+      if (e && !vistos.includes(e)) vistos.push(e);
+    }
+    return vistos;   // el último del mensaje queda primero
+  }
+
+  function pintarRecientes() {
+    const redes = redesDelEnvio();
+    const sirven = recientes.filter(e => e.redes.some(r => redes.includes(r)));
+    filaRecientes.textContent = '';
+    for (const e of sirven) {
+      const boton = document.createElement('button');
+      boton.type = 'button';
+      boton.className = 'emote-reciente';
+      boton.dataset.marca = e.marca;
+      boton.title = e.nombre;
+      boton.setAttribute('aria-label', `Poner ${e.nombre}`);
+      const img = document.createElement('img');
+      img.className = 'emote';
+      img.src = e.url;
+      img.alt = e.nombre;
+      img.loading = 'lazy';
+      boton.appendChild(img);
+      filaRecientes.appendChild(boton);
+    }
+    filaRecientes.hidden = !sirven.length;
+  }
+
+  filaRecientes.addEventListener('click', ev => {
+    const boton = ev?.target?.closest?.('.emote-reciente');
+    const marca = boton?.dataset?.marca;
+    if (!marca) return;
+    insertarMarca(marca);
+    campoTexto.focus?.();
+  });
+
   function elegirOpcion(boton) {
     if (!boton?.dataset?.marca) return;
     insertarMarca(boton.dataset.marca);
+    anotarRecientes(catalogoEmotes.filter(e => e.marca === boton.dataset.marca));
     /* El panel NO se cierra: poner tres emotes seguidos es lo normal.
        Se cierra con Escape, con la × o tocando "Emotes" de nuevo. El
        buscador se vacia para poder escribir el siguiente nombre. */
@@ -1348,6 +1433,8 @@
     const elegida = [antes, leerGuardado()].find(v => opciones.includes(v)) ?? opciones[0] ?? '';
     selectDestino.value = elegida;
     selectDestino.hidden = opciones.length < 2;
+    // cambió a qué redes se puede mandar: cambian los recientes que sirven
+    pintarRecientes();
   }
 
   /* ---------- /chat/<slug>: el color propio ----------
@@ -1725,6 +1812,8 @@
   }
 
   function iniciar() {
+    // la fila de recientes sale de este navegador: se pinta de una
+    pintarRecientes();
     // Cada chat se instala aparte: la ventana del creador abre en
     // /chat y el chat de una sala, en /chat/<slug>. Quien instale el
     // chat de su streamer tiene que abrir ahí y no en el de otro.

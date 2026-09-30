@@ -209,6 +209,11 @@
          Se dice ANTES de mandar, mientras se escribe. -->
     <p id="aviso-emotes" class="aviso-emotes" role="status" aria-live="polite" hidden></p>
 
+    <!-- Los emotes que esta persona usó hace poco, como la fila de Kick.
+         Se guardan en su navegador (localStorage), por canal: no viajan a
+         ningún lado. Se pinta sólo si hay alguno. -->
+    <div id="emotes-recientes" class="emotes-recientes" role="group" aria-label="Emotes recientes" hidden></div>
+
     <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
       placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
     <div class="fila-controles-envio">

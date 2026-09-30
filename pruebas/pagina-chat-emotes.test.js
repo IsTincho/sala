@@ -98,7 +98,7 @@ const nombres = p => opciones(p).map(b => b.dataset.nombre);
  * Por defecto la persona tiene las dos redes conectadas: sin cuenta
  * no hay caja de escribir y el selector vive adentro de la caja.
  */
-function abrirPublico({ yo = CON_LAS_DOS, abierto = ABIERTO_LAS_DOS, emotes = EMOTES } = {}) {
+function abrirPublico({ yo = CON_LAS_DOS, abierto = ABIERTO_LAS_DOS, emotes = EMOTES, localStorage = null } = {}) {
   const pedidos = [];
   let respuestaAbierto = abierto;
   let quienSoy = yo;
@@ -133,6 +133,9 @@ function abrirPublico({ yo = CON_LAS_DOS, abierto = ABIERTO_LAS_DOS, emotes = EM
     ruta: '/chat/ana',
     antes: ['comun/mensajes.js'],
     fetch: responder,
+    /* Para probar lo que sobrevive a recargar la pagina: dos paginas
+       con el mismo almacen son el mismo navegador. */
+    globales: localStorage ? { localStorage } : {},
     Sala: {
       conectar: (slug, fn) => {
         const c = { slug, fn, cerrar() {} };
@@ -816,4 +819,76 @@ test('en /chat?demo=1 no hay botón de emotes: la demo no toca la red', async ()
   assert.equal(pagina.porId.get('boton-emotes').hidden, true);
   assert.deepEqual(pedidos, []);
   pagina.cerrar();
+});
+
+/* ================================== los emotes recientes */
+
+/** Un localStorage que se puede compartir entre dos paginas: el mismo navegador. */
+function almacenDeNavegador(inicial = {}) {
+  const m = new Map(Object.entries(inicial));
+  return {
+    getItem: k => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => m.set(k, String(v)),
+    removeItem: k => m.delete(k),
+    mapa: m,
+  };
+}
+const recientesDe = p => (p.el('emotes-recientes').children ?? []).map(b => b.dataset.marca);
+
+test('un emote elegido queda en la fila de recientes, y sigue ahi al recargar', async () => {
+  const navegador = almacenDeNavegador();
+  const p = abrirPublico({ localStorage: navegador });
+  await asentarse();
+  assert.equal(p.el('emotes-recientes').hidden, true, 'sin recientes no hay fila');
+  await p.abrirEmotes();
+  p.elegir('CHAD');
+  p.elegir('KEKW');
+  assert.deepEqual(recientesDe(p), ['KEKW', 'CHAD'], 'el ultimo usado, primero');
+  assert.equal(p.el('emotes-recientes').hidden, false);
+  p.cerrar();
+
+  const otra = abrirPublico({ localStorage: navegador });
+  await asentarse();
+  assert.deepEqual(recientesDe(otra), ['KEKW', 'CHAD'], 'se pinta al abrir, sin bajar el catalogo');
+  otra.el('emotes-recientes').disparar('click', { target: otra.el('emotes-recientes').children[1] });
+  assert.equal(otra.el('campo-texto').value.trim(), 'CHAD', 'tocarlo lo pone en la caja');
+  otra.cerrar();
+});
+
+test('un emote escrito a mano cuenta como reciente cuando el mensaje sale', async () => {
+  const p = abrirPublico({ localStorage: almacenDeNavegador() });
+  await asentarse();
+  await p.abrirEmotes();          // el catalogo tiene que estar para reconocerlo
+  p.el('campo-texto').value = 'jajaja KEKW';
+  p.el('boton-enviar').disparar('click');
+  await asentarse();
+  assert.deepEqual(recientesDe(p), ['KEKW']);
+  p.cerrar();
+});
+
+test('la fila muestra solo los que sirven para la red elegida', async () => {
+  const p = abrirPublico({ localStorage: almacenDeNavegador() });
+  await asentarse();
+  await p.abrirEmotes();
+  p.elegir('collectiblesMEGALUL');   // solo Kick
+  p.elegir('CHAD');                  // las dos
+  p.el('select-destino').value = 'twitch';
+  p.el('select-destino').disparar('change');
+  assert.deepEqual(recientesDe(p), ['CHAD'], 'uno de Kick no se ofrece si se va a mandar a Twitch');
+  p.cerrar();
+});
+
+test('lo que haya en localStorage que no sea un emote no se pinta', async () => {
+  const navegador = almacenDeNavegador({
+    'sala:emotes-recientes:ana': JSON.stringify([
+      { nombre: 'x', marca: 'x', url: 'javascript:alert(1)', redes: ['kick'] },
+      { nombre: 'y', marca: 'y', url: 'https://cdn.7tv.app/y.webp', redes: ['otra'] },
+      'basura',
+      { nombre: 'CHAD', marca: 'CHAD', url: 'https://cdn.7tv.app/emote/01CHAD/2x.webp', redes: ['kick', 'twitch'] },
+    ]),
+  });
+  const p = abrirPublico({ localStorage: navegador });
+  await asentarse();
+  assert.deepEqual(recientesDe(p), ['CHAD']);
+  p.cerrar();
 });

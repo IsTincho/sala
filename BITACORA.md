@@ -4,6 +4,29 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-09-30 — Emotes recientes y un chat más parecido al de Kick
+
+### Emotes recientes
+
+Una fila arriba de la caja con los últimos 16 emotes que usó **esta persona**, como en Kick:
+cuenta lo que elige del selector y lo que sale en un mensaje suyo (también escrito a mano, si el
+catálogo ya se bajó). Vive en **su navegador** (`localStorage`), **por canal** (los de 7TV de un
+creador no sirven en la sala de otro), y no viaja a ningún lado. Se guarda el emote entero
+(nombre, url, marca, redes) para poder pintar la fila al abrir, sin bajar el catálogo. Lo que sale
+de `localStorage` se revisa antes de pintarlo (solo `https`, redes conocidas): lo pudo escribir
+cualquiera. Muestra solo los que sirven para la red elegida en el selector.
+
+### El chat, más parecido a Kick
+
+Un bloque al final de `chat/chat.css`, que se puede sacar entero para volver atrás:
+mensaje en **un renglón** (insignias, `nombre:` y el texto seguido), sin la línea entre mensajes,
+emotes del texto un poco más grandes, la caja redondeada. Los botones del creador (bloquear,
+sacar el color) van juntos en `acciones-mensaje` y **flotan a la derecha con el mouse** (o con el
+foco del teclado): en cada renglón cortaban la frase. Los renglones de actividad no llevan los dos
+puntos: ahí el nombre es el sujeto de la frase.
+
+---
+
 ## 2026-09-29 — Insignias de Kick con dibujo propio, y los links clickeables con vista previa
 
 **1.103 pruebas en verde**, 14 nuevas (`pruebas/enlaces.test.js` y dos en

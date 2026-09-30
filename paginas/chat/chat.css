@@ -983,3 +983,118 @@ select:focus-visible{
   aspect-ratio: 16 / 9;
   background: #000;
 }
+
+/* ============================================================
+   Mas parecido al chat de Kick (2026-09-30, pedido del dueño).
+
+   Va al final y pisa lo de arriba a proposito: se puede sacar entero
+   para volver al diseño anterior. Lo que cambia:
+
+   - El mensaje va en UN renglon: insignias, nombre, dos puntos y el
+     texto seguido, como en Kick. Antes el texto bajaba a otra linea y
+     cada mensaje ocupaba el doble.
+   - Sin la linea entre mensajes: el aire alcanza.
+   - Los botones del creador flotan a la derecha y aparecen con el
+     mouse (o con el foco del teclado), sin cortar la frase.
+   - La caja de escribir con la fila de emotes recientes arriba.
+   ============================================================ */
+
+.lista-mensajes{ padding: 0.35rem 0.4rem 0.6rem; }
+
+/* sin separadores (le gana a los tres selectores del filtro) */
+.lista-mensajes > .mensaje::before{ display: none !important; }
+
+.mensaje{
+  padding: 0.28rem 0.55rem;
+  line-height: 1.6;
+  border-radius: 6px;
+}
+
+.mensaje-linea{ display: inline; }
+.mensaje-linea > *{ vertical-align: middle; margin-right: 0.3em; }
+.texto-mensaje{ display: inline; }
+
+/* "nombre: texto". Los renglones de actividad no: ahi el nombre es el
+   sujeto de la frase ("Jaskier canjeo...") y no lleva dos puntos. */
+.mensaje:not(.mensaje-actividad) .mensaje-linea > .usuario{ margin-right: 0; }
+.mensaje:not(.mensaje-actividad) .mensaje-linea > .usuario::after{
+  content: ':';
+  color: var(--texto);
+  font-weight: 400;
+  margin-right: 0.35em;
+}
+
+.chip-red{
+  font-size: 0.6em;
+  padding: 0.12em 0.38em;
+  letter-spacing: 0.02em;
+}
+.insignia{ height: 1.15em; }
+
+.mensaje-respuesta{
+  font-size: 0.78em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.texto-mensaje .emote{ height: 1.9em; margin: -0.2em 0.05em; }
+
+.acciones-mensaje{
+  position: absolute;
+  top: 0.2rem;
+  right: 0.35rem;
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.1rem;
+  background: var(--fondo-tarjeta);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.mensaje:hover .acciones-mensaje,
+.acciones-mensaje:focus-within{ opacity: 1; }
+.acciones-mensaje .boton-bloquear,
+.acciones-mensaje .boton-color{ opacity: 1; margin: 0; }
+
+/* ---------- la caja, con los recientes arriba ---------- */
+
+.emotes-recientes{
+  display: flex;
+  gap: 0.2rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin-bottom: calc(-1 * var(--espacio-1));
+}
+.emotes-recientes::-webkit-scrollbar{ display: none; }
+
+.emote-reciente{
+  flex: none;
+  line-height: 0;
+  padding: 0.2rem;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.emote-reciente:hover,
+.emote-reciente:focus-visible{ background: var(--chat-fila-hover); outline: none; }
+.emote-reciente .emote{ height: 1.9rem; width: auto; }
+
+.campo-texto{
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  border-color: transparent;
+  background: var(--fondo);
+}
+.campo-texto:focus{ border-color: var(--acento); outline: none; }
+
+.boton-enviar{ border-radius: 8px; padding-inline: 1.25rem; }
+
+/* los controles de arriba, mas chicos: en una ventana angosta ocupaban
+   dos renglones y le comian lugar al chat */
+.barra-controles .boton-chip{
+  font-size: 0.78em;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}

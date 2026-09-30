@@ -271,24 +271,29 @@
 
     const medios = (Array.isArray(v.medios) ? v.medios : []).map(crearMedio).filter(Boolean);
     const insertar = urlInsertable(v.insertar);
-    if (!medios.length && insertar) {
-      /* No hubo foto (Instagram cambio su pagina, o no contesto): se
-         ofrece cargar la insercion oficial aca. Solo si alguien toca:
-         un iframe de Instagram para cada persona que mira el chat seria
-         meter su codigo y su rastreo en todas las pestañas. El click lo
-         atiende `vigilarInsignias` desde la lista (ver ahi por que). */
-      const tarjeta = document.createElement('div');
-      tarjeta.className = 'vista-con-medios';
-      const boton = document.createElement('button');
+    /* El boton para cargar la insercion oficial aca: cuando no hubo foto
+       (Instagram cambio su pagina, o no contesto) o cuando es un video
+       (TikTok, un reel), porque la portada sola no se reproduce. Solo si
+       alguien toca: un iframe de Instagram o TikTok para cada persona que
+       mira el chat seria meter su codigo y su rastreo en todas las
+       pestañas. El click lo atiende `vigilarInsignias` desde la lista
+       (ver ahi por que). */
+    let boton = null;
+    if (insertar && (!medios.length || v.video === true)) {
+      boton = document.createElement('button');
       boton.type = 'button';
       boton.className = 'boton-chip boton-insertar';
-      boton.textContent = 'Ver el post acá';
+      boton.textContent = v.video === true ? 'Ver el video acá' : 'Ver el post acá';
       boton.dataset.insertar = insertar;
+    }
+    if (!medios.length && !boton) return a;
+    if (!medios.length) {
+      const tarjeta = document.createElement('div');
+      tarjeta.className = 'vista-con-medios';
       tarjeta.appendChild(a);
       tarjeta.appendChild(boton);
       return tarjeta;
     }
-    if (!medios.length) return a;
     /* Los medios van AFUERA del link: un <video> con controles adentro
        de un <a> abre la publicacion cada vez que alguien toca play. */
     const tarjeta = document.createElement('div');
@@ -298,22 +303,30 @@
     medios.forEach(m => fila.appendChild(m));
     tarjeta.appendChild(a);
     tarjeta.appendChild(fila);
+    if (boton) tarjeta.appendChild(boton);
     return tarjeta;
   }
 
-  /* Solo se inserta lo que viene de Instagram, y por https: el servidor
-     arma esta URL, pero un iframe no se abre a donde diga un mensaje. */
+  /* Solo se inserta la insercion oficial de Instagram y el reproductor
+     oficial de TikTok, y por https: el servidor arma estas URLs, pero un
+     iframe no se abre a donde diga un mensaje. */
   function urlInsertable(texto) {
     try {
       const u = new URL(String(texto ?? ''));
-      return u.protocol === 'https:' && u.hostname === 'www.instagram.com' &&
-        /^\/p\/[A-Za-z0-9_-]+\/embed\/(captioned\/)?$/.test(u.pathname) ? u.href : '';
+      if (u.protocol !== 'https:' || u.search || u.hash) return '';
+      if (u.hostname === 'www.instagram.com' &&
+          /^\/p\/[A-Za-z0-9_-]+\/embed\/(captioned\/)?$/.test(u.pathname)) return u.href;
+      if (u.hostname === 'www.tiktok.com' && /^\/player\/v1\/\d{5,30}$/.test(u.pathname)) return u.href;
+      return '';
     } catch { return ''; }
   }
 
   function crearInsercion(url) {
     const marco = document.createElement('iframe');
-    marco.className = 'vista-insercion';
+    /* TikTok es vertical: su reproductor va con la proporcion de un celu */
+    marco.className = new URL(url).hostname === 'www.tiktok.com'
+      ? 'vista-insercion vista-insercion-vertical' : 'vista-insercion';
+    marco.setAttribute?.('allow', 'fullscreen; encrypted-media; picture-in-picture');
     marco.src = url;
     marco.title = 'Post de Instagram';
     marco.loading = 'lazy';
@@ -483,8 +496,13 @@
       const boton = ev.target;
       if (!boton?.classList?.contains('boton-insertar')) return;
       const url = urlInsertable(boton.dataset.insertar);
-      if (!url || !boton.parentElement) return;
-      boton.parentElement.replaceChild(crearInsercion(url), boton);
+      const tarjeta = boton.parentElement;
+      if (!url || !tarjeta) return;
+      /* La portada se va: el reproductor ocupa su lugar, no se suma abajo */
+      for (const hijo of [...tarjeta.children]) {
+        if (hijo.classList?.contains('vista-medios')) tarjeta.removeChild(hijo);
+      }
+      tarjeta.replaceChild(crearInsercion(url), boton);
     }, true);
     lista.addEventListener('error', ev => {
       const img = ev.target;

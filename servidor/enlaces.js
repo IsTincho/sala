@@ -383,6 +383,9 @@ export function vistaDeInsercionInstagram(url, codigo, html) {
     imagen: '', autor: usuario,
     medios: imagen ? [{ tipo: 'imagen', url: imagen, poster: '' }] : [],
     insertar: urlInsercionInstagram(codigo),
+    /* Un reel es un video: la foto es solo la portada, y el boton para
+       verlo aca se ofrece aunque la portada haya salido. */
+    video: /\/(reel|reels|tv)\//.test(new URL(url).pathname),
   };
 }
 
@@ -397,9 +400,62 @@ async function vistaDeInstagram(url, codigo) {
   }
 }
 
+/* ------------------------------------------------------------- TikTok
+
+   TikTok SI tiene oEmbed publico y documentado
+   (developers.tiktok.com/doc/embed-videos): el texto del video, el
+   autor, la portada y el id. Con el id se arma su reproductor oficial
+   para insertar (`/player/v1/<id>`), que la pagina carga recien cuando
+   alguien toca "Ver el video aca", por lo mismo que Instagram.
+
+   Los links cortos (vm.tiktok.com, vt.tiktok.com) el oEmbed no siempre
+   los entiende: se siguen primero hasta el link largo, con las mismas
+   defensas de cualquier pedido. */
+
+const esTiktok = u => /(^|\.)tiktok\.com$/.test(u.hostname);
+const esTiktokCorto = u => /^(vm|vt)\.tiktok\.com$/.test(u.hostname);
+
+export const urlReproductorTiktok = id => `https://www.tiktok.com/player/v1/${id}`;
+
+const deTiktokCdn = s => {
+  try {
+    const u = new URL(String(s ?? ''));
+    return u.protocol === 'https:' &&
+      /(^|\.)(tiktokcdn(-[a-z]+)?\.com|tiktokv\.com|byteimg\.com|ibyteimg\.com)$/.test(u.hostname) ? u.href : '';
+  } catch { return ''; }
+};
+
+/** La tarjeta de un video de TikTok, a partir de la respuesta de su oEmbed. */
+export function vistaDeOembedTiktok(url, d) {
+  const id = String(d?.embed_product_id ?? '').match(/^\d{5,30}$/)?.[0]
+    ?? /\/video\/(\d{5,30})/.exec(new URL(url).pathname)?.[1] ?? '';
+  const usuario = recortar(d?.author_unique_id ?? '', 40);
+  const portada = deTiktokCdn(d?.thumbnail_url);
+  return {
+    tipo: 'tiktok', url, sitio: usuario ? `TikTok · @${usuario}` : 'TikTok',
+    titulo: recortar(d?.author_name ?? '', 80) || 'Video de TikTok',
+    descripcion: recortar(d?.title ?? '', 280),
+    imagen: '', autor: recortar(d?.author_name ?? '', 80),
+    medios: portada ? [{ tipo: 'imagen', url: portada, poster: '' }] : [],
+    ...(id ? { insertar: urlReproductorTiktok(id) } : {}),
+    video: true,
+  };
+}
+
+async function vistaDeTiktok(url) {
+  let largo = url;
+  if (esTiktokCorto(new URL(url))) {
+    const r = await pedir(url);
+    largo = r.url ?? url;
+  }
+  const r = await pedir(`https://www.tiktok.com/oembed?url=${encodeURIComponent(largo)}`);
+  return vistaDeOembedTiktok(largo, JSON.parse(r.cuerpo));
+}
+
 async function armar(url) {
   const u = new URL(url);
   if (esYoutube(u)) return vistaDeYoutube(url);
+  if (esTiktok(u)) return vistaDeTiktok(url);
   const codigoIg = codigoDeInstagram(u);
   if (codigoIg) return vistaDeInstagram(url, codigoIg);
   if (esTwitter(u)) {

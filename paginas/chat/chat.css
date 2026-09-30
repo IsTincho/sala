@@ -965,3 +965,12 @@ select:focus-visible{
   border-radius: 6px;
   background: #fff;
 }
+
+.vista-tiktok{ border-left-color: #25f4ee; }
+/* el reproductor de TikTok es vertical, como el video */
+.vista-insercion-vertical{
+  max-width: 20rem;
+  height: auto;
+  aspect-ratio: 9 / 16;
+  background: #000;
+}

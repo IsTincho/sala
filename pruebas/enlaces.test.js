@@ -348,3 +348,86 @@ test('en la pagina, "Ver el post aca" carga la insercion recien al tocarlo, y so
   assert.equal(marco.src, 'https://www.instagram.com/p/Cabc123/embed/captioned/');
   assert.doesNotMatch(String(marco.getAttribute?.('sandbox') ?? ''), /allow-top-navigation/);
 });
+
+/* ------------------------------------------------------------- TikTok */
+
+const OEMBED_TIKTOK = {
+  title: 'el setup nuevo #stream', author_name: 'Tincho', author_unique_id: 'istincho',
+  thumbnail_url: 'https://p16-sign-va.tiktokcdn.com/obj/portada.jpeg?x-expires=1&amp=2',
+  embed_product_id: '7301234567890123456',
+};
+
+test('un video de TikTok sale por su oEmbed, con la portada y el reproductor oficial para insertar', async () => {
+  const pedidos = [];
+  enlaces.fijarPedidor(async url => { pedidos.push(url); return { cuerpo: JSON.stringify(OEMBED_TIKTOK) }; });
+  const v = await enlaces.vistaPrevia('https://www.tiktok.com/@istincho/video/7301234567890123456?lang=es');
+  assert.match(pedidos[0], /^https:\/\/www\.tiktok\.com\/oembed\?url=/);
+  assert.equal(v.tipo, 'tiktok');
+  assert.equal(v.sitio, 'TikTok · @istincho');
+  assert.equal(v.descripcion, 'el setup nuevo #stream');
+  assert.equal(v.medios[0].url, OEMBED_TIKTOK.thumbnail_url);
+  assert.equal(v.insertar, 'https://www.tiktok.com/player/v1/7301234567890123456');
+  assert.equal(v.video, true);
+});
+
+test('un link corto de TikTok se sigue hasta el largo antes de pedir el oEmbed', async () => {
+  const pedidos = [];
+  enlaces.fijarPedidor(async url => {
+    pedidos.push(url);
+    if (url.startsWith('https://vm.tiktok.com/')) {
+      return { url: 'https://www.tiktok.com/@istincho/video/7301234567890123456', cuerpo: '<html></html>' };
+    }
+    return { cuerpo: JSON.stringify(OEMBED_TIKTOK) };
+  });
+  await enlaces.vistaPrevia('https://vm.tiktok.com/ZMabc123/');
+  assert.match(decodeURIComponent(pedidos[1]), /url=https:\/\/www\.tiktok\.com\/@istincho\/video\/7301234567890123456/);
+});
+
+test('una portada de TikTok que no es de su CDN no se muestra, y un id raro no arma reproductor', () => {
+  const v = enlaces.vistaDeOembedTiktok('https://www.tiktok.com/@a/video/x',
+    { thumbnail_url: 'https://malicioso.com/a.jpg', embed_product_id: '../../algo' });
+  assert.deepEqual(v.medios, []);
+  assert.equal(v.insertar, undefined);
+});
+
+test('en la pagina, el reproductor de TikTok reemplaza a la portada al tocar "Ver el video aca"', () => {
+  const p = abrirPagina({ antes: ['comun/mensajes.js'], script: 'comun/mensajes.js' });
+  const S = p.ventana.SalaMensajes;
+  const lista = p.documento.createElement('ol');
+  S.vigilarInsignias(lista);
+  const li = S.crear(mensajeCon('https://www.tiktok.com/@a/video/7301234567890123456', {
+    enlaces: [{ tipo: 'tiktok', url: 'https://www.tiktok.com/@a/video/7301234567890123456', titulo: 'a',
+      medios: [{ tipo: 'imagen', url: 'https://p16.tiktokcdn.com/a.jpg' }], video: true,
+      insertar: 'https://www.tiktok.com/player/v1/7301234567890123456' }],
+  }));
+  lista.appendChild(li);
+  assert.equal(todos(li, 'IMG').length, 1, 'la portada, antes de tocar');
+  const [boton] = todos(li, 'BUTTON').filter(b => String(b.className).includes('boton-insertar'));
+  assert.equal(boton.textContent, 'Ver el video acá', 'es un video: el boton sale aunque haya portada');
+  boton.disparar('click');
+  const [marco] = todos(li, 'IFRAME');
+  assert.equal(marco.src, 'https://www.tiktok.com/player/v1/7301234567890123456');
+  assert.match(String(marco.className), /vertical/);
+  assert.equal(todos(li, 'IMG').length, 0, 'la portada se va: el reproductor ocupa su lugar');
+});
+
+test('un reproductor con parametros o de otro camino de tiktok.com no se inserta', () => {
+  const S = renderizador();
+  const li = S.crear(mensajeCon('x', {
+    enlaces: [
+      { tipo: 'tiktok', url: 'https://www.tiktok.com/a', titulo: 'a', video: true, medios: [],
+        insertar: 'https://www.tiktok.com/player/v1/7301234567890123456?autoplay=1&redirect=https://malicioso.com' },
+      { tipo: 'tiktok', url: 'https://www.tiktok.com/b', titulo: 'b', video: true, medios: [],
+        insertar: 'https://www.tiktok.com/login' },
+    ],
+  }));
+  assert.equal(todos(li, 'BUTTON').filter(b => String(b.className).includes('boton-insertar')).length, 0);
+});
+
+test('un reel de Instagram es un video: ofrece verlo aca aunque haya portada', async () => {
+  enlaces.fijarPedidor(async () => ({ cuerpo: INSERCION_IG }));
+  const reel = await enlaces.vistaPrevia('https://www.instagram.com/reel/DEF456abc/');
+  const post = await enlaces.vistaPrevia('https://www.instagram.com/p/Cabc123_-x/');
+  assert.equal(reel.video, true);
+  assert.equal(post.video, false);
+});

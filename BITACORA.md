@@ -73,6 +73,18 @@ Dos capas:
   no se puede llevar la pestaña del chat) y el click se atiende desde la lista, por los clones de
   la vista en columnas.
 
+### TikTok, y los reels como video
+
+- **TikTok sí tiene oEmbed público y documentado** (developers.tiktok.com/doc/embed-videos):
+  texto del video, autor, portada y el id. Con el id se arma su **reproductor oficial**
+  (`/player/v1/<id>`), que se carga con **"Ver el video acá"**, solo al tocarlo, y **reemplaza
+  a la portada** (vertical, 9:16). Los links cortos (`vm.`/`vt.tiktok.com`) se siguen primero
+  hasta el largo, con las mismas defensas. Portadas solo de los CDN de TikTok.
+- Los **reels de Instagram** ahora también se marcan como `video`: además de la portada ofrecen
+  verlos acá.
+- La página inserta **solo** la inserción de Instagram y el reproductor de TikTok, con el camino
+  exacto y **sin parámetros**: un `?redirect=` agregado no se inserta.
+
 ### Pendiente
 
 - **La página de la Sala (`/sala/<slug>`) no tiene los estilos de las tarjetas**: viven en

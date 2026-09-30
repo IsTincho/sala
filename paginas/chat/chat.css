@@ -1098,3 +1098,47 @@ select:focus-visible{
   padding: 0.2rem 0.55rem;
   border-radius: 999px;
 }
+
+/* ---------- la red de cada mensaje: su icono, no su nombre ----------
+   El nombre ("Kick", "Twitch") sigue en el texto del chip para los
+   lectores de pantalla y en el title; lo que se ve es el icono. Es
+   informacion, no adorno: por eso va en todos los mensajes. */
+.chip-red{
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 4px;
+  background: center / contain no-repeat;
+  /* el texto se corre afuera del cuadro y se recorta */
+  text-indent: 110%;
+  white-space: nowrap;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.chip-red-kick{ background-image: url("/comun/redes/kick.svg"); }
+.chip-red-twitch{ background-image: url("/comun/redes/twitch.svg"); }
+
+/* ---------- el boton de emotes, adentro de la caja ---------- */
+.campo-envoltura{ position: relative; display: flex; }
+.campo-envoltura .campo-texto{ flex: 1 1 auto; min-width: 0; padding-right: 2.6rem; }
+.boton-emotes{
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.3rem;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  background: transparent url("/comun/iconos/emote.svg") center / 1.35rem no-repeat;
+  opacity: 0.8;
+  text-indent: 110%;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.boton-emotes:hover,
+.boton-emotes:focus-visible{ opacity: 1; background-color: var(--chat-fila-hover); outline: none; }
+.boton-emotes[aria-expanded="true"]{ opacity: 1; background-color: color-mix(in srgb, var(--acento) 18%, transparent); }

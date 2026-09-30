@@ -214,14 +214,18 @@
          ningún lado. Se pinta sólo si hay alguno. -->
     <div id="emotes-recientes" class="emotes-recientes" role="group" aria-label="Emotes recientes" hidden></div>
 
-    <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
-      placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
+    <!-- El botón de emotes va ADENTRO de la caja, a la derecha, como en
+         Kick: una carita. El texto "Emotes" queda para lectores de
+         pantalla; se ve el dibujo (chat.css). `hidden` de entrada y lo
+         prende el JS: en /chat con la página y en /chat/<slug> cuando el
+         servidor dice que esa persona puede escribir. -->
+    <div class="campo-envoltura">
+      <textarea id="campo-texto" class="campo-texto" rows="1" maxlength="800"
+        placeholder="Escribí un mensaje…" aria-label="Mensaje a enviar"></textarea>
+      <button type="button" id="boton-emotes" class="boton-emotes"
+        aria-expanded="false" aria-controls="panel-emotes" title="Emotes" hidden>Emotes</button>
+    </div>
     <div class="fila-controles-envio">
-      <!-- `hidden` de entrada y lo prende el JS: en /chat con la página
-           y en /chat/<slug> cuando el servidor dice que esa persona
-           puede escribir. Sin JS no hay panel que abrir. -->
-      <button type="button" id="boton-emotes" class="boton-chip boton-emotes"
-        aria-expanded="false" aria-controls="panel-emotes" hidden>Emotes</button>
       <select id="select-destino" class="select-destino" aria-label="Enviar a">
         <option value="kick">Kick</option>
         <option value="twitch">Twitch</option>

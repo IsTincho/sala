@@ -25,6 +25,14 @@ sacar el color) van juntos en `acciones-mensaje` y **flotan a la derecha con el 
 foco del teclado): en cada renglón cortaban la frase. Los renglones de actividad no llevan los dos
 puntos: ahí el nombre es el sujeto de la frase.
 
+### Después: los íconos de red y la carita en la caja
+
+- El chip de red de cada mensaje ya no dice "Kick" o "Twitch": muestra el **ícono de la red**
+  (`comun/redes/`). El nombre sigue en el texto del chip (para lectores de pantalla) y en el
+  `title`; se corre afuera del cuadro con CSS.
+- El botón de emotes es una **carita adentro de la caja de escribir**, a la derecha, como en
+  Kick (`comun/iconos/emote.svg`). Mismo botón, mismo id y mismo panel: solo cambió de lugar.
+
 ---
 
 ## 2026-09-29 — Insignias de Kick con dibujo propio, y los links clickeables con vista previa

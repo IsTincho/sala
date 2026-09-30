@@ -568,6 +568,9 @@
     const chipRed = document.createElement('span');
     chipRed.className = 'chip-red ' + (datos.red === 'kick' ? 'chip-red-kick' : 'chip-red-twitch');
     chipRed.textContent = datos.red === 'kick' ? 'Kick' : 'Twitch';
+    /* Se ve el icono de la red (chat.css); el nombre sigue ahi para los
+       lectores de pantalla y al pasar el mouse. */
+    chipRed.title = chipRed.textContent;
     filaPrincipal.appendChild(chipRed);
 
     const insignias = datos.insignias || [];

@@ -285,6 +285,7 @@
       boton.className = 'boton-chip boton-insertar';
       boton.textContent = v.video === true ? 'Ver el video acá' : 'Ver el post acá';
       boton.dataset.insertar = insertar;
+      if (v.vertical === true) boton.dataset.vertical = '1';
     }
     if (!medios.length && !boton) return a;
     if (!medios.length) {
@@ -307,8 +308,8 @@
     return tarjeta;
   }
 
-  /* Solo se inserta la insercion oficial de Instagram y el reproductor
-     oficial de TikTok, y por https: el servidor arma estas URLs, pero un
+  /* Solo se inserta la insercion oficial de Instagram y los
+     reproductores oficiales de TikTok y de YouTube, y por https: el servidor arma estas URLs, pero un
      iframe no se abre a donde diga un mensaje. */
   function urlInsertable(texto) {
     try {
@@ -317,15 +318,19 @@
       if (u.hostname === 'www.instagram.com' &&
           /^\/p\/[A-Za-z0-9_-]+\/embed\/(captioned\/)?$/.test(u.pathname)) return u.href;
       if (u.hostname === 'www.tiktok.com' && /^\/player\/v1\/\d{5,30}$/.test(u.pathname)) return u.href;
+      if (u.hostname === 'www.youtube-nocookie.com' && /^\/embed\/[A-Za-z0-9_-]{11}$/.test(u.pathname)) return u.href;
       return '';
     } catch { return ''; }
   }
 
-  function crearInsercion(url) {
+  function crearInsercion(url, vertical = false) {
     const marco = document.createElement('iframe');
-    /* TikTok es vertical: su reproductor va con la proporcion de un celu */
-    marco.className = new URL(url).hostname === 'www.tiktok.com'
-      ? 'vista-insercion vista-insercion-vertical' : 'vista-insercion';
+    /* TikTok y los Shorts son verticales, con la proporcion de un celu;
+       un video comun de YouTube, 16:9. Instagram arma su propio alto. */
+    const host = new URL(url).hostname;
+    marco.className = 'vista-insercion' +
+      (host === 'www.tiktok.com' || vertical ? ' vista-insercion-vertical'
+        : host === 'www.youtube-nocookie.com' ? ' vista-insercion-horizontal' : '');
     marco.setAttribute?.('allow', 'fullscreen; encrypted-media; picture-in-picture');
     marco.src = url;
     marco.title = 'Post de Instagram';
@@ -502,7 +507,7 @@
       for (const hijo of [...tarjeta.children]) {
         if (hijo.classList?.contains('vista-medios')) tarjeta.removeChild(hijo);
       }
-      tarjeta.replaceChild(crearInsercion(url), boton);
+      tarjeta.replaceChild(crearInsercion(url, boton.dataset.vertical === '1'), boton);
     }, true);
     lista.addEventListener('error', ev => {
       const img = ev.target;

@@ -85,6 +85,19 @@ Dos capas:
 - La página inserta **solo** la inserción de Instagram y el reproductor de TikTok, con el camino
   exacto y **sin parámetros**: un `?redirect=` agregado no se inserta.
 
+### YouTube Shorts y clips de Kick
+
+- **YouTube** (videos comunes y Shorts) queda como TikTok: portada grande, título, canal y
+  **"Ver el video acá"**, que carga el reproductor de **`youtube-nocookie.com`** (la versión
+  documentada que no deja cookies hasta el play). Los Shorts, verticales; el resto, 16:9. El id
+  sale de cualquier forma de link (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`) y tiene que ser
+  de 11 caracteres válidos.
+- **Clips de Kick: sin API, a propósito.** La de la web de Kick (`kick.com/api/v2`) no está
+  documentada y sus términos la prohíben sin permiso escrito, el mismo motivo de las insignias.
+  Tampoco hay un reproductor de clips documentado. Un clip sale siempre con su tarjeta ("Clip de
+  canal", que lo abre en Kick) y con portada y título solo si la página deja leer sus metas Open
+  Graph; Kick tiene protección anti-bots y muchas veces no.
+
 ### Pendiente
 
 - **La página de la Sala (`/sala/<slug>`) no tiene los estilos de las tarjetas**: viven en

@@ -431,3 +431,70 @@ test('un reel de Instagram es un video: ofrece verlo aca aunque haya portada', a
   assert.equal(reel.video, true);
   assert.equal(post.video, false);
 });
+
+/* ----------------------------------------- YouTube: Shorts y reproductor */
+
+test('el id de YouTube sale de cualquier forma de link, y uno raro no da id', () => {
+  for (const url of ['https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10', 'https://youtu.be/dQw4w9WgXcQ?si=x',
+                     'https://www.youtube.com/shorts/dQw4w9WgXcQ', 'https://m.youtube.com/live/dQw4w9WgXcQ']) {
+    assert.equal(enlaces.idDeYoutube(url), 'dQw4w9WgXcQ', url);
+  }
+  assert.equal(enlaces.idDeYoutube('https://www.youtube.com/watch?v=../../x'), '');
+});
+
+test('un Short sale vertical, con la portada grande y el reproductor sin cookies', async () => {
+  enlaces.fijarPedidor(async () => ({ cuerpo: JSON.stringify({
+    title: 'clip loco', author_name: 'Canal', thumbnail_url: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hq2.jpg' }) }));
+  const v = await enlaces.vistaPrevia('https://www.youtube.com/shorts/dQw4w9WgXcQ');
+  assert.equal(v.sitio, 'YouTube Shorts');
+  assert.equal(v.vertical, true);
+  assert.equal(v.video, true);
+  assert.equal(v.insertar, 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ');
+  assert.equal(v.medios[0].url, 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hq2.jpg');
+  const comun = await enlaces.vistaPrevia('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.equal(comun.vertical, false);
+});
+
+test('en la pagina, el Short se inserta vertical y el video comun apaisado', () => {
+  const p = abrirPagina({ antes: ['comun/mensajes.js'], script: 'comun/mensajes.js' });
+  const S = p.ventana.SalaMensajes;
+  const lista = p.documento.createElement('ol');
+  S.vigilarInsignias(lista);
+  const tarjeta = vertical => ({ tipo: 'video', url: 'https://youtu.be/dQw4w9WgXcQ', titulo: 't', video: true, vertical,
+    medios: [{ tipo: 'imagen', url: 'https://i.ytimg.com/a.jpg' }], insertar: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ' });
+  const corto = S.crear(mensajeCon('x', { id: 'm-corto', enlaces: [tarjeta(true)] }));
+  const largo = S.crear(mensajeCon('x', { id: 'm-largo', enlaces: [tarjeta(false)] }));
+  lista.appendChild(corto);
+  lista.appendChild(largo);
+  for (const li of [corto, largo]) {
+    todos(li, 'BUTTON').find(b => String(b.className).includes('boton-insertar')).disparar('click');
+  }
+  assert.match(String(todos(corto, 'IFRAME')[0].className), /vertical/);
+  assert.match(String(todos(largo, 'IFRAME')[0].className), /horizontal/);
+});
+
+/* ----------------------------------------------------- clips de Kick */
+
+test('un clip de Kick se reconoce en sus dos formas de link, y un canal raro no', () => {
+  assert.deepEqual(enlaces.clipDeKick('https://kick.com/istincho/clips/clip_01ABC'), { canal: 'istincho' });
+  assert.deepEqual(enlaces.clipDeKick('https://kick.com/istincho?clip=clip_01ABC'), { canal: 'istincho' });
+  assert.equal(enlaces.clipDeKick('https://kick.com/istincho'), null, 'el canal solo no es un clip');
+  assert.equal(enlaces.clipDeKick('https://kick.com/../clips/x'), null);
+});
+
+test('un clip de Kick con metas sale con su titulo y su portada', async () => {
+  enlaces.fijarPedidor(async url => ({ url, cuerpo: html(
+    '<meta property="og:title" content="el mejor clip | Kick"><meta property="og:image" content="https://clips.kick.com/a.jpg">') }));
+  const v = await enlaces.vistaPrevia('https://kick.com/istincho/clips/clip_01ABC');
+  assert.equal(v.tipo, 'clip');
+  assert.equal(v.sitio, 'Kick · istincho');
+  assert.equal(v.titulo, 'el mejor clip', 'la marca ya va en el sitio');
+  assert.equal(v.medios[0].url, 'https://clips.kick.com/a.jpg');
+});
+
+test('si Kick no deja leer el clip, la tarjeta sale igual', async () => {
+  enlaces.fijarPedidor(async () => { throw new Error('HTTP 403'); });
+  const v = await enlaces.vistaPrevia('https://kick.com/istincho/clips/clip_02XYZ');
+  assert.equal(v.titulo, 'Clip de istincho');
+  assert.deepEqual(v.medios, []);
+});

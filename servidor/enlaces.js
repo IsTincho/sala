@@ -240,13 +240,37 @@ const esTwitter = u => /(^|\.)(twitter|x)\.com$/.test(u.hostname) && /\/status\/
 
 /* YouTube y Twitter tienen oEmbed publico y sin clave: trae el titulo
    y el autor de verdad, no lo que la pagina quiera poner en sus metas. */
+/* El id de un video de YouTube, venga el link como venga: watch?v=,
+   youtu.be/, /shorts/, /live/ o /embed/. Son siempre 11 caracteres. */
+export function idDeYoutube(url) {
+  const u = new URL(url);
+  const id = u.hostname === 'youtu.be'
+    ? u.pathname.slice(1).split('/')[0]
+    : u.searchParams.get('v') ?? /^\/(?:shorts|live|embed)\/([^/?#]+)/.exec(u.pathname)?.[1] ?? '';
+  return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : '';
+}
+
+/* El reproductor de YouTube para insertar, en su version sin cookies
+   (youtube-nocookie.com, documentada por YouTube): no deja nada en el
+   navegador de quien mira hasta que le da play. */
+export const urlReproductorYoutube = id => `https://www.youtube-nocookie.com/embed/${id}`;
+
 async function vistaDeYoutube(url) {
   const r = await pedir(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`);
   const d = JSON.parse(r.cuerpo);
+  const id = idDeYoutube(url);
+  const short = /^\/shorts\//.test(new URL(url).pathname);
+  const portada = imagenSegura(d.thumbnail_url ?? '', url);
   return {
-    tipo: 'video', url, sitio: 'YouTube',
+    tipo: 'video', url, sitio: short ? 'YouTube Shorts' : 'YouTube',
     titulo: recortar(d.title, 140), descripcion: '',
-    imagen: imagenSegura(d.thumbnail_url ?? '', url), autor: recortar(d.author_name, 80),
+    /* La portada va grande, como medio, y no chiquita al costado: el
+       boton "Ver el video aca" la reemplaza por el reproductor. */
+    imagen: '', autor: recortar(d.author_name, 80),
+    medios: portada ? [{ tipo: 'imagen', url: portada, poster: '' }] : [],
+    ...(id ? { insertar: urlReproductorYoutube(id) } : {}),
+    video: true,
+    vertical: short,
   };
 }
 
@@ -439,6 +463,7 @@ export function vistaDeOembedTiktok(url, d) {
     medios: portada ? [{ tipo: 'imagen', url: portada, poster: '' }] : [],
     ...(id ? { insertar: urlReproductorTiktok(id) } : {}),
     video: true,
+    vertical: true,
   };
 }
 
@@ -452,10 +477,56 @@ async function vistaDeTiktok(url) {
   return vistaDeOembedTiktok(largo, JSON.parse(r.cuerpo));
 }
 
+/* -------------------------------------------------------- clips de Kick
+
+   Kick no tiene API para clips: la que usa su propia web
+   (`kick.com/api/v2`) no esta documentada y sus terminos de
+   desarrollador prohiben usarla sin permiso escrito —el mismo motivo
+   por el que las insignias de Kick son un set propio (insignias.js)—.
+   Tampoco hay un reproductor de clips documentado para insertar.
+
+   Asi que un clip sale SIEMPRE con su tarjeta ("Clip de Kick · canal",
+   que abre el clip en Kick), y con portada y titulo solo si la pagina
+   del clip los deja leer en sus metas Open Graph. Kick tiene
+   proteccion anti-bots delante de su web y muchas veces no. */
+
+export function clipDeKick(url) {
+  const u = new URL(url);
+  if (!/^(www\.)?kick\.com$/.test(u.hostname)) return null;
+  const partes = u.pathname.split('/').filter(Boolean);
+  const canal = partes[0] ?? '';
+  const esClip = (partes[1] === 'clips' && partes[2]) || u.searchParams.get('clip');
+  if (!esClip || !/^[A-Za-z0-9_-]{1,40}$/.test(canal)) return null;
+  return { canal };
+}
+
+async function vistaDeClipKick(url, { canal }) {
+  const base = {
+    tipo: 'clip', url, sitio: `Kick · ${canal}`, titulo: `Clip de ${canal}`,
+    descripcion: '', imagen: '', autor: canal, medios: [],
+  };
+  try {
+    const r = await pedir(url);
+    const pagina = vistaDePagina(r.url ?? url, r.cuerpo);
+    if (!pagina) return base;
+    return {
+      ...base,
+      /* "Titulo del clip | Kick": la marca ya va en el sitio */
+      titulo: pagina.titulo.replace(/\s*[|·-]\s*Kick\s*$/i, '') || base.titulo,
+      descripcion: pagina.descripcion,
+      medios: pagina.imagen ? [{ tipo: 'imagen', url: pagina.imagen, poster: '' }] : [],
+    };
+  } catch {
+    return base;
+  }
+}
+
 async function armar(url) {
   const u = new URL(url);
   if (esYoutube(u)) return vistaDeYoutube(url);
   if (esTiktok(u)) return vistaDeTiktok(url);
+  const clip = clipDeKick(url);
+  if (clip) return vistaDeClipKick(url, clip);
   const codigoIg = codigoDeInstagram(u);
   if (codigoIg) return vistaDeInstagram(url, codigoIg);
   if (esTwitter(u)) {

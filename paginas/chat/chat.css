@@ -974,3 +974,12 @@ select:focus-visible{
   aspect-ratio: 9 / 16;
   background: #000;
 }
+
+.vista-clip{ border-left-color: #53fc18; }
+/* un video comun de YouTube, apaisado */
+.vista-insercion-horizontal{
+  max-width: 34rem;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}

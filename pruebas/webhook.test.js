@@ -221,3 +221,43 @@ test('olvidar deja que un evento que fallo se vuelva a intentar', () => {
   assert.equal(webhook.yaVisto('EVENTO-QUE-FALLA'), false,
     'sin esto, el reintento de Kick se contesta "repetido" y el evento se pierde');
 });
+
+/* ----------------------------------- la clave de Kick puede cambiar */
+
+test('si Kick cambia su clave, se vuelve a pedir y el webhook entra', async () => {
+  /* El caso que dejaba el chat de Kick mudo en silencio: la clave se
+     pedia una vez por arranque y se usaba para siempre. Con la vieja
+     guardada, todo webhook firmado con la nueva daba 401 sin un log. */
+  const nueva = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  const fetchDeVerdad = globalThis.fetch;
+  let pedidos = 0;
+  const claves = [publicKey, nueva.publicKey];
+  globalThis.fetch = async () => {
+    const pem = claves[Math.min(pedidos++, claves.length - 1)];
+    return new Response(JSON.stringify({ data: { public_key: pem } }), { status: 200 });
+  };
+  try {
+    webhook.fijarClavePublica(null);          // como en produccion: la clave se pide a Kick
+    assert.equal(await webhook.verificar(cabecerasFirmadas(PAYLOAD), PAYLOAD), true, 'con la de siempre');
+    assert.equal(pedidos, 1);
+
+    const id = 'MENSAJE-ROTADO', ts = '2026-01-14T16:08:07Z';
+    const cabeceras = { ...cabecerasFirmadas(PAYLOAD, { id, ts }),
+      'kick-event-signature': firmarComoKick(id, ts, PAYLOAD, nueva.privateKey) };
+    assert.equal(await webhook.verificar(cabeceras, PAYLOAD), true, 'firmado con la nueva: se renueva y entra');
+    assert.equal(pedidos, 2);
+
+    /* Una firma trucha no puede convertirse en un pedido a Kick por intento */
+    const trucha = { ...cabeceras, 'kick-event-signature': firmarComoKick(id, ts, 'otra cosa', nueva.privateKey) };
+    assert.equal(await webhook.verificar(trucha, PAYLOAD), false);
+    assert.equal(await webhook.verificar(trucha, PAYLOAD), false);
+    assert.equal(pedidos, 2, 'como mucho una renovacion por minuto');
+  } finally {
+    globalThis.fetch = fetchDeVerdad;
+    webhook.fijarClavePublica(publicKey);
+  }
+});

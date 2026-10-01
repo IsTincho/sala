@@ -4,6 +4,30 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-10-01 — Kick mudo: el webhook rechazaba en silencio
+
+**Lo que pasó:** en vivo, el multichat mostraba solo Twitch. Los logs de Railway tenían dos
+`[webhook] chat.message.sent` (30/09, 20:21 y 20:22) y después nada en 21 horas con el stream
+prendido, ni siquiera un "descartado por viejo". Resuscribir no creó nada: la suscripción del
+chat existía.
+
+**Lo que se encontró, de antes y no de esta semana:** `webhook.verificar` contestaba 401 **sin
+una línea de log** cuando faltaban los headers o la firma no daba, y la clave pública de Kick se
+pedía **una vez por arranque y se usaba para siempre**. Si Kick la cambia, todos los webhooks dan
+inválidos hasta el próximo deploy, y lo único que se ve es Twitch andando (entra por otro lado).
+
+**Arreglo:**
+- Si la firma no da, la clave se vuelve a pedir a Kick y se prueba de nuevo (como mucho una
+  renovación por minuto: una firma trucha no puede ser un pedido a Kick por intento). Si cambió,
+  queda en el log: `Kick cambio su clave publica: se renovo`.
+- Cada rechazo deja `[webhook] rechazado (401): <motivo>`, una vez por minuto por motivo.
+- El descarte por viejo dice cuántos segundos tarde llegó, para ver si Kick está atrasando.
+
+**Si después de esto el log sigue mudo**, Kick no está mandando nada: hay que mirar el portal de
+desarrollador de Kick (webhooks habilitados, URL).
+
+---
+
 ## 2026-09-30 — Emotes recientes y un chat más parecido al de Kick
 
 ### Emotes recientes

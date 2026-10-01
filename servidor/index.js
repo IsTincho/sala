@@ -738,7 +738,11 @@ async function kickWebhook(url, req, res) {
      Se contesta 200 y no 401 para que Kick deje de reintentarlo: un
      evento viejo no mejora por reintentarse. */
   if (!webhook.esReciente(evento.cuando)) {
-    console.warn(`[webhook] ${evento.tipo} descartado por viejo (${evento.cuando})`);
+    /* Cuanto tarde llego: si Kick esta atrasando las entregas (pasa,
+       KickDevDocs #300), esto es lo que lo dice en el log. */
+    const tarde = Math.round((Date.now() - Date.parse(evento.cuando)) / 1000);
+    console.warn(`[webhook] ${evento.tipo} descartado por viejo (${evento.cuando}` +
+                 `${Number.isFinite(tarde) ? `, llego ${tarde} s tarde` : ''})`);
     return texto(res, 200, 'vencido');
   }
 

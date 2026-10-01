@@ -24,6 +24,12 @@ import crypto from 'node:crypto';
 const URL_CLAVE = 'https://api.kick.com/public/v1/public-key';
 
 let clave = null;
+/* Si la clave la puso un test a mano: esa no se vuelve a pedir nunca. */
+let claveFijada = false;
+let ultimaRenovacion = 0;
+/* Como mucho una renovacion por minuto: una firma invalida puede ser
+   alguien probando la URL, y cada intento no puede ser un pedido a Kick. */
+const ENTRE_RENOVACIONES = 60_000;
 
 /**
  * Fija la clave publica a mano. Solo la usan los tests, que firman un
@@ -34,6 +40,7 @@ let clave = null;
  */
 export function fijarClavePublica(pem) {
   clave = pem;
+  claveFijada = Boolean(pem);
 }
 
 export async function clavePublica() {
@@ -55,22 +62,62 @@ export async function clavePublica() {
  * produccion pasa bytes de punta a punta y nunca los decodifica, asi
  * un cuerpo que no sea UTF-8 perfecto igual verifica bien.
  */
+/* ANTES ESTO FALLABA EN SILENCIO, y es la peor forma de fallar de todo
+   el servicio: un webhook que no verifica se contesta 401 y el chat de
+   Kick queda mudo, mientras Twitch (que entra por otro lado) sigue
+   andando y hace parecer que todo esta bien. Ahora cada rechazo dice
+   por que en el log, como mucho una vez por minuto por motivo. */
+const ultimoAviso = new Map();
+function avisarRechazo(motivo) {
+  const ahora = Date.now();
+  if (ahora - (ultimoAviso.get(motivo) ?? 0) < 60_000) return;
+  ultimoAviso.set(motivo, ahora);
+  console.warn(`[webhook] rechazado (401): ${motivo}`);
+}
+
+function firmaValida(pem, id, ts, firma, crudo) {
+  const cuerpo = Buffer.isBuffer(crudo) ? crudo : Buffer.from(String(crudo), 'utf8');
+  const v = crypto.createVerify('RSA-SHA256');   // PKCS#1 v1.5 es el default
+  v.update(Buffer.concat([Buffer.from(`${id}.${ts}.`, 'utf8'), cuerpo]));
+  v.end();
+  return v.verify(pem, Buffer.from(firma, 'base64'));
+}
+
 export async function verificar(headers, crudo) {
   const id    = headers['kick-event-message-id'];
   const ts    = headers['kick-event-message-timestamp'];
   const firma = headers['kick-event-signature'];
-  if (!id || !ts || !firma) return false;
+  if (!id || !ts || !firma) { avisarRechazo('faltan los headers de la firma de Kick'); return false; }
 
   let pem;
   try { pem = await clavePublica(); }
   catch (e) { console.error('[webhook] no se pudo traer la clave:', e.message); return false; }
 
   try {
-    const cuerpo = Buffer.isBuffer(crudo) ? crudo : Buffer.from(String(crudo), 'utf8');
-    const v = crypto.createVerify('RSA-SHA256');   // PKCS#1 v1.5 es el default
-    v.update(Buffer.concat([Buffer.from(`${id}.${ts}.`, 'utf8'), cuerpo]));
-    v.end();
-    return v.verify(pem, Buffer.from(firma, 'base64'));
+    if (firmaValida(pem, id, ts, firma, crudo)) return true;
+
+    /* LA CLAVE GUARDADA PUEDE HABER VENCIDO. Se pedia una sola vez por
+       arranque y se usaba para siempre: si Kick la cambia, TODOS los
+       webhooks dan invalidos hasta el proximo deploy. Ante una firma
+       que no da, se vuelve a pedir (una vez por minuto como mucho) y
+       se prueba de nuevo con la nueva. */
+    if (!claveFijada && Date.now() - ultimaRenovacion > ENTRE_RENOVACIONES) {
+      ultimaRenovacion = Date.now();
+      const vieja = clave;
+      clave = null;
+      try {
+        const nueva = await clavePublica();
+        if (nueva !== vieja) {
+          console.warn('[webhook] Kick cambio su clave publica: se renovo');
+          if (firmaValida(nueva, id, ts, firma, crudo)) return true;
+        }
+      } catch (e) {
+        clave = vieja;   // sin clave nueva, la de antes es mejor que ninguna
+        console.error('[webhook] no se pudo renovar la clave:', e.message);
+      }
+    }
+    avisarRechazo('la firma no coincide con la clave publica de Kick');
+    return false;
   } catch (e) {
     console.error('[webhook] error verificando:', e.message);
     return false;

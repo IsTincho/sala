@@ -86,6 +86,7 @@ import * as metricas from './metricas.js';
 import * as r2 from './r2.js';
 import * as reloj from './reloj.js';
 import * as sesion from './sesion.js';
+import * as starvios from './starvios.js';
 import * as twitch from './twitch.js';
 import * as videos from './videos.js';
 import * as vinculos from './vinculos.js';
@@ -3334,12 +3335,17 @@ export async function arrancar() {
   chat.arrancar({ base: process.env.URL_BASE ?? '' })
     .catch(e => console.warn('[chat] no se pudo arrancar:', e.message));
 
+  /* Starvios va aparte del vinculo de cada sala: se lee su chat
+     publico, sin login, con la sala que diga la configuracion. */
+  starvios.arrancar(chat.recibirDeStarvios);
+
   const servidor = crearServidor();
   servidor.listen(PUERTO, () => console.log(`[http] escuchando en :${PUERTO} (modo ${MODO})`));
 
   const apagar = () => {
     console.log('[sala] apagando');
     chat.parar();
+    starvios.parar();
     for (const t of presenciaPendiente.values()) clearTimeout(t);
     presenciaPendiente.clear();
     canales.cerrarTodo();

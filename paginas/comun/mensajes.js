@@ -98,9 +98,9 @@
   }
 
   function obtenerColorDeRed(red) {
-    const nombre = red === 'kick' ? '--kick' : '--twitch';
+    const nombre = red === 'kick' ? '--kick' : red === 'starvios' ? '--starvios' : '--twitch';
     const valor = variableCss(nombre);
-    return REGEX_COLOR_HEX.test(valor) ? valor : (red === 'kick' ? '#53fc18' : '#9146ff');
+    return REGEX_COLOR_HEX.test(valor) ? valor : (red === 'kick' ? '#53fc18' : red === 'starvios' ? '#ff4fa3' : '#9146ff');
   }
 
   const canales = hex => [
@@ -540,12 +540,15 @@
    * clon no se lleva las escuchas: el boton de la columna no haria
    * nada y nadie se enteraria hasta que alguien lo tocara.
    */
+  const NOMBRE_RED = { kick: 'Kick', twitch: 'Twitch', starvios: 'Starvios' };
+  const redDe = datos => (datos.red === 'kick' || datos.red === 'starvios' ? datos.red : 'twitch');
+
   function crear(datos, opciones = {}) {
     const li = document.createElement('li');
     li.className = 'mensaje';
     li.dataset.id = datos.id;
     /* Lo usa el CSS del filtro de la vista mezclada de /chat. */
-    li.dataset.red = datos.red === 'kick' ? 'kick' : 'twitch';
+    li.dataset.red = redDe(datos);
     /* Quien escribio, para poder repintarle el nombre a los mensajes
        que ya estan en pantalla cuando esa persona cambia su color. Es
        el mismo id que ya viaja en el mensaje (y que la plataforma
@@ -566,8 +569,8 @@
     // el chip de red lleva texto ademas de color: el color solo no
     // puede ser el unico canal de informacion.
     const chipRed = document.createElement('span');
-    chipRed.className = 'chip-red ' + (datos.red === 'kick' ? 'chip-red-kick' : 'chip-red-twitch');
-    chipRed.textContent = datos.red === 'kick' ? 'Kick' : 'Twitch';
+    chipRed.className = 'chip-red chip-red-' + redDe(datos);
+    chipRed.textContent = NOMBRE_RED[redDe(datos)];
     /* Se ve el icono de la red (chat.css); el nombre sigue ahi para los
        lectores de pantalla y al pasar el mouse. */
     chipRed.title = chipRed.textContent;
@@ -594,7 +597,10 @@
        teclado tambien se ven (chat.css). */
     const acciones = document.createElement('span');
     acciones.className = 'acciones-mensaje';
-    if (opciones.conBloquear && datos.usuarioId) {
+    /* Starvios no tiene bloqueo ni color propio en esta herramienta:
+       no se escribe hacia alla, asi que no hay nada que bloquear. */
+    const conAcciones = opciones.conBloquear && datos.usuarioId && redDe(datos) !== 'starvios';
+    if (conAcciones) {
       const boton = document.createElement('button');
       boton.type = 'button';
       boton.className = 'boton-bloquear';
@@ -611,7 +617,7 @@
        pintado con el color que le da la plataforma no hay nada que
        resetear, y un boton que no hace nada es ruido en cada renglon
        del chat. */
-    if (opciones.conBloquear && datos.usuarioId && datos.colorPropio) {
+    if (conAcciones && datos.colorPropio) {
       const boton = document.createElement('button');
       boton.type = 'button';
       boton.className = 'boton-color';

@@ -709,6 +709,48 @@ export function actividadDeTwitch(tipo, evento, metadata = {}) {
   }
 }
 
+/**
+ * Una fila de `live_chat_messages` de Starvios al formato unico.
+ *
+ * Starvios no tiene API documentada: la fila es la que devuelve su
+ * PostgREST publico con el join a `profiles` que hace su propia web
+ * (ver servidor/starvios.js). Sus emotes van como `:nombre:` en el
+ * texto y no hay de donde sacar la imagen, asi que viajan como texto.
+ * Las monedas (`coins`) son el mensaje pagado: se anotan en una
+ * insignia de texto para que no pasen como uno comun.
+ *
+ * @returns {object|null} null si la fila no es un mensaje mostrable
+ */
+export function deStarvios(fila) {
+  if (!fila || typeof fila !== 'object' || fila.is_deleted) return null;
+  const cuerpo = limpiar(fila.body);
+  if (!cuerpo || !fila.id) return null;
+  const perfil = fila.profiles ?? {};
+
+  const insignias = (Array.isArray(fila.badges) ? fila.badges : [])
+    .map(b => (typeof b === 'string' ? b : b?.type ?? b?.id ?? ''))
+    .filter(Boolean)
+    .slice(0, 4)
+    .map(t => ({ tipo: String(t).slice(0, 40), version: '', texto: String(t).slice(0, 40), url: '' }));
+  const monedas = Number(fila.coins ?? 0);
+  if (Number.isFinite(monedas) && monedas > 0) {
+    insignias.unshift({ tipo: 'monedas', version: '', texto: `${monedas} ★`, url: '' });
+  }
+
+  return {
+    tipo: 'chat',
+    red: 'starvios',
+    id: String(fila.id),
+    usuario: String(perfil.display_name || perfil.username || 'anonimo').slice(0, 80),
+    usuarioId: String(fila.user_id ?? ''),
+    color: colorSeguro(perfil.chat_color),
+    insignias,
+    texto: cuerpo,
+    emotes: [],
+    hora: horaIso(fila.created_at),
+  };
+}
+
 /* ------------------------------------------------------------ horas */
 
 /**

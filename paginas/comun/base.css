@@ -15,6 +15,7 @@
   /* colores de marca, fijos por identidad visual, no por tema */
   --kick:   #53fc18;
   --twitch: #9146ff;
+  --starvios: #ff4fa3;
 
   /* EL FONDO MAS DESFAVORABLE sobre el que puede caer el nombre de
      alguien, en cada tema. Contra estos dos se corrige el color propio

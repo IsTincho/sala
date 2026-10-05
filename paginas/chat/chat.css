@@ -286,6 +286,8 @@ html, body{
    sacando el mensaje de la lista: sacarlo haria que volver a "todas"
    no pueda traer de vuelta lo que ya paso. */
 .lista-mensajes[data-filtro="kick"]   > .mensaje[data-red="twitch"],
+.lista-mensajes[data-filtro="kick"]   > .mensaje[data-red="starvios"],
+.lista-mensajes[data-filtro="twitch"] > .mensaje[data-red="starvios"],
 .lista-mensajes[data-filtro="twitch"] > .mensaje[data-red="kick"]{
   display: none;
 }
@@ -314,6 +316,7 @@ html, body{
 
 .chip-red-kick{ background: var(--kick); }
 .chip-red-twitch{ background: var(--twitch); color: #fff; }
+.chip-red-starvios{ background: var(--starvios); color: #fff; }
 
 .usuario{
   font-weight: 600;
@@ -1119,6 +1122,7 @@ select:focus-visible{
 }
 .chip-red-kick{ background-image: url("/comun/redes/kick.svg"); }
 .chip-red-twitch{ background-image: url("/comun/redes/twitch.svg"); }
+.chip-red-starvios{ background-image: url("/comun/redes/starvios.svg"); }
 
 /* ---------- el boton de emotes, adentro de la caja ---------- */
 .campo-envoltura{ position: relative; display: flex; }

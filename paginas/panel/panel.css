@@ -278,6 +278,7 @@ button:focus-visible, a:focus-visible, select:focus-visible{
 
 .chip-red-kick{ background: var(--kick); }
 .chip-red-twitch{ background: var(--twitch); color: #fff; }
+.chip-red-starvios{ background: var(--starvios); color: #fff; }
 
 /* ---------- el link del chat abierto, con su QR al lado ---------- */
 

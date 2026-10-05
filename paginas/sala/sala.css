@@ -247,6 +247,7 @@
 }
 .chip-red-kick{ background: var(--kick); }
 .chip-red-twitch{ background: var(--twitch); color: #fff; }
+.chip-red-starvios{ background: var(--starvios); color: #fff; }
 
 .chip-insignia{
   display: inline-block;

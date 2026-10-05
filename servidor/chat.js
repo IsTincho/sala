@@ -695,6 +695,29 @@ export function recibirActividad(slug, a) {
   return true;
 }
 
+/* ------------------------------------------------------- Starvios */
+
+/**
+ * Un mensaje de Starvios de una sala (lo trae servidor/starvios.js).
+ *
+ * Tercer embudo, con lo mismo que los otros dos menos las insignias
+ * (Starvios no publica imagenes). El dedupe por id cubre el solape
+ * entre dos lecturas seguidas del poller: pide "desde la ultima hora
+ * vista" con >=, y el ultimo mensaje vuelve a venir.
+ */
+export function recibirDeStarvios(slug, mensaje) {
+  if (!mensaje) return false;
+  const c = canalDeChat(slug);
+  const clave = `starvios:${mensaje.id}`;
+  if (c.vistos.has(clave)) return false;
+  c.vistos.add(clave);
+  if (c.vistos.size > TOPE_VISTOS) c.vistos.delete(c.vistos.values().next().value);
+  emotes.resolver(mensaje, c.slug);
+  colores.pintar(mensaje);
+  canales.recordar(c.slug, mensaje);
+  return true;
+}
+
 /* --------------------------------------------------------- plan B */
 
 function revisarPlanB(c) {

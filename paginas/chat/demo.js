@@ -125,6 +125,18 @@
       ],
       hora: new Date(Date.now() - 5000).toISOString(),
     },
+    {
+      tipo: 'chat', red: 'starvios', id: 'demo-13', usuario: 'estrellita',
+      color: '#ff476c', insignias: [{ tipo: 'vip', texto: 'VIP', url: '/comun/insignias/kick/vip.svg' }],
+      texto: 'hola desde Starvios', emotes: [],
+      hora: new Date(Date.now() - 4000).toISOString(),
+    },
+    {
+      tipo: 'chat', red: 'starvios', id: 'demo-14', usuario: 'donadora',
+      color: '#2dd4bf', insignias: [{ tipo: 'monedas', texto: '50 Starvies', url: '' }],
+      texto: 'tomá unos Starvies', emotes: [],
+      hora: new Date(Date.now() - 3000).toISOString(),
+    },
   ];
 
   const usuariosSiguiente = [
@@ -132,6 +144,7 @@
     { usuario: 'otro_de_twitch', red: 'twitch', color: '#9146ff' },
     { usuario: 'fan_del_stream', red: 'kick', color: '#ff8800' },
     { usuario: 'lurker_activo', red: 'twitch', color: '#00c2cc' },
+    { usuario: 'desde_starvios', red: 'starvios', color: '#ff4fa3' },
   ];
 
   const textosSiguiente = [

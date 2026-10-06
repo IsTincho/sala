@@ -82,6 +82,16 @@
   const columnaMezclada = document.getElementById('columna-mezclada');
   const columnaKick     = document.getElementById('columna-kick');
   const columnaTwitch   = document.getElementById('columna-twitch');
+  const columnaStarvios = document.getElementById('columna-starvios');
+  /* Si la sala tiene Starvios. Lo dicen /api/chat/salud (creador) y
+     /abierto (publico); y por las dudas, el primer mensaje que llegue
+     de alla tambien lo prende. */
+  let hayStarvios = false;
+  function prenderStarvios() {
+    if (hayStarvios) return;
+    hayStarvios = true;
+    aplicarFiltro();
+  }
 
   const botonVista  = document.getElementById('boton-vista');
   const botonLetra  = document.getElementById('boton-letra');
@@ -149,7 +159,7 @@
   const refrescarActividad = document.getElementById('refrescar-actividad');
   const cerrarActividad    = document.getElementById('cerrar-actividad');
 
-  const NOMBRE_RED = { kick: 'Kick', twitch: 'Twitch' };
+  const NOMBRE_RED = { kick: 'Kick', twitch: 'Twitch', starvios: 'Starvios' };
 
   // ---------- listas de mensajes: una por cada zona de scroll ----------
   // cada entrada guarda su propio estado de pausa/autoscroll, porque en
@@ -159,7 +169,10 @@
     mezclada: crearEstadoLista('lista-mezclada', 'boton-abajo-mezclada', 'contador-mezclada'),
     kick:     crearEstadoLista('lista-kick', 'boton-abajo-kick', 'contador-kick'),
     twitch:   crearEstadoLista('lista-twitch', 'boton-abajo-twitch', 'contador-twitch'),
+    starvios: crearEstadoLista('lista-starvios', 'boton-abajo-starvios', 'contador-starvios'),
   };
+
+  const listaDeRed = red => (red === 'kick' ? listas.kick : red === 'starvios' ? listas.starvios : listas.twitch);
 
   const TOPE_MENSAJES = 300; // por lista; una noche larga de stream no tiene que comerse la RAM
   const DISTANCIA_PEGADO = 40; // px de tolerancia para considerar que esta "abajo del todo"
@@ -361,7 +374,8 @@
   function manejarMensajeChat(datos) {
     const li = crearElementoMensaje(datos);
     agregarMensajeALista(listas.mezclada, li);
-    agregarMensajeALista(datos.red === 'kick' ? listas.kick : listas.twitch, li.cloneNode(true));
+    agregarMensajeALista(listaDeRed(datos.red), li.cloneNode(true));
+    if (datos.red === 'starvios') prenderStarvios();
   }
 
   // ---------- la vista previa de un link, que llega después ----------
@@ -387,7 +401,8 @@
   function manejarActividad(datos) {
     const li = window.SalaMensajes.crearActividad(datos);
     agregarMensajeALista(listas.mezclada, li);
-    agregarMensajeALista(datos.red === 'kick' ? listas.kick : listas.twitch, li.cloneNode(true));
+    agregarMensajeALista(listaDeRed(datos.red), li.cloneNode(true));
+    if (datos.red === 'starvios') prenderStarvios();
     // con la lista abierta, lo nuevo también tiene que aparecer ahí
     if (!panelActividad.hidden) programarPedidoActividad();
   }
@@ -425,7 +440,7 @@
     const frase = document.createElement('span');
     frase.className = 'actividad-frase';
     const chip = document.createElement('span');
-    chip.className = 'chip-red ' + (datos.red === 'kick' ? 'chip-red-kick' : 'chip-red-twitch');
+    chip.className = 'chip-red chip-red-' + (NOMBRE_RED[datos.red] ? datos.red : 'twitch');
     chip.textContent = NOMBRE_RED[datos.red] ?? '';
     frase.appendChild(chip);
     const f = window.SalaMensajes.escribirFrase(frase, datos);
@@ -600,6 +615,10 @@
     const columnas = estado.vista === 'columnas';
     columnaKick.hidden = !columnas || filtro === 'twitch';
     columnaTwitch.hidden = !columnas || filtro === 'kick';
+    /* Starvios se suma a las columnas cuando la sala lo tiene, y se va
+       con un filtro elegido a mano (mismo criterio que la mezclada). */
+    columnaStarvios.hidden = !columnas || !hayStarvios || estado.filtro !== 'todas';
+    areaMensajes.dataset.conStarvios = String(hayStarvios);
 
     pegarAbajoLasVisibles();
   }
@@ -714,6 +733,7 @@
 
   function aplicarSalud(salud) {
     ultimaSalud = salud;
+    if (salud?.starvios) prenderStarvios();
     actualizarTextosSalud();
   }
 
@@ -1712,6 +1732,7 @@
 
   // Lo que dice el servidor, venga de /abierto o del aviso por el bus.
   function aplicarAbierto(datos) {
+    if (datos?.starvios) prenderStarvios();
     if (!datos?.abierto) {
       // Cerrado se cierra de verdad: sin conexion al bus. Quedarse
       // escuchando mandaria el Kick de la sala a una pantalla que no lo

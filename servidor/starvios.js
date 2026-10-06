@@ -45,7 +45,8 @@
 import { numeroDeEntorno } from './entorno.js';
 import * as mensajes from './mensajes.js';
 
-const URL_API = (process.env.STARVIOS_SUPABASE_URL ?? 'https://naiijcvngtkkocligwvk.supabase.co') + '/rest/v1';
+const URL_BASE = process.env.STARVIOS_SUPABASE_URL ?? 'https://naiijcvngtkkocligwvk.supabase.co';
+const URL_API = URL_BASE + '/rest/v1';
 /* Clave publicable (sb_publishable_*) del proyecto de Starvios: es la
    que su web manda a todo visitante, no un secreto nuestro. Se puede
    pisar por variable el dia que la roten. */
@@ -56,7 +57,7 @@ export const CADA_DIRECTO = 30_000;
 const ESPERA_PEDIDO = 8_000;
 
 /* Las columnas que pide la web de Starvios para pintar su chat. */
-const COLUMNAS = 'id,user_id,body,coins,kind,badges,is_deleted,created_at,' +
+const COLUMNAS = 'id,user_id,body,coins,kind,meta,badges,is_deleted,created_at,' +
   'profiles:profiles!live_chat_messages_user_id_fkey(username,display_name,chat_color)';
 
 /** "slug:usuario,..." + STARVIOS_USUARIO para el dueño -> [[slug, usuario]] */
@@ -83,13 +84,94 @@ async function pedir(ruta) {
 
 const q = encodeURIComponent;
 
+/* ------------------------------------------------------ emotes
+
+   El catalogo es la tabla `channel_emotes` (codigo -> archivo en el
+   bucket `media`). El bucket NO es publico: la web de Starvios pide
+   URLs firmadas por 6 horas, y eso tambien lo puede hacer cualquiera
+   con la clave publicable. Se firma solo lo que aparece en el chat, de
+   a lote, y la URL se reusa hasta que esta por vencer: la misma URL
+   es la que deja al navegador usar su cache.
+
+   Es de todo Starvios y no por sala: los codigos son unicos en todo el
+   sitio, y un emote de otro canal puede aparecer en tu chat. */
+
+const VIDA_FIRMA = 6 * 60 * 60;            // segundos, lo mismo que su web
+const RENOVAR_ANTES = 60 * 60 * 1000;      // una hora de margen
+const CADA_CATALOGO = 60 * 60 * 1000;
+
+const catalogo = { porCodigo: new Map(), cuando: 0, pidiendo: null };
+const firmadas = new Map();                // ruta -> { url, vence }
+
+async function cargarCatalogo() {
+  const nuevo = new Map();
+  for (let desde = 0; desde < 20_000; desde += 1000) {
+    const filas = await pedir(`channel_emotes?select=code,storage_path&order=created_at&offset=${desde}&limit=1000`);
+    for (const f of filas) if (f?.code && f?.storage_path) nuevo.set(String(f.code), String(f.storage_path));
+    if (filas.length < 1000) break;
+  }
+  catalogo.porCodigo = nuevo;
+  catalogo.cuando = Date.now();
+}
+
+async function asegurarCatalogo() {
+  if (Date.now() - catalogo.cuando < CADA_CATALOGO) return;
+  catalogo.pidiendo ??= cargarCatalogo().finally(() => { catalogo.pidiendo = null; });
+  await catalogo.pidiendo;
+}
+
+async function firmar(rutas) {
+  const r = await fetch(`${URL_BASE}/storage/v1/object/sign/media`, {
+    method: 'POST',
+    headers: { apikey: CLAVE, authorization: `Bearer ${CLAVE}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ expiresIn: VIDA_FIRMA, paths: rutas }),
+    signal: AbortSignal.timeout(ESPERA_PEDIDO),
+  });
+  if (!r.ok) throw new Error(`firmar HTTP ${r.status}`);
+  const vence = Date.now() + VIDA_FIRMA * 1000;
+  for (const x of await r.json()) {
+    if (x?.path && typeof x.signedURL === 'string' && x.signedURL.startsWith('/')) {
+      firmadas.set(x.path, { url: `${URL_BASE}/storage/v1${x.signedURL}`, vence });
+    }
+  }
+}
+
+/**
+ * codigo -> URL para los codigos pedidos que existan. Nunca tira: un
+ * emote que no se pudo firmar sale como texto, no se lleva el mensaje.
+ */
+export async function urlsDeEmotes(codigos) {
+  const urls = new Map();
+  if (!codigos.length) return urls;
+  try {
+    await asegurarCatalogo();
+    const ahora = Date.now();
+    const faltan = new Set();
+    for (const c of codigos) {
+      const ruta = catalogo.porCodigo.get(c);
+      if (!ruta) continue;
+      const f = firmadas.get(ruta);
+      if (!f || f.vence - ahora < RENOVAR_ANTES) faltan.add(ruta);
+    }
+    const lista = [...faltan];
+    for (let i = 0; i < lista.length; i += 100) await firmar(lista.slice(i, i + 100));
+  } catch (e) {
+    console.warn('[starvios] emotes:', e?.message ?? e?.name ?? 'Error');
+  }
+  for (const c of codigos) {
+    const f = firmadas.get(catalogo.porCodigo.get(c));
+    if (f) urls.set(c, f.url);
+  }
+  return urls;
+}
+
 /* ------------------------------------------------- un canal leido */
 
 class LectorStarvios {
   /**
    * @param {string} slug     la sala donde caen los mensajes
    * @param {string} usuario  el usuario en starvios.com
-   * @param {(slug:string, mensaje:object) => void} entregar
+   * @param {{chat:(slug:string, m:object) => void, actividad:(slug:string, a:object) => void}} entregar
    */
   constructor(slug, usuario, entregar) {
     this.slug = slug;
@@ -159,13 +241,21 @@ class LectorStarvios {
     const filas = await pedir(
       `live_chat_messages?select=${q(COLUMNAS)}&stream_id=eq.${q(this.directoId)}` +
       `&created_at=gt.${q(this.desde)}&order=created_at.asc&limit=100`);
+    const codigos = filas.filter(f => (f.kind ?? 'chat') === 'chat')
+      .flatMap(f => mensajes.codigosDeStarvios(f.body));
+    const urls = await urlsDeEmotes([...new Set(codigos)]);
     for (const fila of filas) {
       if (fila.created_at) this.desde = fila.created_at;
-      const mensaje = mensajes.deStarvios(fila);
-      if (!mensaje) continue;
-      this.ultima = new Date();
-      try { this.entregar(this.slug, mensaje); }
-      catch (e) { console.warn(`[starvios] ${this.slug}: no se pudo entregar un mensaje:`, e?.name ?? 'Error'); }
+      try {
+        const a = mensajes.actividadDeStarvios(fila);
+        if (a) { this.entregar.actividad(this.slug, a); continue; }
+        const mensaje = mensajes.deStarvios(fila, { emotes: urls });
+        if (!mensaje) continue;
+        this.ultima = new Date();
+        this.entregar.chat(this.slug, mensaje);
+      } catch (e) {
+        console.warn(`[starvios] ${this.slug}: no se pudo entregar un mensaje:`, e?.name ?? 'Error');
+      }
     }
     this.error = '';
   }
@@ -186,7 +276,8 @@ const lectores = new Map();   // slug -> LectorStarvios
 
 /**
  * Arranca un lector por sala configurada. No tira nunca.
- * @param {(slug:string, mensaje:object) => void} entregar  chat.recibirDeStarvios
+ * @param {{chat:Function, actividad:Function}} entregar
+ *        chat.recibirDeStarvios y chat.recibirActividad
  */
 export function arrancar(entregar, entorno = process.env) {
   parar();

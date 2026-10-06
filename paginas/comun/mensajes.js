@@ -706,13 +706,14 @@
   function crearActividad(datos) {
     const li = document.createElement('li');
     li.className = `mensaje mensaje-actividad actividad-${String(datos.clase ?? '')}`;
-    li.dataset.red = datos.red === 'kick' ? 'kick' : 'twitch';
+    li.dataset.red = redDe(datos);
 
     const fila = document.createElement('div');
     fila.className = 'mensaje-linea';
     const chipRed = document.createElement('span');
-    chipRed.className = 'chip-red ' + (datos.red === 'kick' ? 'chip-red-kick' : 'chip-red-twitch');
-    chipRed.textContent = datos.red === 'kick' ? 'Kick' : 'Twitch';
+    chipRed.className = 'chip-red chip-red-' + redDe(datos);
+    chipRed.textContent = NOMBRE_RED[redDe(datos)];
+    chipRed.title = chipRed.textContent;
     fila.appendChild(chipRed);
 
     const frase = document.createElement('span');

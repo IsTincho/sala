@@ -205,7 +205,8 @@ html, body{
   min-height: 0;
 }
 
-.columna-kick + .columna-twitch{
+.columna-kick + .columna-twitch,
+.columna-twitch + .columna-starvios{
   border-left: 1px solid var(--borde);
 }
 
@@ -800,7 +801,8 @@ select:focus-visible{
 
 @media (max-width: 640px){
   .area-mensajes[data-vista="columnas"] .columna-kick,
-  .area-mensajes[data-vista="columnas"] .columna-twitch{
+  .area-mensajes[data-vista="columnas"] .columna-twitch,
+  .area-mensajes[data-vista="columnas"] .columna-starvios{
     display: none !important;
   }
   .area-mensajes[data-vista="columnas"] .columna-mezclada{

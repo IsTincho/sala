@@ -949,7 +949,12 @@ async function salaCerrada(slug, res) {
 
 /** Como estan las dos vias del chat de la sala de quien pregunta. */
 async function apiChatSalud(url, req, res) {
-  return conCreador(req, res, slug => json(res, 200, chat.salud(slug)));
+  /* `starvios` solo aparece si la sala lo tiene configurado: la pagina
+     lo usa para saber si arma la tercera columna. */
+  return conCreador(req, res, slug => {
+    const deStarvios = starvios.salud(slug);
+    return json(res, 200, deStarvios ? { ...chat.salud(slug), starvios: deStarvios } : chat.salud(slug));
+  });
 }
 
 /**
@@ -2564,7 +2569,11 @@ async function apiChatAbierto(url, req, res, p) {
   const slug = creadores.normalizar(p.slug);
   if (!await canalPermitido(slug)) return json(res, 404, { error: 'esa sala no existe' });
   const c = await creadores.chatAbierto(slug);
-  return json(res, 200, { abierto: c.activo, redes: c.activo ? [...c.redes] : [] });
+  const cuerpo = { abierto: c.activo, redes: c.activo ? [...c.redes] : [] };
+  /* Solo si la sala lo tiene: la pagina arma la columna de Starvios.
+     Es publico como el resto: es el chat publico de un directo. */
+  if (starvios.salud(slug)) cuerpo.starvios = true;
+  return json(res, 200, cuerpo);
 }
 
 /**
@@ -3341,7 +3350,7 @@ export async function arrancar() {
 
   /* Starvios va aparte del vinculo de cada sala: se lee su chat
      publico, sin login, con la sala que diga la configuracion. */
-  starvios.arrancar(chat.recibirDeStarvios);
+  starvios.arrancar({ chat: chat.recibirDeStarvios, actividad: chat.recibirActividad });
 
   const servidor = crearServidor();
   servidor.listen(PUERTO, () => console.log(`[http] escuchando en :${PUERTO} (modo ${MODO})`));

@@ -709,46 +709,144 @@ export function actividadDeTwitch(tipo, evento, metadata = {}) {
   }
 }
 
-/**
- * Una fila de `live_chat_messages` de Starvios al formato unico.
- *
- * Starvios no tiene API documentada: la fila es la que devuelve su
- * PostgREST publico con el join a `profiles` que hace su propia web
- * (ver servidor/starvios.js). Sus emotes van como `:nombre:` en el
- * texto y no hay de donde sacar la imagen, asi que viajan como texto.
- * Las monedas (`coins`) son el mensaje pagado: se anotan en una
- * insignia de texto para que no pasen como uno comun.
- *
- * @returns {object|null} null si la fila no es un mensaje mostrable
- */
-export function deStarvios(fila) {
-  if (!fila || typeof fila !== 'object' || fila.is_deleted) return null;
-  const cuerpo = limpiar(fila.body);
-  if (!cuerpo || !fila.id) return null;
-  const perfil = fila.profiles ?? {};
+/* ------------------------------------------------------------ starvios
 
-  const insignias = (Array.isArray(fila.badges) ? fila.badges : [])
-    .map(b => (typeof b === 'string' ? b : b?.type ?? b?.id ?? ''))
+   Starvios no tiene API documentada: la fila es la que devuelve su
+   PostgREST publico con el join a `profiles` que hace su propia web
+   (ver servidor/starvios.js). Lo que se sabe de su forma salio de leer
+   el JS de starvios.com y de filas reales:
+
+     kind      'chat' | 'sub' | 'gift_sub' | 'raid' | 'starfall' | 'system'
+     meta      sub: {months}; gift_sub: {months, recipient, anonymous?};
+               raid: {viewers}; starfall: {level, points};
+               system: {bot, event}
+     coins     Starvies donados con el mensaje (el mensaje pagado)
+     badges    ['owner' | 'moderator' | 'vip' | 'member' | 'staff' | ...]
+
+   Los emotes viajan como `:codigo:` en el texto. Los codigos son unicos
+   en todo Starvios (815 el 2026-10-06, ninguno repetido), asi que con
+   el catalogo alcanza: el traductor recibe un Map codigo -> URL ya
+   firmada y no sabe de donde sale. */
+
+/* Las insignias de Starvios con dibujo en el set propio de Kick
+   (paginas/comun/insignias/kick/): son los mismos roles. Las que no
+   tengan dibujo salen como texto. */
+const INSIGNIAS_STARVIOS = Object.assign(Object.create(null), {
+  owner:     { dibujo: 'broadcaster', texto: 'Dueño del canal' },
+  moderator: { dibujo: 'moderator',   texto: 'Moderador' },
+  vip:       { dibujo: 'vip',         texto: 'VIP' },
+  member:    { dibujo: 'subscriber',  texto: 'Suscriptor' },
+  staff:     { dibujo: 'staff',       texto: 'Equipo de Starvios' },
+  creator_achiever: { dibujo: '',     texto: 'Creador destacado' },
+});
+
+function insigniasDeStarvios(badges) {
+  return (Array.isArray(badges) ? badges : [])
+    .map(b => String(typeof b === 'string' ? b : b?.type ?? b?.id ?? '').slice(0, 40))
     .filter(Boolean)
     .slice(0, 4)
-    .map(t => ({ tipo: String(t).slice(0, 40), version: '', texto: String(t).slice(0, 40), url: '' }));
+    .map(t => {
+      const conocida = INSIGNIAS_STARVIOS[t];
+      return {
+        tipo: t,
+        version: '',
+        texto: conocida?.texto ?? t,
+        url: conocida?.dibujo ? `/comun/insignias/kick/${conocida.dibujo}.svg` : '',
+      };
+    });
+}
+
+const REGEX_EMOTE_STARVIOS = /:([A-Za-z0-9_]{1,40}):/g;
+
+/** Los `:codigo:` del texto que estan en el catalogo, en puntos de codigo. */
+export function emotesDeStarvios(texto, urls) {
+  if (!urls || !urls.size) return [];
+  const salida = [];
+  for (const m of String(texto ?? '').matchAll(REGEX_EMOTE_STARVIOS)) {
+    const url = urls.get(m[1]);
+    if (!url) continue;
+    /* m.index cuenta unidades UTF-16; el formato pide puntos de codigo */
+    const inicio = [...String(texto).slice(0, m.index)].length;
+    salida.push({ id: m[1], inicio, fin: inicio + [...m[0]].length, url, fuente: 'starvios' });
+  }
+  return salida;
+}
+
+/** Los codigos `:x:` que aparecen en un texto, para pedir sus URLs. */
+export function codigosDeStarvios(texto) {
+  return [...String(texto ?? '').matchAll(REGEX_EMOTE_STARVIOS)].map(m => m[1]);
+}
+
+const KINDS_DE_ACTIVIDAD = new Set(['sub', 'gift_sub']);
+
+/**
+ * Una fila de `live_chat_messages` de Starvios al formato unico de
+ * mensaje. Las subs no salen por aca: son actividad (`actividadDeStarvios`).
+ *
+ * @param {object} fila
+ * @param {{emotes?: Map<string,string>}} opciones  codigo -> URL de imagen
+ * @returns {object|null} null si la fila no es un mensaje mostrable
+ */
+export function deStarvios(fila, { emotes: urls } = {}) {
+  if (!fila || typeof fila !== 'object' || fila.is_deleted || !fila.id) return null;
+  const kind = String(fila.kind ?? 'chat');
+  if (KINDS_DE_ACTIVIDAD.has(kind)) return null;
+  const meta = fila.meta && typeof fila.meta === 'object' ? fila.meta : {};
+  const perfil = fila.profiles ?? {};
+
+  let cuerpo = limpiar(fila.body);
+  const insignias = insigniasDeStarvios(fila.badges);
+  if (kind === 'raid') {
+    const n = Number(meta.viewers ?? 0);
+    cuerpo = `🚀 llegó con un raid${n > 0 ? ` de ${n} ${n === 1 ? 'espectador' : 'espectadores'}` : ''}`;
+  } else if (kind === 'starfall') {
+    insignias.unshift({ tipo: 'starfall', version: '', texto: 'Lluvia de estrellas', url: '' });
+  } else if (kind === 'system') {
+    insignias.unshift({ tipo: 'sistema', version: '', texto: 'Starvios', url: '' });
+  }
+  if (!cuerpo) return null;
+
   const monedas = Number(fila.coins ?? 0);
   if (Number.isFinite(monedas) && monedas > 0) {
-    insignias.unshift({ tipo: 'monedas', version: '', texto: `${monedas} ★`, url: '' });
+    insignias.unshift({ tipo: 'monedas', version: '', texto: `${monedas} Starvies`, url: '' });
   }
 
   return {
     tipo: 'chat',
     red: 'starvios',
     id: String(fila.id),
-    usuario: String(perfil.display_name || perfil.username || 'anonimo').slice(0, 80),
+    usuario: String(kind === 'system' ? 'Starvios'
+      : (perfil.display_name || perfil.username || 'anonimo')).slice(0, 80),
     usuarioId: String(fila.user_id ?? ''),
     color: colorSeguro(perfil.chat_color),
     insignias,
     texto: cuerpo,
-    emotes: [],
+    emotes: kind === 'chat' ? emotesDeStarvios(cuerpo, urls) : [],
     hora: horaIso(fila.created_at),
   };
+}
+
+/** Una sub o sub regalada de Starvios al formato de actividad. */
+export function actividadDeStarvios(fila) {
+  if (!fila || typeof fila !== 'object' || !fila.id) return null;
+  const meta = fila.meta && typeof fila.meta === 'object' ? fila.meta : {};
+  const quien = fila.profiles?.display_name || fila.profiles?.username || '';
+  if (fila.kind === 'sub') {
+    const meses = numeroONull(meta.months) ?? 1;
+    return actividad('starvios', meses > 1 ? 'resub' : 'sub', {
+      id: fila.id, usuario: quien, meses, hora: fila.created_at,
+    });
+  }
+  if (fila.kind === 'gift_sub') {
+    return actividad('starvios', 'regalo', {
+      id: fila.id,
+      usuario: meta.anonymous ? 'anonimo' : quien,
+      cantidad: 1,
+      mensaje: meta.recipient ? `para ${meta.recipient}` : '',
+      hora: fila.created_at,
+    });
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------ horas */

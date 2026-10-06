@@ -715,6 +715,7 @@ export function recibirDeStarvios(slug, mensaje) {
   emotes.resolver(mensaje, c.slug);
   colores.pintar(mensaje);
   canales.recordar(c.slug, mensaje);
+  adjuntarEnlaces(c.slug, mensaje);
   return true;
 }
 

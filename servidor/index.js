@@ -2212,7 +2212,11 @@ const SOLO_KICK = Object.freeze(['kick']);
  */
 function redesPublicas(slug) {
   const c = creadores.chatAbiertoSabido(slug);
-  return c?.activo ? c.redes : SOLO_KICK;
+  const base = c?.activo ? c.redes : SOLO_KICK;
+  /* Starvios va siempre: es de solo lectura (nadie escribe hacia alla
+     desde aca) y solo llega a la sala que el dueño configuro con
+     STARVIOS_USUARIO / STARVIOS_CANALES. No hay nada que abrir. */
+  return starvios.salud(slug) ? [...base, 'starvios'] : base;
 }
 
 /**

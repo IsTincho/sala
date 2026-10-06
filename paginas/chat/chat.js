@@ -591,6 +591,10 @@
     // red con CSS, no sacandolos de la lista: si se sacaran, volver a
     // "todas" no los podria traer de vuelta.
     listas.mezclada.ul.dataset.filtro = filtro;
+    /* Starvios se esconde solo con un filtro ELEGIDO: con una sola red
+       compartida el filtro efectivo es esa red, y no por eso hay que
+       tapar el chat de Starvios que el creador sumo. */
+    listas.mezclada.ul.dataset.elegido = estado.filtro;
 
     // en columnas el filtro esconde la columna entera
     const columnas = estado.vista === 'columnas';

@@ -217,6 +217,16 @@
 
   function alClickEnLista(ev) {
     const boton = ev?.target;
+    if (boton?.dataset?.moderar) {
+      moderar(boton, {
+        accion: boton.dataset.moderar,
+        red: boton.dataset.moderarRed,
+        usuarioId: boton.dataset.moderarUsuario,
+        mensajeId: boton.dataset.moderarMensaje,
+        nombre: boton.dataset.moderarNombre || '',
+      });
+      return;
+    }
     const id = boton?.dataset?.bloquearId;
     if (id) {
       bloquear({
@@ -269,6 +279,85 @@
     mandarAlPanel({ desbloquear: { red, id } })
       .then(() => mostrarAviso(`${nombre || id} ya no está bloqueado`, { autoOcultar: true }))
       .catch(e => mostrarAviso('no se pudo desbloquear: ' + e.message));
+  }
+
+  // ---------- moderar en Kick o Twitch, de verdad ----------
+
+  /* Borrar, timeout y ban pasan en la plataforma, con la cuenta del
+     creador: los ve todo el mundo en kick.com y twitch.tv. El servidor
+     saca el canal de la cookie. Si sale, el borrado llega por el bus a
+     todas las pantallas (también a esta), así que acá no se toca la
+     lista: un solo camino para lo que hace este botón y lo que hace un
+     mod desde la plataforma. */
+  function pedirModeracion(cuerpo) {
+    return fetch('/api/panel/moderar', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    }).then(async r => {
+      const datos = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(datos?.error || 'http ' + r.status);
+      return datos;
+    });
+  }
+
+  function moderar(boton, { accion, red, usuarioId, mensajeId, nombre }) {
+    const quien = nombre || usuarioId;
+    const enRed = NOMBRE_RED[red] ?? red;
+    const cuerpo = { accion, red };
+    if (accion === 'borrar') cuerpo.mensajeId = mensajeId;
+    else cuerpo.usuarioId = usuarioId;
+    if (accion === 'timeout') cuerpo.minutos = 10;
+    /* Un doble click no puede ser dos pedidos. Si salió, el mensaje
+       queda borrado y sus botones se esconden (chat.css). */
+    boton.disabled = true;
+    pedirModeracion(cuerpo)
+      .then(() => {
+        if (accion === 'borrar') {
+          mostrarAviso(`borraste el mensaje de ${quien} en ${enRed}`, { autoOcultar: true });
+          return;
+        }
+        // El ban y el timeout tienen "Deshacer", como bloquear: un click
+        // de más en vivo no tiene que costar ir a kick.com.
+        mostrarAviso(accion === 'ban'
+          ? `baneaste a ${quien} en ${enRed}`
+          : `${quien} tiene timeout de 10 minutos en ${enRed}`,
+          { deshacer: () => desbanear({ red, usuarioId, nombre }) });
+      })
+      .catch(e => mostrarAviso(`no se pudo ${accion === 'borrar' ? 'borrar' : accion === 'ban' ? 'banear' : 'dar el timeout'}: ${e.message}`))
+      .finally(() => { boton.disabled = false; });
+  }
+
+  function desbanear({ red, usuarioId, nombre }) {
+    pedirModeracion({ accion: 'desbanear', red, usuarioId })
+      .then(() => mostrarAviso(`${nombre || usuarioId} puede volver a escribir en ${NOMBRE_RED[red] ?? red}`,
+        { autoOcultar: true }))
+      .catch(e => mostrarAviso('no se pudo deshacer: ' + e.message));
+  }
+
+  /* Un borrado del bus: `{ red, mensajeId }`, `{ red, usuarioId }` (ban
+     o timeout) o `{ red, todo }` (vaciaron el chat). En la ventana del
+     creador el mensaje se queda tachado, como lo ve un mod; en el chat
+     abierto se saca, como lo ve cualquiera en la plataforma. Los
+     renglones de actividad (subs, canjes) no se tocan nunca. */
+  function manejarBorrado(datos) {
+    const red = String(datos?.red ?? '');
+    if (!red) return;
+    const mensajeId = datos.mensajeId ? String(datos.mensajeId) : '';
+    const usuarioId = datos.usuarioId ? String(datos.usuarioId) : '';
+    const loBorra = li =>
+      li.dataset?.red === red && !li.classList.contains('mensaje-actividad') && (
+        datos.todo === true ||
+        (mensajeId && li.dataset.id === mensajeId) ||
+        (usuarioId && li.dataset.usuarioId === usuarioId));
+    for (const info of Object.values(listas)) {
+      for (const li of [...info.ul.children]) {
+        if (!loBorra(li)) continue;
+        if (modoPublico) info.ul.removeChild(li);
+        else li.classList.add('mensaje-borrado');
+      }
+    }
   }
 
   /* Le saca a alguien el color que eligió. NO es un bloqueo: sigue
@@ -475,6 +564,8 @@
     [/reward|channel_points/, 'canjes'],
     [/subscri/, 'subs'],
     [/follow/, 'follows'],
+    // los de moderacion viajan con la actividad: ver kick.js y twitch.js
+    [/moderation|chat\.(message_delete|clear)/, 'bans y borrados'],
   ];
   const queEs = evento => (QUE_ES.find(([re]) => re.test(evento)) ?? [null, evento])[1];
   const juntar = eventos => [...new Set(eventos.map(queEs))].join(', ');
@@ -1693,6 +1784,7 @@
       if (tipo === 'chat') return manejarMensajeChat(datos);
       if (tipo === 'actividad') return manejarActividad(datos);
       if (tipo === 'enlace') return manejarEnlace(datos);
+      if (tipo === 'borrado') return manejarBorrado(datos);
       if (tipo === 'chat-abierto') return aplicarAbierto(datos);
       // cuántos están leyendo. Un número y nada más: quiénes, nunca.
       if (tipo === 'presencia') return mostrarConectados(datos?.conectados);
@@ -1809,6 +1901,7 @@
       if (tipo === 'chat') manejarMensajeChat(datos);
       if (tipo === 'actividad') manejarActividad(datos);
       if (tipo === 'enlace') manejarEnlace(datos);
+      if (tipo === 'borrado') manejarBorrado(datos);
     });
   }
 

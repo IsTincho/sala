@@ -441,6 +441,13 @@ export function recibirDeKick(slug, evento, cuerpo) {
     return { hecho: 'chat', mensaje };
   }
 
+  if (evento?.tipo === 'moderation.banned') {
+    const b = mensajes.borradoDeKick(cuerpo);
+    if (!b) return { hecho: 'borrado raro' };
+    borrar(c.slug, b);
+    return { hecho: 'borrado' };
+  }
+
   if (mensajes.TIPOS_ACTIVIDAD_KICK.includes(evento?.tipo)) {
     const a = mensajes.actividadDeKick(evento.tipo, cuerpo, { hora: evento.cuando });
     if (!a) return { hecho: 'actividad descartada' };
@@ -562,6 +569,11 @@ export async function conectarTwitch(slug) {
         recibirDeTwitch(c.slug, mensajes.deTwitch(evento, metadata));
         return;
       }
+      if (mensajes.TIPOS_BORRADO_TWITCH.includes(tipo)) {
+        const b = mensajes.borradoDeTwitch(tipo, evento);
+        if (b) borrar(c.slug, b);
+        return;
+      }
       recibirActividad(c.slug, mensajes.actividadDeTwitch(tipo, evento, metadata));
     },
     alEstado: (nuevo) => {
@@ -648,6 +660,23 @@ function adjuntarEnlaces(slug, mensaje) {
       canales.difundir(slug, { tipo: 'enlace', red: mensaje.red, mensajeId: mensaje.id, enlaces: buenas });
     })
     .catch(() => { /* vistaPrevia no tira; esto es por las dudas */ });
+}
+
+/* -------------------------------------------------------- borrados */
+
+/**
+ * Saca de la pantalla lo que un borrado dice (`mensajes.borrado`), venga
+ * del boton de /chat o de un mod en kick.com o twitch.tv: del buffer,
+ * para que no se lo mande a quien se conecte despues, y por el bus, para
+ * los que ya estan mirando. Un solo embudo para las dos vias: si el
+ * creador borra desde aca, Twitch ademas avisa por EventSub, y el
+ * segundo borrado no encuentra nada y no rompe nada.
+ */
+export function borrar(slug, b) {
+  if (!b) return 0;
+  const sacados = canales.olvidarMensajes(slug, m => mensajes.loBorra(b, m));
+  canales.difundir(slug, b);
+  return sacados;
 }
 
 /* ------------------------------------------------------- actividad */

@@ -4,6 +4,53 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-10-17 — Moderar de verdad desde /chat: borrar, timeout y ban
+
+**Qué quedó:** cada mensaje de Kick y de Twitch en `/chat` (la ventana del creador) trae, al
+pasar el mouse, **borrar · 10 min · ban** al lado de bloquear y color. Pasan en la plataforma,
+con la cuenta del creador: los ve todo el mundo en kick.com y twitch.tv. El ban y el timeout
+tienen **Deshacer** en el aviso, como bloquear. Idea sacada de prochat.gg, que lo ofrece.
+
+**Lo que se borra se va de todas las pantallas**, venga de donde venga:
+- desde acá: la ruta avisa por el bus en el acto (`{ tipo: 'borrado', red, mensajeId | usuarioId | todo }`)
+  y lo saca del buffer, para que quien se conecte después no lo reciba;
+- desde twitch.tv: EventSub `channel.chat.message_delete`, `clear_user_messages` y `clear`
+  (piden `user:read:chat`, que todo vínculo ya tiene);
+- desde kick.com: el webhook `moderation.banned` (ban o timeout). **Kick no avisa cuando un mod
+  borra un mensaje suelto**: ese borrado sólo se ve acá si se hizo desde acá.
+
+En `/chat` el mensaje queda tachado con el rótulo "borrado" (como lo ve un mod); en `/chat/<slug>`
+se saca. Los renglones de actividad no se tocan nunca.
+
+**Decisiones:**
+- Lo hace sólo el creador, con su token. Los mods de la comunidad en `/chat/<slug>` no: haría
+  falta pedirles permisos de moderación a cada espectador, y eso es otra conversación.
+- Timeout fijo de 10 minutos en el botón; la ruta acepta cualquier valor de 1 a 10.080 (el tope de
+  Kick, para que el mismo timeout valga en las dos).
+- El permiso se mira antes de pedir: un vínculo viejo contesta "falta el permiso de moderación…
+  volvé a entrar / a vincular" sin gastar un pedido. Un 401 de la red dice lo mismo.
+
+**Encontrado en el camino, y arreglado porque la moderación lo necesitaba:** `vinculos.acceso()`
+no devolvía `scopes`, y `chat.js` los leía de ahí para suscribir la actividad de Twitch. Llegaba
+`undefined`, así que **la actividad de Twitch (subs, follows, canjes) quedaba entera en "sin
+permiso" aunque el vínculo los tuviera**. Ahora los devuelve. Además, un refresh que no trae
+scopes conserva los que había (antes los pisaba con vacío).
+
+**Archivos:** `servidor/moderacion.js` (nuevo), `kick.js`, `twitch.js`, `vinculos.js`,
+`mensajes.js`, `canales.js`, `chat.js`, `index.js`, `paginas/comun/mensajes.js`,
+`paginas/chat/chat.js`, `paginas/chat/chat.css`. Pruebas: `pruebas/moderar.test.js` (nueva) y
+cinco nuevas en `pagina-chat.test.js`.
+
+**Pendiente de mirar con los ojos:**
+- Que Kick acepte `moderation:ban` y `moderation:chat_message:manage` en el login del creador
+  (tarea 28). No se pudo probar sin entrar con una cuenta.
+- Un ban de verdad en cada red y ver que el mensaje se tache en `/chat` y se vaya en `/chat/<slug>`.
+- El test `las insignias se resuelven por el camino de Twitch…` (`insignias.test.js`) falla, y
+  fallaba igual antes de esto en `main`: espera que Kick no tenga imagen de insignia y desde el set
+  propio de Kick sí tiene. No se tocó.
+
+---
+
 ## 2026-10-01 — Kick mudo: el webhook rechazaba en silencio
 
 **Lo que pasó:** en vivo, el multichat mostraba solo Twitch. Los logs de Railway tenían dos

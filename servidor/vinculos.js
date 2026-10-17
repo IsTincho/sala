@@ -239,6 +239,13 @@ async function refrescar(slug, red, viejo) {
     ? await kick.refrescar(viejo.refreshToken)
     : await twitch.refrescar(viejo.refreshToken);
 
+  /* Un refresh no cambia los permisos. Si la respuesta no los trae, se
+     quedan los que habia: guardar una lista vacia haria que el vinculo
+     "perdiera" la moderacion y la actividad sin que nadie le sacara
+     nada. */
+  const vacio = x => (Array.isArray(x) ? x.length === 0 : !String(x ?? '').trim());
+  const scopes = vacio(nuevo.scopes) ? viejo.scopes : nuevo.scopes;
+
   await guardar(slug, red, {
     ...viejo,
     accessToken: nuevo.accessToken,
@@ -247,14 +254,22 @@ async function refrescar(slug, red, viejo) {
        lo que vuelve, nunca lo que habia. */
     refreshToken: nuevo.refreshToken,
     venceEn: nuevo.venceEn,
-    scopes: nuevo.scopes,
+    scopes,
   });
 
-  return quedarse({ ...viejo, accessToken: nuevo.accessToken });
+  return quedarse({ ...viejo, accessToken: nuevo.accessToken, scopes });
 }
 
-/* Lo unico que sale de este modulo hacia afuera: el access token y
-   quien es. El refresh token NO se entrega a nadie. */
+/* Lo unico que sale de este modulo hacia afuera: el access token,
+   quien es y que permisos tiene. El refresh token NO se entrega a
+   nadie.
+
+   `scopes` no estaba, y `chat.js` lo leia igual para suscribir la
+   actividad de Twitch: llegaba `undefined`, `faltanScopesActividad` lo
+   tomaba como "no tiene ninguno" y la actividad de Twitch quedaba
+   entera en `sinPermiso` aunque el vinculo tuviera los permisos. La
+   moderacion tambien lo necesita, para decir "falta permiso" antes de
+   gastar un pedido. Despues de un refresh vale el del token nuevo. */
 const quedarse = v => ({
   accessToken: v.accessToken,
   usuarioId: v.usuarioId,
@@ -262,6 +277,7 @@ const quedarse = v => ({
   slug: v.slug,
   login: v.login,
   nombre: v.nombre,
+  scopes: v.scopes ?? '',
 });
 
 /* --------------------------------------------------------- resumen

@@ -322,6 +322,19 @@ export function recordar(slug, mensaje) {
   return difundir(slug, mensaje);
 }
 
+/**
+ * Saca del buffer los mensajes que `coincide` dice. Para los borrados:
+ * quien se conecta despues recibe el buffer, y un mensaje que un mod
+ * borro no puede volver a aparecer por ahi. Devuelve cuantos saco.
+ */
+export function olvidarMensajes(slug, coincide) {
+  const c = canales.get(String(slug).toLowerCase());
+  if (!c) return 0;
+  const antes = c.mensajes.length;
+  c.mensajes = c.mensajes.filter(m => !coincide(m));
+  return antes - c.mensajes.length;
+}
+
 export const ultimos = slug =>
   (canales.get(String(slug).toLowerCase())?.mensajes ?? []).slice();
 

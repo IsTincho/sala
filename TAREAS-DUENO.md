@@ -186,6 +186,12 @@ Está construido. Kick no pide nada: las suscripciones nuevas se crean solas en 
 
 - [ ] **27. Decidir si `/terminos` lo menciona.** La lista de actividad guarda el **nombre público** de quien canjeó, se suscribió o siguió (los últimos 150 por sala), y para reconocer a los mods se guarda su **id de Kick o de Twitch** (vence a los 30 días sin verlo). No se agregó al texto de los términos: es tu decisión, igual que la de la versión (tarea 24).
 
+## Bloque 8 — Moderar desde /chat (2026-10-17)
+
+- [ ] **28. Volver a entrar con Kick y volver a vincular Twitch, fuera de cámara.** `/panel` → **Volver a entrar con Kick** y **Volver a vincular Twitch**. Kick ahora pide `moderation:ban` y `moderation:chat_message:manage`; Twitch, `moderator:manage:banned_users` y `moderator:manage:chat_messages`. Mientras no lo hagas, todo anda igual menos los botones **borrar / 10 min / ban**, que te dicen que falta el permiso. **Si Kick muestra un error de permisos al entrar**, habilitá esos dos scopes en la app de Sala del portal de desarrollador de Kick y probá de nuevo.
+
+- [ ] **29. Probarlo con la cuenta secundaria.** Escribí algo con la cuenta de la tarea 13, borralo desde `/chat`, y fijate que desaparezca en kick.com y en `/chat/<tu-slug>`. Después un timeout de 10 min y **Deshacer**.
+
 ---
 
 ## Datos públicos (se pueden escribir acá)

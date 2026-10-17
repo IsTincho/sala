@@ -709,6 +709,67 @@ export function actividadDeTwitch(tipo, evento, metadata = {}) {
   }
 }
 
+/* ---------------------------------------------------------- borrados
+
+   Un borrado es "saquen esto de la pantalla", venga de donde venga: del
+   boton de /chat o de un mod que lo hizo en kick.com o twitch.tv. Tres
+   formas, una por alcance, y siempre con `red` para que el filtro del
+   bus no se lo mande a quien no ve esa red:
+
+     { tipo: 'borrado', red, mensajeId }   un mensaje
+     { tipo: 'borrado', red, usuarioId }   todo lo de esa persona (ban, timeout)
+     { tipo: 'borrado', red, todo: true }  el chat entero de esa red
+
+   Los ids viajan como string, igual que en los mensajes: si no, un id
+   numerico de Kick no coincide con el `usuarioId` del mensaje. */
+
+/** Los EventSub de Twitch que traduce `borradoDeTwitch`. */
+export const TIPOS_BORRADO_TWITCH = Object.freeze([
+  'channel.chat.message_delete',
+  'channel.chat.clear_user_messages',
+  'channel.chat.clear',
+]);
+
+const idSeguro = x => {
+  const t = String(x ?? '');
+  return /^[0-9a-zA-Z_-]{1,64}$/.test(t) ? t : '';
+};
+
+/** Un borrado armado a mano (el boton de /chat). null si no se entiende. */
+export function borrado(red, { mensajeId, usuarioId, todo } = {}) {
+  if (typeof red !== 'string' || !red) return null;
+  if (todo === true) return { tipo: 'borrado', red, todo: true };
+  const m = idSeguro(mensajeId);
+  if (m) return { tipo: 'borrado', red, mensajeId: m };
+  const u = idSeguro(usuarioId);
+  if (u) return { tipo: 'borrado', red, usuarioId: u };
+  return null;
+}
+
+/** Un EventSub de borrado de Twitch. */
+export function borradoDeTwitch(tipo, evento) {
+  if (!evento || typeof evento !== 'object') return null;
+  switch (tipo) {
+    case 'channel.chat.message_delete': return borrado('twitch', { mensajeId: evento.message_id });
+    case 'channel.chat.clear_user_messages': return borrado('twitch', { usuarioId: evento.target_user_id });
+    case 'channel.chat.clear': return borrado('twitch', { todo: true });
+    default: return null;
+  }
+}
+
+/** El `moderation.banned` de Kick: ban o timeout, se van sus mensajes. */
+export const borradoDeKick = cuerpo =>
+  borrado('kick', { usuarioId: cuerpo?.banned_user?.user_id });
+
+/** Si un mensaje del buffer cae bajo un borrado. */
+export function loBorra(b, mensaje) {
+  if (!b || !mensaje || mensaje.red !== b.red) return false;
+  if (b.todo) return mensaje.tipo === 'chat';
+  if (b.mensajeId) return String(mensaje.id ?? '') === b.mensajeId;
+  if (b.usuarioId) return mensaje.tipo === 'chat' && String(mensaje.usuarioId ?? '') === b.usuarioId;
+  return false;
+}
+
 /* ------------------------------------------------------------ starvios
 
    Starvios no tiene API documentada: la fila es la que devuelve su

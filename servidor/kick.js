@@ -47,9 +47,17 @@ export const hayCredenciales = () => Boolean(CLIENT_ID && CLIENT_SECRET);
 /* `channel:rewards:read` es por los canjes de puntos de la lista de
    actividad. Es de lectura, y un login viejo sin el sigue andando: lo
    unico que puede faltar son los canjes de Kick. */
+/* `moderation:ban` y `moderation:chat_message:manage` son para moderar
+   el chat desde /chat: borrar un mensaje, timeout y ban. Un login viejo
+   sin ellos sigue andando para todo lo demas; lo unico que falta es
+   moderar en Kick, y /api/panel/moderar lo dice antes de pedir nada. */
+export const SCOPES_MODERACION = Object.freeze(['moderation:ban', 'moderation:chat_message:manage']);
+
 export const SCOPES = {
-  dueno: ['user:read', 'channel:read', 'chat:write', 'events:subscribe', 'channel:rewards:read'],
-  creador: ['user:read', 'channel:read', 'chat:write', 'events:subscribe', 'channel:rewards:read'],
+  dueno: ['user:read', 'channel:read', 'chat:write', 'events:subscribe', 'channel:rewards:read',
+          ...SCOPES_MODERACION],
+  creador: ['user:read', 'channel:read', 'chat:write', 'events:subscribe', 'channel:rewards:read',
+            ...SCOPES_MODERACION],
   espectador: ['user:read', 'chat:write'],
 };
 
@@ -410,6 +418,50 @@ export async function enviarMensaje(token, broadcasterUserId, texto, { respondeA
   };
 }
 
+/* ---------------------------------------------------------- moderacion
+
+   Las tres acciones van con el token del CREADOR (el dueño del canal
+   es moderador de su propio chat) y sobre SU canal. Verificado contra
+   docs.kick.com/apis/moderation y /apis/chat (octubre 2026):
+
+     DELETE /chat/{message_id}        moderation:chat_message:manage, 204
+     POST   /moderation/bans          moderation:ban; `duration` en
+                                      MINUTOS, 1 a 10080; sin el, ban
+     DELETE /moderation/bans          moderation:ban; saca ban o timeout
+
+   `reason` admite 100 caracteres. */
+
+export const TOPE_MINUTOS = 10_080;   // una semana: lo maximo de Kick
+export const TOPE_MOTIVO = 100;
+
+/** Borra un mensaje del chat. */
+export async function borrarMensaje(token, mensajeId) {
+  await pedir(`/chat/${encodeURIComponent(String(mensajeId))}`, { token, metodo: 'DELETE' });
+}
+
+/**
+ * Ban (sin `minutos`) o timeout (con `minutos`) en el canal.
+ * @param {{minutos?:number, motivo?:string}} opciones
+ */
+export async function banear(token, broadcasterUserId, usuarioId, { minutos, motivo } = {}) {
+  const cuerpo = {
+    broadcaster_user_id: Number(broadcasterUserId),
+    user_id: Number(usuarioId),
+  };
+  if (minutos !== undefined) cuerpo.duration = Number(minutos);
+  if (motivo) cuerpo.reason = String(motivo).slice(0, TOPE_MOTIVO);
+  await pedir('/moderation/bans', { token, metodo: 'POST', cuerpo });
+}
+
+/** Saca el ban o el timeout. */
+export async function desbanear(token, broadcasterUserId, usuarioId) {
+  await pedir('/moderation/bans', {
+    token,
+    metodo: 'DELETE',
+    cuerpo: { broadcaster_user_id: Number(broadcasterUserId), user_id: Number(usuarioId) },
+  });
+}
+
 /* ------------------------------------------------------- suscripciones
 
    ATENCION, ESTO SORPRENDE: la URL del webhook NO se manda por la API.
@@ -442,6 +494,12 @@ export const EVENTOS_ACTIVIDAD = [
   { name: 'channel.subscription.renewal', version: 1 },
   { name: 'channel.subscription.gifts', version: 1 },
   { name: 'channel.reward.redemption.updated', version: 1 },
+  /* No es actividad para la lista, pero va en este pedido por lo mismo:
+     si Kick lo rechaza, el chat sigue. Cuando alguien banea o da
+     timeout desde kick.com, el multichat esconde los mensajes de esa
+     persona como lo hace Kick. Kick NO avisa cuando se borra un mensaje
+     suelto: ese borrado solo se ve aca si se hizo desde aca. */
+  { name: 'moderation.banned', version: 1 },
 ];
 
 /**

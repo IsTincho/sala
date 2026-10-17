@@ -87,7 +87,16 @@ export const SCOPES_ACTIVIDAD = Object.freeze([
   'channel:read:redemptions',     // canjes de puntos, propios y de fabrica
 ]);
 
-const SCOPES_DEFECTO = ['user:read:chat', 'user:write:chat', ...SCOPES_ACTIVIDAD];
+/* Para moderar desde /chat: borrar un mensaje, timeout y ban. Un
+   vinculo viejo sin ellos sigue andando para todo lo demas; lo unico
+   que falta es moderar en Twitch, y /api/panel/moderar lo dice antes de
+   pedir nada. */
+export const SCOPES_MODERACION = Object.freeze([
+  'moderator:manage:banned_users',
+  'moderator:manage:chat_messages',
+]);
+
+const SCOPES_DEFECTO = ['user:read:chat', 'user:write:chat', ...SCOPES_ACTIVIDAD, ...SCOPES_MODERACION];
 
 /* Lo minimo que necesita un ESPECTADOR: escribir. Leer el chat de una
    sala entra por el token del creador (una sola conexion EventSub para
@@ -263,6 +272,71 @@ export async function enviarMensaje({ accessToken, broadcasterId, senderId, text
   };
 }
 
+/* ---------------------------------------------------------- moderacion
+
+   Con el token del CREADOR, que es moderador de su propio canal:
+   `moderator_id` = `broadcaster_id` = su id. Verificado contra
+   dev.twitch.tv/docs/api/reference (octubre 2026):
+
+     DELETE /moderation/chat?message_id=   moderator:manage:chat_messages,
+                                           204; 404 si tiene mas de 6 h
+     POST   /moderation/bans               moderator:manage:banned_users;
+                                           `duration` en SEGUNDOS, 1 a
+                                           1.209.600; sin el, ban
+     DELETE /moderation/bans?user_id=      saca ban o timeout, 204
+
+   Los errores salen con `status` y el `message` de Twitch ("user is
+   already banned", "You may not delete the broadcaster's messages"),
+   que es lo que hay que mostrarle al creador. Nunca el token. */
+
+export const TOPE_SEGUNDOS = 1_209_600;   // dos semanas
+export const TOPE_MOTIVO = 500;
+
+async function pedirModeracion(metodo, ruta, accessToken, cuerpo) {
+  const opciones = { method: metodo, headers: cabecerasHelix(accessToken) };
+  if (cuerpo !== undefined) {
+    opciones.headers['Content-Type'] = 'application/json';
+    opciones.body = JSON.stringify(cuerpo);
+  }
+  const resp = await fetch(`${URL_HELIX}${ruta}`, opciones);
+  if (resp.ok) return;
+  let detalle = '';
+  try { detalle = String((await resp.json())?.message ?? ''); } catch { /* sin cuerpo */ }
+  const e = new Error(`twitch ${ruta.split('?')[0]} respondio ${resp.status}` +
+                      (detalle ? `: ${detalle.slice(0, 200)}` : ''));
+  e.status = resp.status;
+  e.detalle = detalle.slice(0, 200);
+  const reintentar = Number(resp.headers.get('retry-after'));
+  if (Number.isFinite(reintentar) && reintentar > 0) e.retryAfter = reintentar;
+  throw e;
+}
+
+const qs = obj => new URLSearchParams(obj).toString();
+
+/** Borra un mensaje del chat del canal. */
+export function borrarMensaje({ accessToken, broadcasterId, mensajeId }) {
+  return pedirModeracion('DELETE', `/moderation/chat?${qs({
+    broadcaster_id: broadcasterId, moderator_id: broadcasterId, message_id: mensajeId,
+  })}`, accessToken);
+}
+
+/** Ban (sin `segundos`) o timeout (con `segundos`). */
+export function banear({ accessToken, broadcasterId, usuarioId, segundos, motivo }) {
+  const data = { user_id: String(usuarioId) };
+  if (segundos !== undefined) data.duration = Number(segundos);
+  if (motivo) data.reason = String(motivo).slice(0, TOPE_MOTIVO);
+  return pedirModeracion('POST', `/moderation/bans?${qs({
+    broadcaster_id: broadcasterId, moderator_id: broadcasterId,
+  })}`, accessToken, { data });
+}
+
+/** Saca el ban o el timeout. */
+export function desbanear({ accessToken, broadcasterId, usuarioId }) {
+  return pedirModeracion('DELETE', `/moderation/bans?${qs({
+    broadcaster_id: broadcasterId, moderator_id: broadcasterId, user_id: usuarioId,
+  })}`, accessToken);
+}
+
 /**
  * Crea la suscripcion channel.chat.message para una sesion de
  * EventSub-WebSocket ya conectada.
@@ -304,6 +378,18 @@ export const TIPOS_ACTIVIDAD = Object.freeze([
     scope: 'channel:read:redemptions', condicion: id => ({ broadcaster_user_id: id }) },
   { tipo: 'channel.channel_points_automatic_reward_redemption.add', version: '2',
     scope: 'channel:read:redemptions', condicion: id => ({ broadcaster_user_id: id }) },
+  /* No son actividad para la lista, pero van por el mismo camino por lo
+     mismo: si fallan, el chat sigue. Avisan cuando un mod borra un
+     mensaje, banea o da timeout (y limpia los mensajes de esa persona)
+     o vacia el chat desde twitch.tv, para que el multichat los saque
+     igual que Twitch. Piden `user:read:chat`, el mismo permiso del
+     chat, asi que ningun vinculo se queda sin ellos. */
+  { tipo: 'channel.chat.message_delete', version: '1', scope: 'user:read:chat',
+    condicion: id => ({ broadcaster_user_id: id, user_id: id }) },
+  { tipo: 'channel.chat.clear_user_messages', version: '1', scope: 'user:read:chat',
+    condicion: id => ({ broadcaster_user_id: id, user_id: id }) },
+  { tipo: 'channel.chat.clear', version: '1', scope: 'user:read:chat',
+    condicion: id => ({ broadcaster_user_id: id, user_id: id }) },
 ]);
 
 /** Que permisos de actividad le faltan a un vinculo, por sus scopes guardados. */

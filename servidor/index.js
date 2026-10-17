@@ -82,7 +82,9 @@ import * as envio from './envio.js';
 import * as espectadores from './espectadores.js';
 import * as kick from './kick.js';
 import * as origenes from './origenes.js';
+import * as mensajes from './mensajes.js';
 import * as metricas from './metricas.js';
+import * as moderacion from './moderacion.js';
 import * as r2 from './r2.js';
 import * as reloj from './reloj.js';
 import * as sesion from './sesion.js';
@@ -3004,6 +3006,55 @@ async function apiPanelColor(url, req, res) {
   });
 }
 
+/**
+ * El creador modera SU chat en Kick o Twitch desde /chat:
+ * `{ accion, red, mensajeId?, usuarioId?, minutos? }`.
+ *
+ * Es moderacion DE VERDAD: pasa en kick.com y twitch.tv con el token
+ * del creador, no es el bloqueo de esta herramienta. Ver
+ * servidor/moderacion.js.
+ *
+ * Cookie de creador, y el canal sale de ahi: no hay forma de mandar un
+ * slug ni un `broadcaster_id`. Exige `Origin` nuestro como
+ * /api/panel/color, por lo mismo: le hace algo a un tercero.
+ *
+ * Si sale, se avisa por el bus en el acto (sin esperar a que la red
+ * mande su propio aviso, que Kick ni siquiera manda para un borrado
+ * suelto): un mensaje borrado se va de todas las pantallas, y un
+ * timeout o un ban se lleva todos los mensajes de esa persona, como
+ * hacen Kick y Twitch.
+ */
+async function apiPanelModerar(url, req, res) {
+  if (origenAjeno(req, res)) return;
+  return conCreador(req, res, async (slug) => {
+    let pedido;
+    try { pedido = await leerJson(req); }
+    catch { return json(res, 400, { error: 'json invalido' }); }
+
+    const p = {
+      accion: String(pedido?.accion ?? ''),
+      red: String(pedido?.red ?? ''),
+      mensajeId: pedido?.mensajeId === undefined ? undefined : String(pedido.mensajeId),
+      usuarioId: pedido?.usuarioId === undefined ? undefined : String(pedido.usuarioId),
+      minutos: pedido?.minutos === undefined ? undefined : Number(pedido.minutos),
+    };
+    const problema = moderacion.porQueNo(p);
+    if (problema) return json(res, 400, { error: problema });
+
+    const r = await moderacion.moderar(slug, p);
+    console.log(`[moderar] ${slug}: ${p.accion} en ${p.red} ` +
+                `${p.accion === 'borrar' ? `mensaje ${p.mensajeId}` : `a ${p.usuarioId}`} -> ` +
+                `${r.ok ? 'ok' : `${r.estado} ${r.motivo}`}`);
+    if (!r.ok) return json(res, r.estado, { error: r.motivo, faltaPermiso: r.faltaPermiso });
+
+    if (p.accion === 'borrar') chat.borrar(slug, mensajes.borrado(p.red, { mensajeId: p.mensajeId }));
+    if (p.accion === 'timeout' || p.accion === 'ban') {
+      chat.borrar(slug, mensajes.borrado(p.red, { usuarioId: p.usuarioId }));
+    }
+    return json(res, 200, { ok: true });
+  });
+}
+
 async function apiEspectadorSalir(url, req, res) {
   if (origenAjeno(req, res)) return;
   const suyo = await sesion.leer(req, 'espectador');
@@ -3094,6 +3145,7 @@ const RUTAS = [
   ['POST',   '/api/panel/suscribirse', apiSuscribirse],
   ['POST',   '/api/panel/chat',        apiPanelChat],
   ['POST',   '/api/panel/color',       apiPanelColor],
+  ['POST',   '/api/panel/moderar',     apiPanelModerar],
   ['POST',   '/api/panel/sala',        apiPanelSala],
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
   ['GET',    '/api/chat/:slug/emotes',  apiChatEmotes],

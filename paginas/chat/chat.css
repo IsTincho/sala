@@ -1060,7 +1060,42 @@ select:focus-visible{
 .mensaje:hover .acciones-mensaje,
 .acciones-mensaje:focus-within{ opacity: 1; }
 .acciones-mensaje .boton-bloquear,
-.acciones-mensaje .boton-color{ opacity: 1; margin: 0; }
+.acciones-mensaje .boton-color,
+.acciones-mensaje .boton-moderar{ opacity: 1; margin: 0; }
+
+/* Borrar, timeout y ban: moderacion en la plataforma. Mismo aspecto
+   discreto que bloquear; el ban se pone rojo al pasar, como bloquear,
+   porque es el que pesa. */
+.boton-moderar{
+  font: inherit;
+  font-size: 0.7em;
+  background: none;
+  color: var(--texto-tenue);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 0 0.35em;
+  cursor: pointer;
+}
+.boton-moderar:hover{ color: var(--texto); border-color: var(--acento); }
+.boton-moderar-ban:hover{ color: var(--mal); border-color: var(--mal); }
+.boton-moderar:disabled{ cursor: wait; opacity: 0.5; }
+
+/* Un mensaje que un mod borro (desde aca o desde la plataforma). En la
+   ventana del creador se queda, tachado y tenue, como lo ve un mod en
+   twitch.tv: sirve para saber que se borro y de quien era. En el chat
+   abierto se saca. */
+.mensaje-borrado .texto-mensaje{ text-decoration: line-through; opacity: 0.45; }
+.mensaje-borrado .acciones-mensaje{ display: none; }
+/* El rotulo va al final del texto. inline-block para que no herede el
+   tachado del padre. */
+.mensaje-borrado .texto-mensaje::after{
+  content: 'borrado';
+  display: inline-block;
+  margin-left: 0.5em;
+  font-size: 0.75em;
+  text-decoration: none;
+  color: var(--texto-tenue);
+}
 
 /* ---------- la caja, con los recientes arriba ---------- */
 

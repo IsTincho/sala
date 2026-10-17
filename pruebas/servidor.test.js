@@ -344,11 +344,12 @@ test('/oauth/twitch/entrar manda a id.twitch.tv con state y los scopes del chat 
   assert.equal(destino.origin, 'https://id.twitch.tv');
   assert.equal(destino.searchParams.get('response_type'), 'code');
   assert.equal(destino.searchParams.get('redirect_uri'), 'https://sala.example/oauth/twitch/volver');
-  /* Los tres ultimos son los de canjes, subs y follows: todos de
-     lectura. Un vinculo sin ellos sigue teniendo chat. */
+  /* Despues del chat, los de canjes, subs y follows (de lectura) y los
+     de moderar desde /chat. Un vinculo sin ellos sigue teniendo chat. */
   assert.deepEqual(destino.searchParams.get('scope').split(' '), [
     'user:read:chat', 'user:write:chat',
     'moderator:read:followers', 'channel:read:subscriptions', 'channel:read:redemptions',
+    'moderator:manage:banned_users', 'moderator:manage:chat_messages',
   ]);
   assert.ok(destino.searchParams.get('state'), 'el state es lo unico que ata el callback');
 });

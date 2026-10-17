@@ -35,6 +35,20 @@ const mensaje = (extra = {}) => ({
 });
 
 /** El primer elemento con esa etiqueta, a cualquier profundidad. */
+/* El primer nodo de abajo de `nodo` que cumpla `cumple`. */
+function buscar(nodo, cumple) {
+  for (const h of nodo.children ?? []) {
+    if (cumple(h)) return h;
+    const dentro = buscar(h, cumple);
+    if (dentro) return dentro;
+  }
+  return null;
+}
+
+/* El boton de bloquear de un mensaje: desde que estan los de moderar, ya
+   no es el primero del renglon. */
+const botonBloquear = nodo => buscar(nodo, h => h.tagName === 'BUTTON' && h.dataset?.bloquearId);
+
 function buscarEtiqueta(nodo, etiqueta) {
   for (const h of nodo.children ?? []) {
     if (h.tagName === etiqueta) return h;
@@ -82,6 +96,8 @@ function abrir({ busqueda = '', respuestas = {}, salud = SALUD_SANA } = {}) {
     pedidos,
     /** un mensaje que llega por el bus */
     llega: datos => alRecibir?.('chat', datos),
+    /** cualquier otro evento del bus */
+    evento: (tipo, datos) => alRecibir?.(tipo, datos),
     get conectadoAlBus() { return Boolean(alRecibir); },
   };
 }
@@ -1088,7 +1104,7 @@ test('el creador bloquea a alguien desde su mensaje, y puede deshacerlo', async 
   await asentarse();
   p.llega(mensaje({ id: 'k1', red: 'kick', usuario: 'Fulana', usuarioId: '909' }));
 
-  const boton = buscarEtiqueta(p.el('lista-mezclada').children[0], 'BUTTON');
+  const boton = botonBloquear(p.el('lista-mezclada').children[0]);
   assert.ok(boton, 'cada mensaje de /chat tiene su botón de bloquear');
   assert.equal(boton.textContent, 'bloquear');
 
@@ -1117,7 +1133,7 @@ test('el botón de la columna también bloquea, aunque sea un clon', async () =>
   await asentarse();
   p.llega(mensaje({ id: 't1', red: 'twitch', usuario: 'Purple', usuarioId: '77' }));
 
-  const clon = buscarEtiqueta(p.el('lista-twitch').children[0], 'BUTTON');
+  const clon = botonBloquear(p.el('lista-twitch').children[0]);
   p.el('lista-twitch').disparar('click', { target: clon });
   await asentarse();
 
@@ -1133,6 +1149,102 @@ test('un mensaje viejo sin id no trae botón: no hay a quién bloquear', async (
   p.cerrar();
 });
 
+/* ============ /chat: moderar en Kick y Twitch de verdad ============ */
+
+function abrirConModeracion({ estado = 200, datos = { ok: true } } = {}) {
+  const llamadas = [];
+  const p = abrir({
+    respuestas: {
+      '/api/panel/moderar': async (op) => {
+        llamadas.push(JSON.parse(op.body));
+        return { ok: estado === 200, status: estado, json: async () => datos };
+      },
+    },
+  });
+  return { ...p, llamadas };
+}
+
+const botonModerar = (nodo, accion) =>
+  buscar(nodo, h => h.tagName === 'BUTTON' && h.dataset?.moderar === accion);
+
+test('cada mensaje de /chat trae borrar, timeout y ban, y cada uno pide lo suyo', async () => {
+  const p = abrirConModeracion();
+  await asentarse();
+  p.llega(mensaje({ id: 'k1', red: 'kick', usuario: 'Fulana', usuarioId: '909' }));
+  const li = p.el('lista-mezclada').children[0];
+
+  p.el('lista-mezclada').disparar('click', { target: botonModerar(li, 'borrar') });
+  await asentarse();
+  assert.deepEqual(p.llamadas.at(-1), { accion: 'borrar', red: 'kick', mensajeId: 'k1' },
+    'borrar va por el id del mensaje, no por la persona');
+
+  p.el('lista-mezclada').disparar('click', { target: botonModerar(li, 'timeout') });
+  await asentarse();
+  assert.deepEqual(p.llamadas.at(-1), { accion: 'timeout', red: 'kick', usuarioId: '909', minutos: 10 });
+
+  p.el('lista-mezclada').disparar('click', { target: botonModerar(li, 'ban') });
+  await asentarse();
+  assert.deepEqual(p.llamadas.at(-1), { accion: 'ban', red: 'kick', usuarioId: '909' });
+  assert.match(p.el('texto-aviso-envio').textContent, /baneaste a Fulana en Kick/);
+
+  /* El ban tiene Deshacer, como bloquear: un click de más en vivo. */
+  p.el('boton-deshacer-aviso').disparar('click');
+  await asentarse();
+  assert.deepEqual(p.llamadas.at(-1), { accion: 'desbanear', red: 'kick', usuarioId: '909' });
+  p.cerrar();
+});
+
+test('el clon de la columna de Twitch también modera, y en Twitch', async () => {
+  const p = abrirConModeracion();
+  await asentarse();
+  p.llega(mensaje({ id: 't1', red: 'twitch', usuario: 'Purple', usuarioId: '77' }));
+  const clon = p.el('lista-twitch').children[0];
+  p.el('lista-twitch').disparar('click', { target: botonModerar(clon, 'ban') });
+  await asentarse();
+  assert.deepEqual(p.llamadas.at(-1), { accion: 'ban', red: 'twitch', usuarioId: '77' });
+  p.cerrar();
+});
+
+test('si la red dice que falta el permiso, se le dice al creador qué hacer', async () => {
+  const p = abrirConModeracion({
+    estado: 403,
+    datos: { error: 'falta el permiso de moderación de Kick: salí y volvé a entrar con Kick desde el panel', faltaPermiso: true },
+  });
+  await asentarse();
+  p.llega(mensaje({ id: 'k1' }));
+  const li = p.el('lista-mezclada').children[0];
+  const boton = botonModerar(li, 'ban');
+  p.el('lista-mezclada').disparar('click', { target: boton });
+  await asentarse();
+  assert.match(p.el('texto-aviso-envio').textContent, /no se pudo banear: falta el permiso/);
+  assert.equal(boton.disabled, false, 'el botón vuelve: se puede probar de nuevo después de entrar');
+  assert.equal(li.classList.contains('mensaje-borrado'), false, 'no salió, así que nada se tacha');
+  p.cerrar();
+});
+
+test('un borrado del bus tacha el mensaje en la ventana del creador, en la mezclada y en la columna', async () => {
+  const p = abrir();
+  await asentarse();
+  p.llega(mensaje({ id: 'k1', red: 'kick', usuarioId: '909' }));
+  p.llega(mensaje({ id: 'k2', red: 'kick', usuarioId: '909' }));
+  p.llega(mensaje({ id: 'k3', red: 'kick', usuarioId: '111' }));
+  /* El mismo id en la otra red NO es el mismo mensaje. */
+  p.llega(mensaje({ id: 'k1', red: 'twitch', usuarioId: '909' }));
+
+  p.evento('borrado', { tipo: 'borrado', red: 'kick', mensajeId: 'k1' });
+  const tachados = ul => [...ul.children].filter(li => li.classList.contains('mensaje-borrado')).length;
+  assert.equal(tachados(p.el('lista-mezclada')), 1);
+  assert.equal(tachados(p.el('lista-kick')), 1);
+  assert.equal(tachados(p.el('lista-twitch')), 0, 'el k1 de Twitch es otro mensaje');
+
+  /* Un ban o un timeout: se va todo lo de esa persona EN ESA RED. */
+  p.evento('borrado', { tipo: 'borrado', red: 'kick', usuarioId: '909' });
+  assert.equal(tachados(p.el('lista-kick')), 2);
+  assert.equal(tachados(p.el('lista-twitch')), 0);
+  assert.equal(p.el('lista-mezclada').children.length, 4, 'en la ventana del creador no se saca nada');
+  p.cerrar();
+});
+
 test('en /chat/<slug> nadie puede bloquear: el botón ni existe', async () => {
   const p = abrirPublico({ yo: CON_KICK });
   await asentarse();
@@ -1140,6 +1252,20 @@ test('en /chat/<slug> nadie puede bloquear: el botón ni existe', async () => {
 
   assert.equal(buscarEtiqueta(p.el('lista-mezclada').children[0], 'BUTTON'), null,
     'esconderlo con CSS no alcanza: en la página de la comunidad no tiene que estar');
+  p.cerrar();
+});
+
+test('en /chat/<slug> un borrado saca el mensaje, como lo ve cualquiera en la plataforma', async () => {
+  const p = abrirPublico({ yo: CON_KICK });
+  await asentarse();
+  p.llega('chat', mensaje({ id: 'k1', usuarioId: '909' }));
+  p.llega('chat', mensaje({ id: 'k2', usuarioId: '111' }));
+  p.llega('borrado', { tipo: 'borrado', red: 'kick', usuarioId: '909' });
+  assert.equal(p.el('lista-mezclada').children.length, 1);
+  assert.equal(p.el('lista-mezclada').children[0].dataset.id, 'k2');
+  assert.equal(p.el('lista-kick').children.length, 1, 'y de la columna también');
+  assert.equal(botonModerar(p.el('lista-mezclada').children[0], 'ban'), null,
+    'y nadie de la comunidad tiene botones de moderar');
   p.cerrar();
 });
 

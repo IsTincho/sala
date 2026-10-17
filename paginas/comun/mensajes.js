@@ -600,6 +600,34 @@
     /* Starvios no tiene bloqueo ni color propio en esta herramienta:
        no se escribe hacia alla, asi que no hay nada que bloquear. */
     const conAcciones = opciones.conBloquear && datos.usuarioId && redDe(datos) !== 'starvios';
+    const redDeAccion = datos.red === 'kick' ? 'kick' : 'twitch';
+
+    /* Moderar DE VERDAD, en la plataforma: borrar el mensaje, timeout de
+       10 minutos y ban. Van primero porque son lo que se usa en vivo; el
+       bloqueo de esta herramienta queda al lado para quien moleste solo
+       por aca. Mismo truco que bloquear: los datos en `dataset` y la
+       escucha en la lista (el <li> se clona para la columna de su red).
+       Borrar necesita el id del mensaje; un mensaje sin id no lo trae. */
+    if (conAcciones) {
+      const moderar = (accion, texto, titulo) => {
+        const boton = document.createElement('button');
+        boton.type = 'button';
+        boton.className = 'boton-moderar boton-moderar-' + accion;
+        boton.textContent = texto;
+        boton.title = titulo;
+        boton.dataset.moderar = accion;
+        boton.dataset.moderarRed = redDeAccion;
+        boton.dataset.moderarUsuario = String(datos.usuarioId);
+        boton.dataset.moderarMensaje = String(datos.id ?? '');
+        boton.dataset.moderarNombre = String(datos.usuario ?? '');
+        acciones.appendChild(boton);
+      };
+      const enRed = NOMBRE_RED[redDeAccion];
+      if (datos.id) moderar('borrar', 'borrar', `Borrar este mensaje en ${enRed}`);
+      moderar('timeout', '10 min', `Timeout de 10 minutos a ${datos.usuario} en ${enRed}`);
+      moderar('ban', 'ban', `Banear a ${datos.usuario} en ${enRed}`);
+    }
+
     if (conAcciones) {
       const boton = document.createElement('button');
       boton.type = 'button';

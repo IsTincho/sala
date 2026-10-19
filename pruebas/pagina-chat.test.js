@@ -1245,6 +1245,74 @@ test('un borrado del bus tacha el mensaje en la ventana del creador, en la mezcl
   p.cerrar();
 });
 
+/* ============ /chat: la ficha de quien escribió ============ */
+
+const FICHA_PURPLE = {
+  red: 'twitch', id: '77', nombre: 'PurpleGuy', color: '#9146ff', insignias: [{ texto: 'VIP' }],
+  perfil: 'https://www.twitch.tv/purpleguy', avatar: 'https://static-cdn.example/77.png',
+  creada: '2019-03-12T10:00:00Z', sigueDesde: '', sub: null, esElCanal: false, bloqueado: false,
+  mensajes: [{ id: 't1', texto: 'hola', emotes: [], hora: new Date().toISOString() }],
+  faltan: [{ dato: 'sub', motivo: 'la plataforma no contestó' }],
+};
+
+test('tocar un nombre abre su ficha: lo que dijo, lo que dice la plataforma y los botones', async () => {
+  const pedidos = [];
+  const p = abrir({
+    respuestas: {
+      '/api/panel/chatter?red=twitch&id=77': async () => {
+        pedidos.push('ficha');
+        return { ok: true, status: 200, json: async () => FICHA_PURPLE };
+      },
+    },
+  });
+  await asentarse();
+  p.llega(mensaje({ id: 't1', red: 'twitch', usuario: 'PurpleGuy', usuarioId: '77' }));
+  const nombre = buscar(p.el('lista-mezclada').children[0], h => h.dataset?.fichaId);
+  assert.ok(nombre, 'el nombre se puede tocar');
+  assert.equal(nombre.getAttribute?.('role') ?? 'button', 'button');
+
+  p.el('lista-mezclada').disparar('click', { target: nombre });
+  await asentarse();
+  assert.equal(pedidos.length, 1);
+  assert.equal(p.el('panel-ficha').hidden, false);
+  assert.equal(p.el('ficha-nombre').textContent, 'PurpleGuy');
+  const datos = p.el('ficha-datos').textContent;
+  assert.match(datos, /Cuenta creada/);
+  assert.match(datos, /Sigue el canal\s*no/, 'Twitch contestó que no: se dice "no"');
+  assert.doesNotMatch(datos, /Sub\s*no/, 'la sub no se pudo preguntar: no se inventa un "no"');
+  assert.match(datos, /No se pudo ver si es sub/);
+  assert.equal(p.el('ficha-mensajes').children.length, 1);
+  assert.ok(buscar(p.el('ficha-acciones'), h => h.dataset?.moderar === 'ban'), 'trae ban');
+
+  /* lo nuevo que escribe esa persona entra en la ficha abierta */
+  p.llega(mensaje({ id: 't9', red: 'twitch', usuario: 'PurpleGuy', usuarioId: '77', texto: 'otra' }));
+  p.llega(mensaje({ id: 'k9', red: 'kick', usuario: 'Otro', usuarioId: '77', texto: 'otra red' }));
+  assert.equal(p.el('ficha-mensajes').children.length, 2, 'el 77 de Kick es otra persona');
+
+  /* y un borrado la tacha también ahí */
+  p.evento('borrado', { tipo: 'borrado', red: 'twitch', mensajeId: 't1' });
+  assert.equal(p.el('ficha-mensajes').children[0].classList.contains('mensaje-borrado'), true);
+
+  p.el('panel-ficha').disparar('keydown', { key: 'Escape' });
+  assert.equal(p.el('panel-ficha').hidden, true, 'Escape la cierra');
+  p.cerrar();
+});
+
+test('si la ficha no se puede traer, se dice', async () => {
+  const p = abrir({
+    respuestas: {
+      '/api/panel/chatter?red=kick&id=909': async () =>
+        ({ ok: false, status: 401, json: async () => ({ error: 'no hay sesion de creador' }) }),
+    },
+  });
+  await asentarse();
+  p.llega(mensaje({ id: 'k1', red: 'kick', usuarioId: '909' }));
+  p.el('lista-mezclada').disparar('click', { target: buscar(p.el('lista-mezclada').children[0], h => h.dataset?.fichaId) });
+  await asentarse();
+  assert.match(p.el('ficha-nota').textContent, /No se pudo traer la ficha: no hay sesion de creador/);
+  p.cerrar();
+});
+
 test('en /chat/<slug> nadie puede bloquear: el botón ni existe', async () => {
   const p = abrirPublico({ yo: CON_KICK });
   await asentarse();
@@ -1266,6 +1334,8 @@ test('en /chat/<slug> un borrado saca el mensaje, como lo ve cualquiera en la pl
   assert.equal(p.el('lista-kick').children.length, 1, 'y de la columna también');
   assert.equal(botonModerar(p.el('lista-mezclada').children[0], 'ban'), null,
     'y nadie de la comunidad tiene botones de moderar');
+  assert.equal(buscar(p.el('lista-mezclada').children[0], h => h.dataset?.fichaId), null,
+    'ni la ficha: es del creador');
   p.cerrar();
 });
 

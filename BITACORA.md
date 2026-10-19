@@ -4,6 +4,38 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-10-19 — La ficha de quien escribe
+
+**Qué quedó:** en `/chat` (sólo el creador) el nombre de cada mensaje de Kick y Twitch se puede
+tocar —o Enter con el teclado— y abre una ficha en el lugar del panel de Actividad: foto, link al
+perfil, sus últimos mensajes en este chat (con "borrar" en cada uno), y los botones timeout 10 min,
+ban y bloquear acá. Lo nuevo que escribe esa persona entra solo, y un borrado la tacha también ahí.
+Idea sacada de prochat.gg ("Chatter Insights").
+
+**Qué dice cada red:** Twitch, fecha de creación de la cuenta, si sigue el canal (desde cuándo) y si
+es sub (nivel, regalada). Kick, por su API pública, **sólo nombre y foto**: no dice cuándo se creó
+la cuenta ni si sigue. La ficha lo dice con esas palabras.
+
+**Decisiones:**
+- Los mensajes salen del buffer de la sala (los últimos 200 del chat). No se guarda ningún
+  historial nuevo por persona.
+- Lo que no se pudo traer va en `faltan` con el motivo: un "no sigue" que en realidad es "no se
+  pudo preguntar" sería peor que nada.
+- Seguir y sub usan permisos que el vínculo ya pide por la actividad: no hay que volver a vincular.
+- Starvios no tiene ficha (no hay API para preguntar).
+
+**Archivos:** `servidor/fichas.js` (nuevo), `twitch.js` (`usuarioPorId`, `sigueDesde`,
+`subAlCanal`), `kick.js` (`usuarioPorId`), `index.js` (`GET /api/panel/chatter`),
+`paginas/chat.html`, `chat/chat.js`, `chat/chat.css`, `comun/mensajes.js`. Pruebas:
+`pruebas/ficha.test.js` y dos en `pagina-chat.test.js`.
+
+**Pendiente:** verla con datos de verdad en producción (en local no hay credenciales: la ficha
+dice "el servidor no tiene las credenciales de la app", que es lo correcto). Con el chat andando
+rápido, el nombre se mueve antes de poder tocarlo: pausar el chat al pasar el mouse, como Kick,
+sería lo siguiente.
+
+---
+
 ## 2026-10-19 — Raids en la Actividad, y por qué no se veía nada de Twitch
 
 **Lo que vio el dueño:** en Actividad había follows y canjes de Kick, pero ningún follow ni sub de

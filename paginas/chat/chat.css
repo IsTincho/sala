@@ -1189,3 +1189,32 @@ select:focus-visible{
 .boton-emotes:hover,
 .boton-emotes:focus-visible{ opacity: 1; background-color: var(--chat-fila-hover); outline: none; }
 .boton-emotes[aria-expanded="true"]{ opacity: 1; background-color: color-mix(in srgb, var(--acento) 18%, transparent); }
+
+/* ---------- la ficha de quien escribió ----------
+
+   El nombre se toca para abrirla, sólo en la ventana del creador. Reusa
+   la caja del panel de Actividad (mismo lugar, mismo aspecto): las dos
+   no se abren a la vez. */
+.usuario.con-ficha{ cursor: pointer; }
+.usuario.con-ficha:hover,
+.usuario.con-ficha:focus-visible{ text-decoration: underline; text-underline-offset: 2px; }
+
+.cabeza-ficha{ flex-wrap: nowrap; }
+.ficha-avatar{ width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex: none; }
+.ficha-quien{ flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ficha-quien .usuario{ font-size: 1.1em; overflow-wrap: anywhere; }
+.ficha-perfil{ font-size: .8em; }
+.ficha-datos{
+  list-style: none; margin: 0; padding: var(--espacio-2);
+  display: grid; grid-template-columns: auto 1fr; gap: 4px var(--espacio-2);
+  background: var(--fondo); border-radius: 4px; font-size: .9em;
+}
+.ficha-datos .dato-nombre{ color: var(--texto-tenue); }
+.ficha-datos .dato-tenue{ grid-column: 1 / -1; color: var(--texto-tenue); font-size: .9em; }
+.ficha-acciones{ display: flex; flex-wrap: wrap; gap: var(--espacio-1); }
+.ficha-acciones .boton-moderar,
+.ficha-acciones .boton-bloquear{ opacity: 1; font-size: .8em; padding: .15em .5em; }
+.ficha-titulo{ margin: 0; font-size: .85em; }
+.ficha-mensajes .item-actividad{ grid-template-columns: auto 1fr auto; align-items: start; }
+.ficha-mensajes .texto-mensaje{ overflow-wrap: anywhere; }
+.ficha-mensajes .boton-moderar{ font-size: .7em; }

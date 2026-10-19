@@ -80,6 +80,7 @@ import { numeroDeEntorno } from './entorno.js';
 import * as emotes from './emotes.js';
 import * as envio from './envio.js';
 import * as espectadores from './espectadores.js';
+import * as fichas from './fichas.js';
 import * as kick from './kick.js';
 import * as origenes from './origenes.js';
 import * as mensajes from './mensajes.js';
@@ -3055,6 +3056,29 @@ async function apiPanelModerar(url, req, res) {
   });
 }
 
+/**
+ * La ficha de quien escribio: `?red=kick|twitch&id=<id en esa red>`.
+ * Lo que el creador ve al tocar un nombre en /chat. Ver servidor/fichas.js.
+ *
+ * Cookie de creador, y la sala sale de ahi: los mensajes son los del
+ * buffer de SU sala y lo de seguir o ser sub es contra SU canal. Es un
+ * GET que no cambia nada, asi que no pide `Origin`.
+ *
+ * `bloqueado` va aca y no en fichas.js porque es de esta herramienta,
+ * no de la plataforma.
+ */
+async function apiPanelChatter(url, req, res) {
+  return conCreador(req, res, async (slug) => {
+    const red = String(url.searchParams.get('red') ?? '');
+    const id = String(url.searchParams.get('id') ?? '');
+    const problema = fichas.porQueNo(red, id);
+    if (problema) return json(res, 400, { error: problema });
+    const f = await fichas.ficha(slug, red, id);
+    const c = await creadores.chatAbierto(slug);
+    return json(res, 200, { ...f, bloqueado: creadores.estaBloqueado(c, red, id) });
+  });
+}
+
 async function apiEspectadorSalir(url, req, res) {
   if (origenAjeno(req, res)) return;
   const suyo = await sesion.leer(req, 'espectador');
@@ -3146,6 +3170,7 @@ const RUTAS = [
   ['POST',   '/api/panel/chat',        apiPanelChat],
   ['POST',   '/api/panel/color',       apiPanelColor],
   ['POST',   '/api/panel/moderar',     apiPanelModerar],
+  ['GET',    '/api/panel/chatter',     apiPanelChatter],
   ['POST',   '/api/panel/sala',        apiPanelSala],
   ['GET',    '/api/chat/:slug/abierto', apiChatAbierto],
   ['GET',    '/api/chat/:slug/emotes',  apiChatEmotes],

@@ -586,6 +586,18 @@
     usuarioEl.className = 'usuario';
     usuarioEl.textContent = datos.usuario;
     pintarNombre(usuarioEl, datos);
+    /* En la ventana del creador, el nombre abre la ficha de esa persona.
+       Mismo truco que los botones: los datos en `dataset` y la escucha
+       en la lista. Starvios no tiene ficha: no hay API para preguntar. */
+    if (opciones.conBloquear && datos.usuarioId && redDe(datos) !== 'starvios') {
+      usuarioEl.classList.add('con-ficha');
+      usuarioEl.setAttribute('role', 'button');
+      usuarioEl.tabIndex = 0;
+      usuarioEl.title = `Ver la ficha de ${datos.usuario}`;
+      usuarioEl.dataset.fichaRed = redDe(datos);
+      usuarioEl.dataset.fichaId = String(datos.usuarioId);
+      usuarioEl.dataset.fichaNombre = String(datos.usuario ?? '');
+    }
     filaPrincipal.appendChild(usuarioEl);
 
     /* Sin id no hay a quien bloquear: por nombre no sirve, porque los
@@ -765,6 +777,6 @@
 
   window.SalaMensajes = {
     crear, vigilarInsignias, coloresDeUsuario, pintarNombre, recortarTexto,
-    crearActividad, escribirFrase, fraseActividad, agregarVistas,
+    crearActividad, escribirFrase, fraseActividad, agregarVistas, agregarTextoConEmotes,
   };
 })();

@@ -152,6 +152,16 @@
 
   const botonActividad     = document.getElementById('boton-actividad');
   const panelActividad     = document.getElementById('panel-actividad');
+  const panelFicha         = document.getElementById('panel-ficha');
+  const fichaAvatar        = document.getElementById('ficha-avatar');
+  const fichaNombre        = document.getElementById('ficha-nombre');
+  const fichaPerfil        = document.getElementById('ficha-perfil');
+  const fichaDatos         = document.getElementById('ficha-datos');
+  const fichaAcciones      = document.getElementById('ficha-acciones');
+  const fichaTitulo        = document.getElementById('ficha-titulo-mensajes');
+  const fichaMensajes      = document.getElementById('ficha-mensajes');
+  const fichaNota          = document.getElementById('ficha-nota');
+  const cerrarFichaBoton   = document.getElementById('cerrar-ficha');
   const listaActividad     = document.getElementById('lista-actividad');
   const notaActividad      = document.getElementById('nota-actividad');
   const escuchaActividad   = document.getElementById('escucha-actividad');
@@ -204,6 +214,13 @@
     // y no en el botón: /chat clona el <li> para la columna de su red y
     // un clon no se lleva las escuchas.
     ul.addEventListener('click', alClickEnLista);
+    // El nombre que abre la ficha es un role=button: también con teclado.
+    ul.addEventListener('keydown', ev => {
+      if ((ev.key === 'Enter' || ev.key === ' ') && ev.target?.dataset?.fichaId) {
+        ev.preventDefault?.();
+        alClickEnLista(ev);
+      }
+    });
 
     // Y por el MISMO motivo, el respaldo a texto de una insignia que no
     // carga también se escucha acá: con un `onerror` por imagen, el
@@ -217,6 +234,11 @@
 
   function alClickEnLista(ev) {
     const boton = ev?.target;
+    if (boton?.dataset?.fichaId) {
+      abrirFicha({ red: boton.dataset.fichaRed, id: boton.dataset.fichaId, nombre: boton.dataset.fichaNombre || '' },
+        boton);
+      return;
+    }
     if (boton?.dataset?.moderar) {
       moderar(boton, {
         accion: boton.dataset.moderar,
@@ -358,7 +380,189 @@
         else li.classList.add('mensaje-borrado');
       }
     }
+    for (const li of [...fichaMensajes.children]) if (loBorra(li)) li.classList.add('mensaje-borrado');
   }
+
+  // ---------- la ficha de quien escribió ----------
+
+  /* Se abre al tocar un nombre en /chat. Muestra lo que dijo (lo que el
+     servidor tiene en el buffer de la sala) y lo que la plataforma dice
+     de la cuenta. Lo que no se pudo traer se dice, con el motivo: un
+     "no sigue el canal" que en realidad es "no se pudo preguntar" sería
+     peor que nada. Los botones son los mismos de cada mensaje, con los
+     mismos datos, así que los atiende el mismo `alClickEnLista`. */
+  let fichaAbierta = null;   // { red, id, nombre, esElCanal }
+  let fichaVolverA = null;   // a dónde devolver el foco al cerrar
+  let fichaPedido = 0;       // para descartar la respuesta de una ficha que ya se cerró
+
+  const fechaCorta = iso => {
+    const d = new Date(iso);
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleDateString('es-AR', { day: 'numeric', month: 'short', year: 'numeric' })
+      : '';
+  };
+
+  function haceCuanto(iso) {
+    const d = new Date(iso).getTime();
+    if (!Number.isFinite(d)) return '';
+    const dias = Math.floor((Date.now() - d) / 86_400_000);
+    if (dias < 1) return 'hoy';
+    if (dias < 31) return dias === 1 ? 'hace 1 día' : `hace ${dias} días`;
+    const meses = Math.floor(dias / 30.44);
+    if (meses < 12) return meses === 1 ? 'hace 1 mes' : `hace ${meses} meses`;
+    const anios = Math.floor(meses / 12);
+    return anios === 1 ? 'hace 1 año' : `hace ${anios} años`;
+  }
+
+  function botonDeFicha(clase, texto, titulo, datos) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = clase;
+    b.textContent = texto;
+    b.title = titulo;
+    for (const [k, v] of Object.entries(datos)) b.dataset[k] = v;
+    return b;
+  }
+
+  function itemDeFicha(m, red) {
+    const li = document.createElement('li');
+    li.className = 'item-actividad';
+    li.dataset.red = red;
+    li.dataset.id = String(m.id ?? '');
+    li.dataset.usuarioId = fichaAbierta?.id ?? '';
+    const hora = document.createElement('span');
+    hora.className = 'hora-actividad';
+    hora.textContent = horaCorta(m.hora);
+    const texto = document.createElement('span');
+    texto.className = 'texto-mensaje';
+    window.SalaMensajes.agregarTextoConEmotes(texto, m.texto ?? '', m.emotes);
+    li.append(hora, texto);
+    if (m.id && fichaAbierta && !fichaAbierta.esElCanal) {
+      li.appendChild(botonDeFicha('boton-moderar boton-moderar-borrar', 'borrar', 'Borrar este mensaje', {
+        moderar: 'borrar', moderarRed: red, moderarUsuario: fichaAbierta.id,
+        moderarMensaje: String(m.id), moderarNombre: fichaAbierta.nombre,
+      }));
+    }
+    return li;
+  }
+
+  function dato(nombre, valor) {
+    const a = document.createElement('li');
+    a.className = 'dato-nombre';
+    a.textContent = nombre;
+    const b = document.createElement('li');
+    b.textContent = valor;
+    fichaDatos.append(a, b);
+  }
+
+  function datoTenue(texto) {
+    const li = document.createElement('li');
+    li.className = 'dato-tenue';
+    li.textContent = texto;
+    fichaDatos.appendChild(li);
+  }
+
+  const NOMBRE_DATO = { cuenta: 'la cuenta', relacion: 'si sigue o es sub', sigue: 'si sigue el canal', sub: 'si es sub' };
+
+  function pintarFicha(f) {
+    fichaAbierta = { red: f.red, id: f.id, nombre: f.nombre || fichaAbierta?.nombre || '', esElCanal: f.esElCanal };
+    fichaNombre.textContent = fichaAbierta.nombre || f.id;
+    window.SalaMensajes.pintarNombre(fichaNombre, { usuario: fichaAbierta.nombre, color: f.color, red: f.red });
+    fichaAvatar.hidden = !f.avatar;
+    if (f.avatar) fichaAvatar.src = f.avatar;
+    fichaPerfil.hidden = !f.perfil;
+    if (f.perfil) fichaPerfil.href = f.perfil;
+
+    fichaDatos.textContent = '';
+    dato('Red', NOMBRE_RED[f.red] ?? f.red);
+    if (f.esElCanal) datoTenue('Es tu propio canal.');
+    if (f.creada) dato('Cuenta creada', `${fechaCorta(f.creada)} · ${haceCuanto(f.creada)}`);
+    if (f.sigueDesde) dato('Sigue el canal', `desde ${fechaCorta(f.sigueDesde)} · ${haceCuanto(f.sigueDesde)}`);
+    else if (f.sigueDesde === '') dato('Sigue el canal', 'no');
+    if (f.sub) dato('Sub', `nivel ${f.sub.nivel}${f.sub.regalada ? ' · regalada' : ''}`);
+    else if (f.sub === false) dato('Sub', 'no');
+    const insignias = (f.insignias ?? []).map(i => i?.texto).filter(Boolean);
+    if (insignias.length) dato('Insignias', insignias.join(', '));
+    if (f.bloqueado) dato('En esta herramienta', 'bloqueado');
+    if (f.red === 'kick') datoTenue('Kick no dice cuándo se creó la cuenta ni si sigue el canal.');
+    for (const x of f.faltan ?? []) datoTenue(`No se pudo ver ${NOMBRE_DATO[x.dato] ?? x.dato}: ${x.motivo}.`);
+
+    fichaAcciones.textContent = '';
+    if (!f.esElCanal) {
+      const base = { moderarRed: f.red, moderarUsuario: f.id, moderarNombre: fichaAbierta.nombre };
+      const enRed = NOMBRE_RED[f.red] ?? f.red;
+      fichaAcciones.append(
+        botonDeFicha('boton-moderar boton-moderar-timeout', 'timeout 10 min',
+          `Timeout de 10 minutos en ${enRed}`, { moderar: 'timeout', ...base }),
+        botonDeFicha('boton-moderar boton-moderar-ban', 'ban', `Banear en ${enRed}`, { moderar: 'ban', ...base }),
+      );
+      if (!f.bloqueado) {
+        fichaAcciones.appendChild(botonDeFicha('boton-bloquear', 'bloquear acá',
+          'Que no pueda escribir desde esta herramienta',
+          { bloquearRed: f.red, bloquearId: f.id, bloquearNombre: fichaAbierta.nombre }));
+      }
+    }
+
+    const n = (f.mensajes ?? []).length;
+    fichaTitulo.textContent = n
+      ? `Sus últimos mensajes en este chat (${n})`
+      : 'No hay mensajes suyos en lo que guarda el chat (los últimos 200).';
+    fichaMensajes.textContent = '';
+    for (const m of f.mensajes ?? []) fichaMensajes.appendChild(itemDeFicha(m, f.red));
+    fichaMensajes.scrollTop = fichaMensajes.scrollHeight;
+  }
+
+  function abrirFicha({ red, id, nombre }, origen) {
+    if (!red || !id) return;
+    cerrarPanelActividad({ devolverFoco: false });
+    fichaAbierta = { red, id: String(id), nombre };
+    fichaVolverA = origen ?? null;
+    fichaNombre.textContent = nombre || id;
+    fichaAvatar.hidden = true;
+    fichaPerfil.hidden = true;
+    fichaDatos.textContent = '';
+    fichaAcciones.textContent = '';
+    fichaMensajes.textContent = '';
+    fichaTitulo.textContent = '';
+    fichaNota.textContent = 'Cargando…';
+    panelFicha.hidden = false;
+    cerrarFichaBoton.focus?.();
+    const este = ++fichaPedido;
+    fetch(`/api/panel/chatter?red=${encodeURIComponent(red)}&id=${encodeURIComponent(id)}`,
+      { credentials: 'same-origin', cache: 'no-store' })
+      .then(async r => {
+        const datos = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(datos?.error || 'http ' + r.status);
+        return datos;
+      })
+      .then(f => {
+        if (este !== fichaPedido || panelFicha.hidden) return;
+        fichaNota.textContent = '';
+        pintarFicha(f);
+      })
+      .catch(e => {
+        if (este !== fichaPedido) return;
+        fichaNota.textContent = 'No se pudo traer la ficha: ' + e.message;
+      });
+  }
+
+  function cerrarFicha({ devolverFoco = true } = {}) {
+    if (panelFicha.hidden) return;
+    panelFicha.hidden = true;
+    fichaAbierta = null;
+    fichaPedido++;
+    if (devolverFoco) fichaVolverA?.focus?.();
+    fichaVolverA = null;
+  }
+
+  cerrarFichaBoton.addEventListener('click', () => cerrarFicha());
+  panelFicha.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault?.(); cerrarFicha(); }
+  });
+  // Los botones de la ficha llevan los mismos datos que los del mensaje.
+  panelFicha.addEventListener('click', ev => {
+    if (ev.target?.dataset?.moderar || ev.target?.dataset?.bloquearId) alClickEnLista(ev);
+  });
 
   /* Le saca a alguien el color que eligió. NO es un bloqueo: sigue
      escribiendo igual, y puede volver a elegir uno.
@@ -464,6 +668,11 @@
     const li = crearElementoMensaje(datos);
     agregarMensajeALista(listas.mezclada, li);
     agregarMensajeALista(listaDeRed(datos.red), li.cloneNode(true));
+    // con la ficha de esa persona abierta, lo nuevo que escribe también
+    if (fichaAbierta && datos.red === fichaAbierta.red && String(datos.usuarioId) === fichaAbierta.id) {
+      fichaMensajes.appendChild(itemDeFicha(datos, fichaAbierta.red));
+      fichaMensajes.scrollTop = fichaMensajes.scrollHeight;
+    }
     if (datos.red === 'starvios') prenderStarvios();
   }
 
@@ -624,6 +833,7 @@
   }
 
   function abrirActividad() {
+    cerrarFicha({ devolverFoco: false });   // ocupan el mismo lugar
     panelActividad.hidden = false;
     botonActividad.setAttribute('aria-expanded', 'true');
     pedirActividad();

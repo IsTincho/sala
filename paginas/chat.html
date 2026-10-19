@@ -90,6 +90,23 @@
     <p id="nota-actividad" class="texto-tenue nota-actividad" role="status"></p>
   </section>
 
+  <!-- la ficha de quien escribió: sólo en la ventana del creador. Se arma desde chat.js -->
+  <section id="panel-ficha" class="panel-actividad panel-ficha" hidden role="dialog" aria-label="Ficha de quien escribió">
+    <div class="cabeza-actividad cabeza-ficha">
+      <img id="ficha-avatar" class="ficha-avatar" alt="" hidden>
+      <div class="ficha-quien">
+        <strong id="ficha-nombre" class="usuario"></strong>
+        <a id="ficha-perfil" class="texto-tenue ficha-perfil" target="_blank" rel="noopener noreferrer" hidden>ver perfil ↗</a>
+      </div>
+      <button type="button" id="cerrar-ficha" class="boton-chip" aria-label="Cerrar la ficha">×</button>
+    </div>
+    <ul id="ficha-datos" class="ficha-datos"></ul>
+    <div id="ficha-acciones" class="ficha-acciones"></div>
+    <p id="ficha-titulo-mensajes" class="texto-tenue ficha-titulo"></p>
+    <ol id="ficha-mensajes" class="lista-actividad ficha-mensajes"></ol>
+    <p id="ficha-nota" class="texto-tenue nota-actividad" role="status"></p>
+  </section>
+
   <main class="area-mensajes" id="area-mensajes">
     <!-- vista mezclada: una sola lista -->
     <div class="columna columna-mezclada" id="columna-mezclada">

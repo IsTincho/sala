@@ -176,10 +176,10 @@
   // vista columnas cada columna se maneja por separado.
 
   const listas = {
-    mezclada: crearEstadoLista('lista-mezclada', 'boton-abajo-mezclada', 'contador-mezclada'),
-    kick:     crearEstadoLista('lista-kick', 'boton-abajo-kick', 'contador-kick'),
-    twitch:   crearEstadoLista('lista-twitch', 'boton-abajo-twitch', 'contador-twitch'),
-    starvios: crearEstadoLista('lista-starvios', 'boton-abajo-starvios', 'contador-starvios'),
+    mezclada: crearEstadoLista('lista-mezclada', 'boton-abajo-mezclada', 'contador-mezclada', 'etiqueta-abajo-mezclada'),
+    kick:     crearEstadoLista('lista-kick', 'boton-abajo-kick', 'contador-kick', 'etiqueta-abajo-kick'),
+    twitch:   crearEstadoLista('lista-twitch', 'boton-abajo-twitch', 'contador-twitch', 'etiqueta-abajo-twitch'),
+    starvios: crearEstadoLista('lista-starvios', 'boton-abajo-starvios', 'contador-starvios', 'etiqueta-abajo-starvios'),
   };
 
   const listaDeRed = red => (red === 'kick' ? listas.kick : red === 'starvios' ? listas.starvios : listas.twitch);
@@ -187,11 +187,32 @@
   const TOPE_MENSAJES = 300; // por lista; una noche larga de stream no tiene que comerse la RAM
   const DISTANCIA_PEGADO = 40; // px de tolerancia para considerar que esta "abajo del todo"
 
-  function crearEstadoLista(idLista, idBoton, idContador) {
+  function crearEstadoLista(idLista, idBoton, idContador, idEtiqueta) {
     const ul = document.getElementById(idLista);
     const boton = document.getElementById(idBoton);
     const contador = document.getElementById(idContador);
-    const info = { ul, boton, contador, pausado: false, nuevos: 0 };
+    const etiqueta = document.getElementById(idEtiqueta);
+    const info = { ul, boton, contador, etiqueta, pausado: false, conMouse: false, nuevos: 0 };
+
+    /* Con el MOUSE encima, el chat se queda quieto, como en Kick: con
+       mensajes entrando rápido, el nombre o el botón que se quería tocar
+       se iba para arriba antes del click. Lo nuevo se sigue agregando
+       abajo (no corre lo que se está mirando) y se cuenta; al sacar el
+       mouse baja solo. Sólo con mouse: en una pantalla táctil "encima"
+       no existe y un toque no tiene que frenar el chat. */
+    ul.addEventListener('pointerenter', ev => {
+      if (ev.pointerType && ev.pointerType !== 'mouse') return;
+      info.conMouse = true;
+    });
+    ul.addEventListener('pointerleave', () => {
+      if (!info.conMouse) return;
+      info.conMouse = false;
+      if (info.pausado) return;   // pausado por scroll: eso lo decide la rueda, no el mouse
+      info.nuevos = 0;
+      info.boton.hidden = true;
+      ul.scrollTop = ul.scrollHeight;
+      podarLista(ul);
+    });
 
     // si el usuario sube mas de ~40px del fondo se pausa el autoscroll;
     // si vuelve a bajar solo (sin tocar el boton) se despausa igual.
@@ -610,6 +631,7 @@
     info.pausado = false;
     info.nuevos = 0;
     info.boton.hidden = true;
+    if (info.etiqueta) info.etiqueta.textContent = 'Volver abajo';
     info.ul.setAttribute('aria-live', 'polite');
     // se poda recien al despausar: mientras esta pausado, sacar nodos de
     // arriba correria el scroll del usuario que esta leyendo mensajes
@@ -626,9 +648,10 @@
   // autoscroll o si suma al contador de "nuevos" por estar pausada.
   function agregarMensajeALista(info, li) {
     info.ul.appendChild(li);
-    if (info.pausado) {
+    if (info.pausado || info.conMouse) {
       info.nuevos += 1;
       info.contador.textContent = String(info.nuevos);
+      if (info.etiqueta) info.etiqueta.textContent = info.pausado ? 'Volver abajo' : 'Chat en pausa';
       info.boton.hidden = false;
     } else {
       info.ul.scrollTop = info.ul.scrollHeight;

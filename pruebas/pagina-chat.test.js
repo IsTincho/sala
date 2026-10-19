@@ -213,6 +213,54 @@ test('subir el scroll pausa, cuenta los nuevos, y el boton despausa', async () =
   p.cerrar();
 });
 
+test('con el mouse encima el chat se queda quieto, y al sacarlo baja solo', async () => {
+  const p = abrir();
+  await asentarse();
+  const lista = p.el('lista-mezclada');
+  const boton = p.el('boton-abajo-mezclada');
+  lista.scrollHeight = 1000; lista.clientHeight = 200; lista.scrollTop = 800;
+
+  lista.disparar('pointerenter', { pointerType: 'mouse' });
+  p.llega(mensaje({ id: 'a' }));
+  p.llega(mensaje({ id: 'b' }));
+  assert.equal(lista.scrollTop, 800, 'lo que se iba a tocar no se movió');
+  assert.equal(boton.hidden, false);
+  assert.equal(p.el('etiqueta-abajo-mezclada').textContent, 'Chat en pausa');
+  assert.equal(p.el('contador-mezclada').textContent, '2');
+  assert.equal(lista.getAttribute('aria-live'), 'polite', 'no es una pausa de lectura: el lector sigue');
+
+  lista.disparar('pointerleave');
+  assert.equal(boton.hidden, true);
+  assert.equal(lista.scrollTop, lista.scrollHeight, 'baja solo al sacar el mouse');
+  p.cerrar();
+});
+
+test('un toque en pantalla táctil no pausa el chat', async () => {
+  const p = abrir();
+  await asentarse();
+  const lista = p.el('lista-mezclada');
+  lista.disparar('pointerenter', { pointerType: 'touch' });
+  p.llega(mensaje({ id: 'a' }));
+  assert.equal(p.el('boton-abajo-mezclada').hidden, true);
+  p.cerrar();
+});
+
+test('si además subió con la rueda, sacar el mouse no lo baja: manda la rueda', async () => {
+  const p = abrir();
+  await asentarse();
+  const lista = p.el('lista-mezclada');
+  lista.scrollHeight = 1000; lista.clientHeight = 200;
+  lista.disparar('pointerenter', { pointerType: 'mouse' });
+  lista.scrollTop = 0;
+  lista.disparar('scroll');
+  p.llega(mensaje({ id: 'a' }));
+  assert.equal(p.el('etiqueta-abajo-mezclada').textContent, 'Volver abajo');
+  lista.disparar('pointerleave');
+  assert.equal(lista.scrollTop, 0, 'sigue donde la persona lo dejó');
+  assert.equal(p.el('boton-abajo-mezclada').hidden, false);
+  p.cerrar();
+});
+
 test('volver a bajar solo despausa sin tocar el boton', async () => {
   const p = abrir();
   await asentarse();

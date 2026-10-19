@@ -840,6 +840,11 @@ select:focus-visible{
   background: color-mix(in srgb, var(--regular) 8%, transparent);
 }
 .mensaje-actividad.actividad-follow{ border-left-color: var(--texto-tenue); }
+/* Un raid es lo que mas importa saludar: rojo, como en las alertas. */
+.mensaje-actividad.actividad-raid{
+  border-left-color: var(--mal);
+  background: color-mix(in srgb, var(--mal) 9%, transparent);
+}
 .actividad-frase{ color: var(--texto-tenue); }
 .actividad-frase .usuario{ color: var(--texto); font-weight: 700; }
 .actividad-objeto{ color: var(--texto); }
@@ -890,6 +895,7 @@ select:focus-visible{
 .item-actividad.actividad-resub,
 .item-actividad.actividad-regalo{ border-left-color: var(--regular); }
 .item-actividad.actividad-follow{ border-left-color: var(--texto-tenue); }
+.item-actividad.actividad-raid{ border-left-color: var(--mal); }
 .item-actividad .hora-actividad{ color: var(--texto-tenue); font-size: .85em; white-space: nowrap; }
 .item-actividad .actividad-frase,
 .item-actividad .actividad-mensaje{ grid-column: 2; }

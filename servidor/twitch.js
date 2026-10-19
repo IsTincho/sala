@@ -337,6 +337,58 @@ export function desbanear({ accessToken, broadcasterId, usuarioId }) {
   })}`, accessToken);
 }
 
+/* ------------------------------------------------- ficha del chatter
+
+   Lo que el creador ve al tocar un nombre en /chat. La cuenta (fecha de
+   creacion, foto, login) es publica y va con el token de APP; si sigue
+   al canal y si es sub van con el token del CREADOR, con permisos que
+   ya pide para la actividad (`moderator:read:followers`,
+   `channel:read:subscriptions`). Nada de esto es nuevo para Twitch. */
+
+/** La cuenta publica de un usuario por id, o null si no existe. */
+export async function usuarioPorId(id) {
+  const data = await pedirConTokenDeApp(`/users?id=${encodeURIComponent(id)}`, 'users');
+  const u = data[0];
+  if (!u) return null;
+  return {
+    id: String(u.id ?? ''),
+    login: String(u.login ?? ''),
+    nombre: String(u.display_name ?? ''),
+    avatar: String(u.profile_image_url ?? ''),
+    creada: String(u.created_at ?? ''),
+  };
+}
+
+async function pedirComoCreador(ruta, accessToken) {
+  const resp = await fetch(`${URL_HELIX}${ruta}`, {
+    headers: cabecerasHelix(accessToken),
+    signal: AbortSignal.timeout(ESPERA_HELIX),
+  });
+  if (!resp.ok) {
+    const e = new Error(`twitch ${ruta.split('?')[0]} respondio ${resp.status}`);
+    e.status = resp.status;
+    throw e;
+  }
+  const cuerpo = await resp.json().catch(() => null);
+  return Array.isArray(cuerpo?.data) ? cuerpo.data : [];
+}
+
+/** Desde cuando sigue al canal (ISO), o '' si no lo sigue. */
+export async function sigueDesde({ accessToken, broadcasterId, usuarioId }) {
+  const data = await pedirComoCreador(`/channels/followers?broadcaster_id=${encodeURIComponent(broadcasterId)}` +
+    `&user_id=${encodeURIComponent(usuarioId)}`, accessToken);
+  return String(data[0]?.followed_at ?? '');
+}
+
+/** Su sub al canal: `{ nivel: 1|2|3, regalada }`, o null si no es sub. */
+export async function subAlCanal({ accessToken, broadcasterId, usuarioId }) {
+  const data = await pedirComoCreador(`/subscriptions?broadcaster_id=${encodeURIComponent(broadcasterId)}` +
+    `&user_id=${encodeURIComponent(usuarioId)}`, accessToken);
+  const s = data[0];
+  if (!s) return null;
+  return { nivel: Math.round(Number(s.tier ?? 1000) / 1000) || 1, regalada: Boolean(s.is_gift) };
+}
+
 /**
  * Crea la suscripcion channel.chat.message para una sesion de
  * EventSub-WebSocket ya conectada.
@@ -384,6 +436,9 @@ export const TIPOS_ACTIVIDAD = Object.freeze([
      o vacia el chat desde twitch.tv, para que el multichat los saque
      igual que Twitch. Piden `user:read:chat`, el mismo permiso del
      chat, asi que ningun vinculo se queda sin ellos. */
+  /* Raids que llegan al canal. No pide ningun permiso: es publico. */
+  { tipo: 'channel.raid', version: '1', scope: null,
+    condicion: id => ({ to_broadcaster_user_id: id }) },
   { tipo: 'channel.chat.message_delete', version: '1', scope: 'user:read:chat',
     condicion: id => ({ broadcaster_user_id: id, user_id: id }) },
   { tipo: 'channel.chat.clear_user_messages', version: '1', scope: 'user:read:chat',

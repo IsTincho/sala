@@ -707,6 +707,10 @@
         f.accion = 'regaló';
         f.objeto = `${cifra(n)} ${n === 1 ? 'sub' : 'subs'}`;
         break;
+      case 'raid':
+        f.accion = 'llegó con un raid';
+        if (n > 0) f.detalle = `${cifra(n)} ${n === 1 ? 'espectador' : 'espectadores'}`;
+        break;
       default:
         f.accion = String(datos.clase ?? '');
     }

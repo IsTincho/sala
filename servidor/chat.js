@@ -98,6 +98,7 @@ import * as emotes from './emotes.js';
 import * as enlaces from './enlaces.js';
 import { numeroDeEntorno } from './entorno.js';
 import * as envio from './envio.js';
+import * as hosts from './hosts.js';
 import * as insignias from './insignias.js';
 import * as kick from './kick.js';
 import * as mensajes from './mensajes.js';
@@ -256,6 +257,11 @@ export async function arrancar({ base } = {}) {
   clearInterval(timerVerificacion);
   timerVerificacion = null;
 
+  /* Los raids de Kick llegan por su WebSocket (hosts.js), no por
+     webhook, y entran a la actividad como cualquier otra cosa. */
+  hosts.alRecibir((slug, evento, datos) =>
+    recibirActividad(slug, mensajes.actividadDeHostKick(evento, datos)));
+
   await verificarTodas();
 
   for (const slug of await salasDe('twitch')) {
@@ -289,6 +295,7 @@ export async function verificarTodas() {
 export function parar() {
   clearInterval(timerVerificacion);
   timerVerificacion = null;
+  hosts.parar();
   for (const c of porCanal.values()) {
     /* Antes de cerrar: si hay un prendido de plan B a medio camino,
        esto es lo que evita que termine abriendo un IRC despues de que
@@ -353,6 +360,9 @@ export async function verificarKick(slug) {
    suscripcion del chat es la que decide si la sala anda; esta es un
    agregado. Se reintenta sola en la vuelta de los cinco minutos. */
 async function asegurarActividadKick(c, v, actuales) {
+  /* Los raids no son un evento de la API: se suma la sala a la escucha
+     del WebSocket. No espera ni tira; si falla, el log lo dice. */
+  hosts.vigilar(c.slug, v.slug || c.slug).catch(() => {});
   try {
     const r = await kick.suscribirActividad(v.accessToken, v.usuarioId, actuales);
     c.actividad.kick = { ok: r.ok, fallaron: r.fallaron, sinPermiso: [] };

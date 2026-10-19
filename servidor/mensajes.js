@@ -695,6 +695,13 @@ export function actividadDeTwitch(tipo, evento, metadata = {}) {
         regalo: evento.reward?.title ?? '', mensaje: evento.user_input ?? '',
         costo: evento.reward?.cost ?? null, hora,
       });
+    case 'channel.raid':
+      return actividad('twitch', 'raid', {
+        id: idTrama,
+        usuario: evento.from_broadcaster_user_name ?? evento.from_broadcaster_user_login ?? '',
+        cantidad: evento.viewers ?? null,
+        hora,
+      });
     case 'channel.channel_points_automatic_reward_redemption.add': {
       const clase = String(evento.reward?.type ?? '');
       return actividad('twitch', 'canje', {
@@ -707,6 +714,30 @@ export function actividadDeTwitch(tipo, evento, metadata = {}) {
     default:
       return null;
   }
+}
+
+/**
+ * Un raid (host) de Kick, que llega por su WebSocket y no por webhook
+ * (ver servidor/hosts.js). Kick lo manda por dos eventos con formas
+ * distintas; aca se juntan en una.
+ * @param {string} nombre  el evento de Pusher
+ * @param {object} datos   su `data`, ya parseado
+ */
+export function actividadDeHostKick(nombre, datos, { hora } = {}) {
+  if (!datos || typeof datos !== 'object') return null;
+  /* StreamHostEvent viene plano; StreamHostedEvent, anidado y en camelCase. */
+  const r = String(nombre).endsWith('StreamHostEvent')
+    ? { quien: datos.host_username, cantidad: datos.number_viewers, mensaje: datos.optional_message }
+    : { quien: datos.user?.username, cantidad: datos.message?.numberOfViewers, mensaje: datos.message?.optionalMessage };
+  if (!r.quien) return null;
+  /* Sin id propio: el dedupe es por quien, con la ventana de hosts.js. */
+  return actividad('kick', 'raid', {
+    id: `raid:${String(r.quien).toLowerCase()}:${Math.floor(Date.now() / 60_000)}`,
+    usuario: r.quien,
+    cantidad: Number(r.cantidad) || null,
+    mensaje: r.mensaje ?? '',
+    hora,
+  });
 }
 
 /* ---------------------------------------------------------- borrados

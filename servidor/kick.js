@@ -418,6 +418,24 @@ export async function enviarMensaje(token, broadcasterUserId, texto, { respondeA
   };
 }
 
+/* ------------------------------------------------- ficha del chatter
+
+   GET /users?id= con el token de APP: nombre y foto, nada mas. La API
+   publica de Kick no dice cuando se creo la cuenta ni si sigue al
+   canal (octubre 2026). */
+
+/** Nombre y foto de un usuario por id, o null si no existe. */
+export async function usuarioPorId(id) {
+  const d = await pedir(`/users?id=${encodeURIComponent(String(id))}`);
+  const u = Array.isArray(d?.data) ? d.data[0] : null;
+  if (!u) return null;
+  return {
+    id: String(u.user_id ?? ''),
+    nombre: String(u.name ?? ''),
+    avatar: String(u.profile_picture ?? ''),
+  };
+}
+
 /* ---------------------------------------------------------- moderacion
 
    Las tres acciones van con el token del CREADOR (el dueño del canal

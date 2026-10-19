@@ -499,7 +499,7 @@
   // La lista del botón "Actividad". La pide al servidor, que es el que
   // decide quién la ve (el creador y sus mods): la página sólo muestra
   // el botón cuando /yo dice que sí, y si igual contesta que no, lo dice.
-  const GRUPOS_ACTIVIDAD = { canje: ['canje'], sub: ['sub', 'resub', 'regalo'], follow: ['follow'] };
+  const GRUPOS_ACTIVIDAD = { canje: ['canje'], sub: ['sub', 'resub', 'regalo'], follow: ['follow'], raid: ['raid'] };
   const CADA_ACTIVIDAD = 30000;   // los follows no avisan por el bus
   let itemsActividad = [];
   let filtroActividad = 'todo';
@@ -564,6 +564,7 @@
     [/reward|channel_points/, 'canjes'],
     [/subscri/, 'subs'],
     [/follow/, 'follows'],
+    [/raid/, 'raids'],
     // los de moderacion viajan con la actividad: ver kick.js y twitch.js
     [/moderation|chat\.(message_delete|clear)/, 'bans y borrados'],
   ];

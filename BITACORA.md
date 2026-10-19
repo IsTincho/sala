@@ -4,6 +4,36 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-10-19 — Raids en la Actividad, y por qué no se veía nada de Twitch
+
+**Lo que vio el dueño:** en Actividad había follows y canjes de Kick, pero ningún follow ni sub de
+Twitch, y ningún raid de ninguna red.
+
+**Twitch:** era el bug arreglado el 17/10 (`vinculos.acceso()` no devolvía los scopes y la
+actividad de Twitch nunca se suscribía). Desde ese deploy la lista dice "Twitch: escuchando subs,
+canjes, follows". Lo de antes del 17/10 no se puede recuperar: Twitch no reenvía eventos viejos.
+**Falta verlo con un follow de verdad en Twitch.**
+
+**Raids, nuevos:**
+- Twitch: EventSub `channel.raid` con `to_broadcaster_user_id`. No pide permisos, así que entra
+  sin volver a vincular.
+- Kick: la API pública **no tiene** evento de raid. Se escucha el WebSocket público de Kick
+  (Pusher, el mismo que usa su web), adaptado de `../CosasStream/servidor/kickws.js`:
+  `servidor/hosts.js`, **una** conexión para todas las salas, cada una suma sus dos canales
+  (`chatrooms.<id>.v2` y `chatrooms.<id>`). El id de la sala de chat sale de
+  `kick.com/api/v2/channels/<slug>`. Las dos formas del evento se juntan en
+  `mensajes.actividadDeHostKick` y se cuentan una vez. Se suma cada sala en la vuelta de los
+  cinco minutos. Apagado en local y en tests (salvo `KICK_RAIDS=1`); `KICK_RAIDS=0` lo apaga en
+  producción.
+- En la página: frase "llegó con un raid · N espectadores", borde rojo, pestaña **Raids**.
+
+**Ojo:** lo de Kick no es una API. Si Kick cambia su WebSocket, se pierden sólo los raids de Kick
+y el log lo dice (`[hosts] ...`).
+
+Pruebas: `pruebas/raids.test.js`.
+
+---
+
 ## 2026-10-17 — Moderar de verdad desde /chat: borrar, timeout y ban
 
 **Qué quedó:** cada mensaje de Kick y de Twitch en `/chat` (la ventana del creador) trae, al

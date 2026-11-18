@@ -80,7 +80,7 @@ test('las tres traducciones devuelven el mismo juego de claves', () => {
   /* Que la lista sea la del plan, y no tres iguales entre si pero
      otra cosa. */
   assert.deepEqual(claves(k),
-    ['color', 'emotes', 'hora', 'id', 'insignias', 'red', 'texto', 'tipo', 'usuario', 'usuarioId']);
+    ['avatar', 'color', 'emotes', 'hora', 'id', 'insignias', 'red', 'texto', 'tipo', 'usuario', 'usuarioId']);
 
   /* `usuarioId` es el id de quien escribio EN SU RED, y es lo unico
      con lo que se puede bloquear a alguien: por nombre no sirve,

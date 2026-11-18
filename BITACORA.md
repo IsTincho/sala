@@ -4,6 +4,30 @@ Una entrada por fase cerrada, la más nueva arriba. Qué quedó, decisiones y po
 
 ---
 
+## 2026-11-18 — Fotos de Kick y tema Vice City (stream de GTA)
+
+**Qué quedó:** cada mensaje de Kick lleva la foto de perfil al lado del nombre, con un aro del
+color del nombre. Sin foto (o si no carga) queda la inicial en un círculo. Twitch y Starvios no
+mandan foto en el chat, así que no llevan. En la barra hay un botón **Vice City**, siempre visible,
+que viste el chat de noche violeta con filo de atardecer y nombres en Impact; se acuerda en el
+navegador y también va en la URL (`?tema=vicecity`).
+
+**Decisiones:**
+- `avatar` es clave nueva del formato único, en las cuatro traducciones (`''` donde la red no la
+  manda): la prueba de forma exige las mismas claves en todas.
+- El servidor sólo deja pasar fotos https de `kick.com` o sus subdominios: la URL termina en el
+  `src` del navegador de cada espectador.
+- La imagen rota pasa a la inicial desde `vigilarInsignias`, por el mismo motivo de los clones.
+- El tema es por navegador, no lo impone el creador a todos. Siempre oscuro (los nombres usan el
+  color corregido para fondo oscuro, y los fondos del tema son más oscuros que `--fondo-peor-oscuro`).
+- Sin fuentes de afuera: Impact del sistema.
+
+**Pendiente:** ver una foto real de Kick en vivo (las pruebas usan el fixture del webhook).
+`insignias.test.js` "se resuelven por el camino de Twitch" ya fallaba antes de esto: espera
+insignias de Kick sin imagen y hoy tienen SVG propio.
+
+---
+
 ## 2026-10-19 — La ficha de quien escribe
 
 **Qué quedó:** en `/chat` (sólo el creador) el nombre de cada mensaje de Kick y Twitch se puede

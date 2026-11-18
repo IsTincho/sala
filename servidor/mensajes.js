@@ -110,6 +110,28 @@ export const URL_EMOTE_TWITCH = id =>
 const COLOR_VALIDO = /^#[0-9a-f]{6}$/i;
 const colorSeguro = c => (typeof c === 'string' && COLOR_VALIDO.test(c) ? c.toLowerCase() : '');
 
+/* La foto de perfil de quien escribio. Kick la manda en cada mensaje
+   (`sender.profile_picture`); Twitch por EventSub e IRC no, y Starvios
+   tampoco: esos van con `''` y la pagina pone la inicial.
+
+   Viaja por el mismo motivo que `usuarioId`: es lo que la plataforma
+   ya publica de un mensaje publico, no un dato nuestro sobre nadie.
+
+   Solo https y solo de kick.com: la URL termina en un `src` que pide
+   el navegador de cada persona que mira, y no tiene por que poder
+   apuntar a cualquier servidor. Si Kick algun dia sirve las fotos de
+   otro dominio, se ven las iniciales hasta que se sume aca. */
+const TOPE_URL_AVATAR = 500;
+export function avatarSeguro(url) {
+  if (typeof url !== 'string' || !url || url.length > TOPE_URL_AVATAR) return '';
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return '';
+    if (u.hostname !== 'kick.com' && !u.hostname.endsWith('.kick.com')) return '';
+    return u.href;
+  } catch { return ''; }
+}
+
 /* Un texto que llega de afuera y que se va a repartir a todo el que
    este mirando. El recorte no es cosmetico: sin tope, un mensaje
    armado a mano por la API de Kick (que permite mas que la caja del
@@ -297,6 +319,7 @@ export function deKick(cuerpo, { hora } = {}) {
     id: String(cuerpo.message_id ?? ''),
     usuario: String(emisor.username ?? '').slice(0, 80),
     usuarioId: String(emisor.user_id ?? ''),
+    avatar: avatarSeguro(emisor.profile_picture),
     color: colorSeguro(identidad?.username_color),
     insignias: insigniasDeKick(identidad),
     texto,
@@ -401,6 +424,7 @@ export function deTwitch(evento, metadata = {}) {
        Se muestra el primero. */
     usuario: String(evento.chatter_user_name ?? evento.chatter_user_login ?? '').slice(0, 80),
     usuarioId: String(evento.chatter_user_id ?? ''),
+    avatar: '',   // EventSub no la manda
     color: colorSeguro(evento.color),
     insignias: insigniasDeTwitch(evento.badges),
     texto,
@@ -503,6 +527,7 @@ export function deIrc(tags, usuarioIrc, texto) {
     id: String(t.get('id') ?? ''),
     usuario: String(t.get('display-name') || usuarioIrc || '').slice(0, 80),
     usuarioId: String(t.get('user-id') ?? ''),
+    avatar: '',   // IRC tampoco
     color: colorSeguro(t.get('color')),
     insignias: insigniasDeTagIrc(t.get('badges'), t.get('badge-info')),
     texto: cuerpo,
@@ -910,6 +935,7 @@ export function deStarvios(fila, { emotes: urls } = {}) {
     usuario: String(kind === 'system' ? 'Starvios'
       : (perfil.display_name || perfil.username || 'anonimo')).slice(0, 80),
     usuarioId: String(fila.user_id ?? ''),
+    avatar: '',
     color: colorSeguro(perfil.chat_color),
     insignias,
     texto: cuerpo,

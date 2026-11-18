@@ -1606,3 +1606,73 @@ test('/chat a secas sigue siendo la ventana del creador', async () => {
   assert.ok(!p.pedidos.some(x => /\/abierto$/.test(x.url)));
   p.cerrar();
 });
+
+/* ------------------------------------------------- foto de perfil */
+
+const avatarDe = li => buscar(li, h => h.classList?.contains('avatar'));
+
+test('un mensaje de Kick lleva la foto de perfil al lado del nombre', async () => {
+  const p = abrir();
+  await asentarse();
+
+  p.llega(mensaje({ id: 'k1', avatar: 'https://files.kick.com/images/user/909/profile_image/conversion/a.webp' }));
+  const foto = avatarDe(p.el('lista-mezclada').children[0]);
+  assert.equal(foto?.tagName, 'IMG');
+  assert.equal(foto.src, 'https://files.kick.com/images/user/909/profile_image/conversion/a.webp');
+  assert.equal(foto.alt, '', 'el nombre ya esta escrito al lado: no se lee dos veces');
+
+  p.cerrar();
+});
+
+test('sin foto, o con una que no carga, queda la inicial; Twitch no lleva', async () => {
+  const p = abrir();
+  await asentarse();
+
+  p.llega(mensaje({ id: 'k1', usuario: 'nadie', avatar: '' }));
+  p.llega(mensaje({ id: 'k2', usuario: 'rota', avatar: 'https://files.kick.com/x.webp' }));
+  p.llega(mensaje({ id: 't1', red: 'twitch', usuario: 'purple' }));
+  const [sinFoto, conRota, deTwitch] = p.el('lista-mezclada').children;
+
+  assert.equal(avatarDe(sinFoto).tagName, 'SPAN');
+  assert.equal(avatarDe(sinFoto).textContent, 'N');
+
+  /* la rota, tambien en el clon de la columna (mismo motivo que las insignias) */
+  avatarDe(conRota).disparar('error');
+  assert.equal(avatarDe(conRota).tagName, 'SPAN');
+  assert.equal(avatarDe(conRota).textContent, 'R');
+  const enColumna = p.el('lista-kick').children[1];
+  avatarDe(enColumna).disparar('error');
+  assert.equal(avatarDe(enColumna).tagName, 'SPAN');
+
+  assert.equal(avatarDe(deTwitch), null);
+  p.cerrar();
+});
+
+/* ------------------------------------------------- tema Vice City */
+
+test('el boton de Vice City viste la pagina y lo deja en la URL', async () => {
+  const p = abrir();
+  await asentarse();
+
+  const boton = p.el('boton-tema');
+  assert.equal(boton.getAttribute('aria-pressed'), 'false');
+  assert.equal(p.documento.documentElement.dataset.tema, undefined);
+
+  boton.disparar('click');
+  assert.equal(boton.getAttribute('aria-pressed'), 'true');
+  assert.equal(p.documento.documentElement.dataset.tema, 'vicecity');
+  assert.match(p.ventana.history.urls.at(-1), /tema=vicecity/);
+
+  boton.disparar('click');
+  assert.equal(p.documento.documentElement.dataset.tema, undefined);
+  assert.doesNotMatch(p.ventana.history.urls.at(-1), /tema=/);
+  p.cerrar();
+});
+
+test('?tema=vicecity abre ya vestido', async () => {
+  const p = abrir({ busqueda: '?tema=vicecity' });
+  await asentarse();
+  assert.equal(p.documento.documentElement.dataset.tema, 'vicecity');
+  assert.equal(p.el('boton-tema').getAttribute('aria-pressed'), 'true');
+  p.cerrar();
+});

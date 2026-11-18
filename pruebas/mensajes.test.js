@@ -25,6 +25,35 @@ const FIXTURE = JSON.parse(
   fs.readFileSync(path.join(AQUI, 'fijos', 'chat-mensaje.json'), 'utf8'),
 );
 
+/* ------------------------------------------------------- foto de perfil */
+
+test('Kick: la foto de perfil viaja en el mensaje', () => {
+  const m = mensajes.deKick(FIXTURE);
+  assert.equal(m.avatar, FIXTURE.sender.profile_picture);
+});
+
+test('la foto solo pasa si es https y de kick.com', () => {
+  const { avatarSeguro } = mensajes;
+  assert.equal(avatarSeguro('https://files.kick.com/images/user/1/a.webp'), 'https://files.kick.com/images/user/1/a.webp');
+  assert.equal(avatarSeguro('https://kick.com/img/default.webp'), 'https://kick.com/img/default.webp');
+  for (const mala of [
+    'http://files.kick.com/a.webp',          // sin TLS
+    'https://files.kick.com.evil.io/a.webp', // parece de Kick y no es
+    'https://evilkick.com/a.webp',
+    'javascript:alert(1)',
+    'https://files.kick.com/' + 'a'.repeat(600),
+    '', null, undefined, 42,
+  ]) {
+    assert.equal(avatarSeguro(mala), '', String(mala).slice(0, 60));
+  }
+});
+
+test('Kick sin foto, Twitch e IRC: avatar vacio y no undefined', () => {
+  const k = mensajes.deKick({ ...FIXTURE, sender: { ...FIXTURE.sender, profile_picture: null } });
+  assert.equal(k.avatar, '');
+  assert.equal(mensajes.deIrc(new Map(), 'x', 'hola').avatar, '');
+});
+
 /* Lo que de verdad importa de un emote: que el tramo [inicio, fin)
    del texto, cortado por puntos de codigo, sea exactamente el emote y
    nada mas. Todos los tests de posiciones preguntan esto y no los

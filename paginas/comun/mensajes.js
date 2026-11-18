@@ -491,6 +491,38 @@
    * `error` de una imagen NO BURBUJEA: un escucha normal en la lista
    * no se enteraria nunca.
    */
+  /* ------------------------------------------------- la foto de perfil
+
+     Solo en los mensajes de Kick, que es la red que la manda (el
+     servidor la deja pasar solo si es https de kick.com). Una cuenta
+     sin foto, o una foto que no carga, queda con la inicial en un
+     circulo del color del nombre: asi la columna no salta entre uno y
+     otro. El respaldo de la imagen rota lo hace `vigilarInsignias`,
+     por el mismo motivo que el de las insignias (los clones). */
+  const primeraLetra = nombre => ([...String(nombre ?? '').trim()][0] ?? '?').toUpperCase();
+
+  function inicialDe(letra) {
+    const s = document.createElement('span');
+    s.className = 'avatar avatar-inicial';
+    s.setAttribute('aria-hidden', 'true');
+    s.textContent = letra || '?';
+    return s;
+  }
+
+  function crearAvatar(datos) {
+    const letra = primeraLetra(datos.usuario);
+    const url = typeof datos.avatar === 'string' && datos.avatar.startsWith('https://') ? datos.avatar : '';
+    if (!url) return inicialDe(letra);
+    const img = document.createElement('img');
+    img.className = 'avatar';
+    img.src = url;
+    img.alt = '';                       // el nombre ya esta escrito al lado
+    img.decoding = 'async';
+    img.referrerPolicy = 'no-referrer';
+    img.dataset.inicial = letra;
+    return img;
+  }
+
   function vigilarInsignias(lista) {
     if (!lista || lista.dataset.insigniasVigiladas) return;
     lista.dataset.insigniasVigiladas = '1';
@@ -516,6 +548,17 @@
          el CDN la vencio) se saca: la tarjeta sigue con su texto. */
       if (img.classList.contains('vista-imagen') || img.classList.contains('vista-medio')) {
         img.parentElement?.removeChild(img);
+        return;
+      }
+      /* La foto de perfil que no carga pasa a la inicial, en su lugar */
+      if (img.classList.contains('avatar')) {
+        const inicial = inicialDe(img.dataset.inicial || '');
+        // se lleva el color del aro, que pintarNombre le puso a la imagen
+        for (const v of ['--color-usuario-oscuro', '--color-usuario-claro']) {
+          const c = img.style.getPropertyValue(v);
+          if (c) inicial.style.setProperty(v, c);
+        }
+        img.parentElement?.replaceChild(inicial, img);
         return;
       }
       if (!img.classList.contains('insignia')) return;
@@ -575,6 +618,13 @@
        lectores de pantalla y al pasar el mouse. */
     chipRed.title = chipRed.textContent;
     filaPrincipal.appendChild(chipRed);
+
+    if (redDe(datos) === 'kick') {
+      const avatar = crearAvatar(datos);
+      /* el color del aro y de la inicial: el mismo par corregido del nombre */
+      pintarNombre(avatar, datos);
+      filaPrincipal.appendChild(avatar);
+    }
 
     const insignias = datos.insignias || [];
     insignias.slice(0, 4).forEach(insignia => agregarInsignia(filaPrincipal, insignia));

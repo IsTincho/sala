@@ -142,6 +142,37 @@ a{ color: var(--acento); }
   }
 }
 
+/* La foto de perfil al lado del nombre (solo Kick la manda). El aro es
+   el color del nombre, el mismo par corregido; sin foto, la inicial.
+   1,4em: apenas mas alta que el renglon, para que se reconozca la cara
+   sin que cada mensaje gaste el doble de alto. `align-self: center`
+   porque la fila alinea por baseline (ver .insignia en chat.css). */
+.avatar{
+  --aro: var(--color-usuario-oscuro, var(--texto-tenue));
+  flex: none;
+  align-self: center;
+  width: 1.4em;
+  height: 1.4em;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--fondo-tarjeta);
+  box-shadow: 0 0 0 2px var(--aro);
+}
+.avatar-inicial{
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.75em;
+  width: calc(1.4em / 0.75);
+  height: calc(1.4em / 0.75);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--aro);
+  background: color-mix(in srgb, var(--aro) 18%, var(--fondo-tarjeta));
+}
+@media (prefers-color-scheme: light){
+  .avatar{ --aro: var(--color-usuario-claro, var(--texto-tenue)); }
+}
+
 /* puntito de estado con tres variantes: bien / regular / mal.
    Se usa junto a un texto que dice que significa cada color, nunca
    solo, para no depender del color como unico canal de informacion. */

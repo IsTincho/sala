@@ -1218,3 +1218,125 @@ select:focus-visible{
 .ficha-mensajes .item-actividad{ grid-template-columns: auto 1fr auto; align-items: start; }
 .ficha-mensajes .texto-mensaje{ overflow-wrap: anywhere; }
 .ficha-mensajes .boton-moderar{ font-size: .7em; }
+
+/* ============================================================
+   Tema Vice City (html[data-tema="vicecity"], boton de la barra).
+
+   Noche violeta, filo de atardecer y sombra rosa corrida: el mismo
+   clima que el overlay de GTA del stream, sin el logo ni el arte de
+   Rockstar. Se pisan las variables de base.css y casi todo lo demas
+   sale solo. Es SIEMPRE oscuro, aunque el sistema este en claro: por
+   eso los nombres usan el color corregido para el fondo oscuro, y los
+   fondos de aca son mas oscuros que --fondo-peor-oscuro (#181b20),
+   asi el contraste minimo de los nombres se sigue cumpliendo.
+
+   Sin fuentes de afuera: la pagina no le pide nada a terceros. Impact
+   esta en Windows y en Mac; donde no esta, la condensada del sistema.
+   ============================================================ */
+
+/* el boton, que se tiene que ver de lejos con o sin el tema puesto */
+.boton-vicecity{
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffe3f3;
+  background: linear-gradient(180deg, #2a0b44, #14051f);
+  border: 2px solid #ff3fa4;
+  border-radius: 0.35rem;
+  box-shadow: 3px 3px 0 rgba(255, 63, 164, 0.6);
+}
+.boton-vicecity:hover{ background: linear-gradient(180deg, #3a1060, #1c0830); }
+.boton-vicecity[aria-pressed="true"]{
+  color: #14051f;
+  border-color: #14051f;
+  background: linear-gradient(120deg, #6a3fd8 0%, #ff4f9a 50%, #ffae4a 100%);
+  box-shadow: 3px 3px 0 #ff3fa4;
+}
+.sol-vicecity{
+  width: 0.95em;
+  height: 0.95em;
+  border-radius: 50%;
+  flex: none;
+  background: linear-gradient(180deg, #ffd84a, #ff6a3d);
+  /* las rayas del sol del afiche */
+  -webkit-mask: linear-gradient(#000 0 52%, transparent 52% 60%, #000 60% 70%, transparent 70% 77%, #000 77%);
+          mask: linear-gradient(#000 0 52%, transparent 52% 60%, #000 60% 70%, transparent 70% 77%, #000 77%);
+}
+
+html[data-tema="vicecity"]{
+  color-scheme: dark;
+  --fondo:         #14051f;
+  --fondo-tarjeta: #1f0835;
+  --borde:         #4a1d66;
+  --texto:         #fff3fb;
+  --texto-tenue:   #c9a9d8;
+  --acento:        #ff3fa4;
+  --bien:    #3ef0a0;
+  --regular: #ffb23f;
+  --mal:     #ff4f6a;
+  --chat-fila-hover: rgba(255, 63, 164, 0.08);
+}
+html[data-tema="vicecity"] body{ background: var(--fondo); color: var(--texto); }
+
+/* siempre el color corregido para fondo oscuro, aunque el sistema este en claro */
+html[data-tema="vicecity"] .usuario{ color: var(--color-usuario-oscuro, var(--texto)); }
+html[data-tema="vicecity"] .avatar{ --aro: var(--color-usuario-oscuro, var(--texto-tenue)); }
+
+/* la barra: cielo de noche y abajo el filo de atardecer */
+html[data-tema="vicecity"] .barra-superior{
+  background: linear-gradient(90deg, #2a0b44, #1f0835 60%, #14051f);
+  border-bottom: 0;
+  position: relative;
+}
+html[data-tema="vicecity"] .barra-superior::after{
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #6a3fd8, #ff4f9a 50%, #ffae4a);
+}
+html[data-tema="vicecity"] .titulo-chat,
+html[data-tema="vicecity"] .titulo-columna{
+  font-family: Impact, "Haettenschweiler", "Arial Narrow", system-ui, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #ffd84a;
+  text-shadow: 2px 2px 0 #ff3fa4;
+}
+
+/* la zona de mensajes: el resplandor del sol abajo, muy bajito para no
+   comerse contraste */
+html[data-tema="vicecity"] .area-mensajes{
+  background:
+    radial-gradient(120% 45% at 50% 100%, rgba(255, 106, 61, 0.10), transparent 70%),
+    var(--fondo);
+}
+html[data-tema="vicecity"] .lista-mensajes{ --chat-separador: rgba(255, 63, 164, 0.18); }
+
+html[data-tema="vicecity"] .usuario{
+  font-family: Impact, "Haettenschweiler", "Arial Narrow", system-ui, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+html[data-tema="vicecity"] .avatar{
+  box-shadow: 0 0 0 2px #14051f, 0 0 0 3.5px var(--aro);
+}
+html[data-tema="vicecity"] .boton-chip:not(.boton-vicecity){ background: #1a0630; }
+html[data-tema="vicecity"] .boton-chip[aria-pressed="true"]:not(.boton-vicecity){
+  border-color: #ff3fa4;
+  color: #ff8fca;
+}
+
+/* la caja de escribir y Enviar: el boton grande en atardecer */
+html[data-tema="vicecity"] .caja-escritura{
+  background: linear-gradient(0deg, #2a0b44, #1f0835);
+  border-top: 2px solid #ff3fa4;
+}
+html[data-tema="vicecity"] .boton-enviar:not(:disabled){
+  color: #14051f;
+  background: linear-gradient(120deg, #ff4f9a, #ffae4a);
+  border-color: #14051f;
+}

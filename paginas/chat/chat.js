@@ -58,11 +58,24 @@
 
   // ---------- estado de la vista, leido de la URL ----------
 
+  const CLAVE_TEMA = 'sala-chat-tema';
+
   const estado = {
     vista:  parametrosURL.get('vista') === 'columnas' ? 'columnas' : 'mezclada',
     letra:  parametrosURL.get('letra') === 'grande' ? 'grande' : 'normal',
     filtro: ['kick', 'twitch'].includes(parametrosURL.get('filtro')) ? parametrosURL.get('filtro') : 'todas',
+    tema:   temaInicial(),
   };
+
+  /* El tema Vice City. A diferencia de la letra, ademas de la URL queda
+     en el navegador: el que lo prende un dia de GTA no tiene por que
+     acordarse de abrir siempre el mismo link. La URL gana si la trae. */
+  function temaInicial() {
+    const t = parametrosURL.get('tema');
+    if (t === 'vicecity' || t === 'normal') return t;
+    try { return localStorage.getItem(CLAVE_TEMA) === 'vicecity' ? 'vicecity' : 'normal'; }
+    catch { return 'normal'; }   // sin localStorage (modo privado, file://)
+  }
 
   // reescribe la URL sin recargar, para que el link se pueda compartir
   // o refrescar y quede igual. Se borran los parametros en su valor por
@@ -72,6 +85,7 @@
     if (estado.vista === 'columnas') p.set('vista', 'columnas'); else p.delete('vista');
     if (estado.letra === 'grande') p.set('letra', 'grande'); else p.delete('letra');
     if (estado.filtro !== 'todas') p.set('filtro', estado.filtro); else p.delete('filtro');
+    if (estado.tema === 'vicecity') p.set('tema', 'vicecity'); else p.delete('tema');
     const query = p.toString();
     history.replaceState(null, '', location.pathname + (query ? '?' + query : ''));
   }
@@ -96,6 +110,7 @@
   const botonVista  = document.getElementById('boton-vista');
   const botonLetra  = document.getElementById('boton-letra');
   const botonFiltro = document.getElementById('boton-filtro');
+  const botonTema   = document.getElementById('boton-tema');
 
   const puntitoKick   = document.getElementById('puntito-kick');
   const textoKick     = document.getElementById('texto-kick');
@@ -977,9 +992,26 @@
     escribirParametrosURL();
   });
 
+  /* El tema va como atributo del <html> y todo lo demas es CSS
+     (chat.css, al final): los nombres ya pintados se recolorean solos. */
+  function aplicarTema() {
+    const vice = estado.tema === 'vicecity';
+    if (vice) document.documentElement.dataset.tema = 'vicecity';
+    else delete document.documentElement.dataset.tema;
+    botonTema.setAttribute('aria-pressed', String(vice));
+  }
+
+  botonTema.addEventListener('click', () => {
+    estado.tema = estado.tema === 'vicecity' ? 'normal' : 'vicecity';
+    aplicarTema();
+    escribirParametrosURL();
+    try { localStorage.setItem(CLAVE_TEMA, estado.tema); } catch { /* no es critico */ }
+  });
+
   aplicarVista();
   aplicarLetra();
   aplicarFiltro();
+  aplicarTema();
 
   // ---------- salud (kick/twitch), banda de "resuscribir" ----------
 
